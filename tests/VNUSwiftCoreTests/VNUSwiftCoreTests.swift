@@ -55,3 +55,20 @@ import Testing
     let extract = locations.extract(offset: 4, length: 1, context: 2)
     #expect(extract.text.contains("e\u{0301}"))
 }
+
+@Test func htmlParserDiagnosticsMatchNuMessages() {
+    let result = checkHTML("<!doctype html><meta charset=utf-8><title>T</title><div id=\"a\"class=\"b\">x</div>")
+    #expect(result.messages.contains { $0.message == "No space between attributes." })
+}
+
+@Test func numericCharacterReferenceDiagnosticsMatchNuMessages() {
+    let result = checkHTML("<!doctype html><meta charset=utf-8><title>T</title><p>&#x10FFFF;</p>")
+    #expect(result.messages.contains { $0.message == "Character reference expands to an astral non-character (U+10ffff)." })
+}
+
+private func checkHTML(_ source: String) -> ValidationResult {
+    NuValidator().check(
+        input: DocumentInput(data: Data(source.utf8), contentType: "text/html; charset=utf-8"),
+        options: CheckerOptions(parameters: ["out": ["json"]])
+    )
+}

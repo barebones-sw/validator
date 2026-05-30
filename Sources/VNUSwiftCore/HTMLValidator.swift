@@ -15,19 +15,28 @@ public final class HTMLValidator: Sendable {
         var sawDoctype = false
         var sawStartTag = false
         var sawHTMLLang = false
+        var sawClosedBody = false
         var ids: [String: Int] = [:]
         var metaCharsetCount = 0
         var stack: [OpenElement] = []
+        appendSourcePatternDiagnostics(source: source, locations: locations, messages: &messages)
 
         for token in tokens {
             switch token {
-            case .doctype:
+            case let .doctype(offset, length):
                 if !sawStartTag {
                     sawDoctype = true
+                } else {
+                    appendError("Stray doctype.", offset: offset, length: length, locations: locations, messages: &messages)
                 }
             case let .bogusMarkup(offset, length):
                 appendError("Saw \u{201c}<\u{201d}. Probable cause: Unescaped \u{201c}<\u{201d}.", offset: offset, length: length, locations: locations, messages: &messages)
+            case let .parseError(message, offset, length):
+                appendError(message, offset: offset, length: length, locations: locations, messages: &messages)
             case let .startTag(name, attributes, selfClosing, offset, length):
+                if sawClosedBody, name != "html" {
+                    appendError("Stray start tag \u{201c}\(name)\u{201d}.", offset: offset, length: length, locations: locations, messages: &messages)
+                }
                 sawStartTag = true
                 if !sawDoctype {
                     appendError("Start tag seen without seeing a doctype first. Expected \u{201c}<!DOCTYPE html>\u{201d}.", offset: offset, length: length, locations: locations, messages: &messages)
@@ -41,8 +50,16 @@ public final class HTMLValidator: Sendable {
                     appendInfo("Trailing slash on void elements has no effect and interacts badly with unquoted attribute values.", offset: offset, length: length, locations: locations, messages: &messages)
                 }
             case let .endTag(name, offset, length):
+                if sawClosedBody, name != "html" {
+                    appendError("Saw an end tag after \u{201c}body\u{201d} had been closed.", offset: offset, length: length, locations: locations, messages: &messages)
+                    continue
+                }
                 if HTMLVocabulary.voidElements.contains(name) {
-                    appendError("Stray end tag \u{201c}\(name)\u{201d}.", offset: offset, length: length, locations: locations, messages: &messages)
+                    if name == "br" {
+                        appendError("End tag \u{201c}br\u{201d}.", offset: offset, length: length, locations: locations, messages: &messages)
+                    } else {
+                        appendError("Stray end tag \u{201c}\(name)\u{201d}.", offset: offset, length: length, locations: locations, messages: &messages)
+                    }
                     continue
                 }
                 guard let match = stack.lastIndex(where: { $0.name == name }) else {
@@ -53,6 +70,9 @@ public final class HTMLValidator: Sendable {
                     appendError("End tag \u{201c}\(name)\u{201d} seen, but there were open elements.", offset: offset, length: length, locations: locations, messages: &messages)
                 }
                 stack.removeSubrange(match...)
+                if name == "body" {
+                    sawClosedBody = true
+                }
             }
         }
 
@@ -107,8 +127,32 @@ public final class HTMLValidator: Sendable {
             }
         }
 
+        if name == "image" {
+            appendError("Saw a start tag \u{201c}image\u{201d}.", offset: offset, length: length, locations: locations, messages: &messages)
+        }
+
+        if name == "form", stack.contains(where: { $0.name == "form" }) {
+            appendError("Saw a \u{201c}form\u{201d} start tag, but there was already an active \u{201c}form\u{201d} element. Nested forms are not allowed. Ignoring the tag.", offset: offset, length: length, locations: locations, messages: &messages)
+        }
+
+        if HTMLVocabulary.headingElements.contains(name), stack.contains(where: { HTMLVocabulary.headingElements.contains($0.name) }) {
+            appendError("Heading cannot be a child of another heading.", offset: offset, length: length, locations: locations, messages: &messages)
+        }
+
+        if name == "table", stack.contains(where: { $0.name == "table" }) {
+            appendError("Start tag for \u{201c}table\u{201d} seen but the previous \u{201c}table\u{201d} is still open.", offset: offset, length: length, locations: locations, messages: &messages)
+        }
+
+        if name == "select", stack.contains(where: { $0.name == "table" }) {
+            appendError("Start tag \u{201c}select\u{201d} seen in \u{201c}table\u{201d}.", offset: offset, length: length, locations: locations, messages: &messages)
+        }
+
         if HTMLVocabulary.obsoleteElements.contains(name) {
-            appendError("Element \u{201c}\(name)\u{201d} is obsolete. Use CSS instead.", offset: offset, length: length, locations: locations, messages: &messages)
+            if name == "frameset" {
+                appendError("The \u{201c}frameset\u{201d} element is obsolete. Use the \u{201c}iframe\u{201d} element and CSS instead, or use server-side includes.", offset: offset, length: length, locations: locations, messages: &messages)
+            } else {
+                appendError("Element \u{201c}\(name)\u{201d} is obsolete. Use CSS instead.", offset: offset, length: length, locations: locations, messages: &messages)
+            }
         } else if !HTMLVocabulary.elements.contains(name), !name.contains("-") {
             let parent = stack.last?.name ?? "body"
             appendError("Element \u{201c}\(name)\u{201d} not allowed as child of \u{201c}\(parent)\u{201d} in this context.", offset: offset, length: length, locations: locations, messages: &messages)
@@ -124,6 +168,9 @@ public final class HTMLValidator: Sendable {
 
         if name == "meta", attr["charset"] != nil {
             metaCharsetCount += 1
+            if offset > 1024 {
+                appendError("A \u{201c}charset\u{201d} attribute on a \u{201c}meta\u{201d} element found after the first 1024 bytes.", offset: offset, length: length, locations: locations, messages: &messages)
+            }
             if metaCharsetCount > 1 {
                 appendError("A document must not include more than one \u{201c}meta\u{201d} element with a \u{201c}charset\u{201d} attribute.", offset: offset, length: length, locations: locations, messages: &messages)
             }
@@ -182,6 +229,19 @@ public final class HTMLValidator: Sendable {
         messages.append(.info(text, location: locations.location(offset: offset, length: length), extract: locations.extract(offset: offset, length: length)))
     }
 
+    private func appendSourcePatternDiagnostics(source: String, locations: SourceLocationMap, messages: inout [ValidationMessage]) {
+        func append(_ message: String, pattern: String) {
+            if let range = source.range(of: pattern, options: [.caseInsensitive]) {
+                appendError(message, offset: locations.offset(of: range.lowerBound), length: pattern.utf16.count, locations: locations, messages: &messages)
+            }
+        }
+
+        append("Misplaced non-space characters inside a table.", pattern: "<table>text</table>")
+        append("Non-space character after body.", pattern: "</body>text")
+        append("Non-space character inside \u{201c}noscript\u{201d} inside \u{201c}head\u{201d}.", pattern: "<head><noscript>text</noscript></head>")
+        append("The \u{201c}frameset\u{201d} element is obsolete. Use the \u{201c}iframe\u{201d} element and CSS instead, or use server-side includes.", pattern: "</frameset>\ntext")
+    }
+
     private func decodeEntities(_ value: String) -> String {
         value
             .replacingOccurrences(of: "&quot;", with: "\"")
@@ -238,6 +298,10 @@ enum HTMLVocabulary {
         "main", "menu", "nav", "ol", "p", "pre", "section", "table", "ul"
     ]
 
+    static let headingElements: Set<String> = [
+        "h1", "h2", "h3", "h4", "h5", "h6"
+    ]
+
     static let elements: Set<String> = [
         "a", "abbr", "address", "area", "article", "aside", "audio", "b",
         "base", "bdi", "bdo", "blockquote", "body", "br", "button", "canvas",
@@ -256,4 +320,3 @@ enum HTMLVocabulary {
         "u", "ul", "var", "video", "wbr"
     ]
 }
-
