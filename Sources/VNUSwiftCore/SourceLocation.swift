@@ -55,8 +55,8 @@ public final class SourceLocationMap: @unchecked Sendable {
         let boundedOffset = max(0, min(offset, source.utf16.count))
         let startOffset = max(0, boundedOffset - context / 2)
         let endOffset = min(source.utf16.count, boundedOffset + max(length, 1) + context / 2)
-        let start = stringIndex(atUTF16Offset: startOffset)
-        let end = stringIndex(atUTF16Offset: endOffset)
+        let start = stringIndex(atUTF16Offset: startOffset, bias: .backward)
+        let end = stringIndex(atUTF16Offset: endOffset, bias: .forward)
         let text = String(source[start..<end])
         return SourceExtract(
             text: text,
@@ -83,15 +83,38 @@ public final class SourceLocationMap: @unchecked Sendable {
         return (lineIndex + 1, column)
     }
 
-    private func stringIndex(atUTF16Offset offset: Int) -> String.Index {
-        guard let index = String.Index(stringUTF16Index(at: offset), within: source) else {
+    private enum BoundaryBias {
+        case backward
+        case forward
+    }
+
+    private func stringIndex(atUTF16Offset offset: Int, bias: BoundaryBias) -> String.Index {
+        var utf16Index = stringUTF16Index(at: offset)
+        if let index = String.Index(utf16Index, within: source) {
+            return index
+        }
+
+        switch bias {
+        case .backward:
+            while utf16Index > source.utf16.startIndex {
+                source.utf16.formIndex(before: &utf16Index)
+                if let index = String.Index(utf16Index, within: source) {
+                    return index
+                }
+            }
+            return source.startIndex
+        case .forward:
+            while utf16Index < source.utf16.endIndex {
+                source.utf16.formIndex(after: &utf16Index)
+                if let index = String.Index(utf16Index, within: source) {
+                    return index
+                }
+            }
             return source.endIndex
         }
-        return index
     }
 
     private func stringUTF16Index(at offset: Int) -> String.UTF16View.Index {
         source.utf16.index(source.utf16.startIndex, offsetBy: max(0, min(offset, source.utf16.count)))
     }
 }
-

@@ -50,3 +50,8 @@ import Testing
     #expect(text.contains("error:"))
 }
 
+@Test func sourceExtractRoundsUnicodeContextToCharacterBoundaries() {
+    let locations = SourceLocationMap("Cafe\u{0301} test")
+    let extract = locations.extract(offset: 4, length: 1, context: 2)
+    #expect(extract.text.contains("e\u{0301}"))
+}
