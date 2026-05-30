@@ -37,3 +37,18 @@ run-validator.sh
 /playwright/.cache/
 /playwright/.auth/
 .worktrees/
+.build/
+.DS_Store
+xcuserdata/
+*.xcuserstate
+
+.DS_Store
+compile_commands.json*
+.cache/
+xcuserdata/
+# Keep Xcode shared chatter hidden, but allow branch-critical shared metadata.
+**/xcshareddata/*
+default.profraw
+WorkspaceSettings.xcsettings
+.pls_cache/
+project.xcworkspace/
