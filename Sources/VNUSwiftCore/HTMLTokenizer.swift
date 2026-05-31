@@ -1,15 +1,17 @@
 import Foundation
 
-struct HTMLAttribute: Equatable {
+struct HTMLAttribute: Equatable, Sendable {
     var name: String
     var value: String?
     var offset: Int
 }
 
-enum HTMLToken: Equatable {
+enum HTMLToken: Equatable, Sendable {
     case startTag(name: String, attributes: [HTMLAttribute], selfClosing: Bool, offset: Int, length: Int)
     case endTag(name: String, offset: Int, length: Int)
     case doctype(offset: Int, length: Int)
+    case text(content: String, offset: Int, length: Int)
+    case comment(content: String, offset: Int, length: Int)
     case bogusMarkup(offset: Int, length: Int)
     case parseError(message: String, offset: Int, length: Int)
 }
@@ -28,7 +30,11 @@ final class HTMLTokenizer {
         var index = source.startIndex
         while index < source.endIndex {
             guard source[index] == "<" else {
-                source.formIndex(after: &index)
+                let textStart = index
+                while index < source.endIndex, source[index] != "<" {
+                    source.formIndex(after: &index)
+                }
+                appendText(from: textStart, to: index, to: &tokens)
                 continue
             }
             let start = index
@@ -44,9 +50,11 @@ final class HTMLTokenizer {
                             to: &tokens
                         )
                     }
+                    appendComment(from: commentStart, to: endRange.lowerBound, to: &tokens)
                     index = endRange.upperBound
                 } else {
                     appendError("End of file inside comment.", at: start, length: source.utf16.distance(from: start.samePosition(in: source.utf16) ?? source.utf16.startIndex, to: source.utf16.endIndex), to: &tokens)
+                    appendComment(from: commentStart, to: source.endIndex, to: &tokens)
                     index = source.endIndex
                 }
                 continue
@@ -271,6 +279,17 @@ final class HTMLTokenizer {
             source.formIndex(after: &index)
         }
         return String(source[valueStart..<index])
+    }
+
+    private func appendText(from start: String.Index, to end: String.Index, to tokens: inout [HTMLToken]) {
+        guard start < end else { return }
+        let offset = locations.offset(of: start)
+        tokens.append(.text(content: String(source[start..<end]), offset: offset, length: max(1, locations.offset(of: end) - offset)))
+    }
+
+    private func appendComment(from start: String.Index, to end: String.Index, to tokens: inout [HTMLToken]) {
+        let offset = locations.offset(of: start)
+        tokens.append(.comment(content: String(source[start..<end]), offset: offset, length: max(1, locations.offset(of: end) - offset)))
     }
 
     private func skipWhitespace(from index: inout String.Index) {

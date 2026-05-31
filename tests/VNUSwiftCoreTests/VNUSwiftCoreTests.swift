@@ -66,6 +66,44 @@ import Testing
     #expect(result.messages.contains { $0.message == "Character reference expands to an astral non-character (U+10ffff)." })
 }
 
+@Test func htmlDocumentParserEmitsBalancedTreeEvents() {
+    let source = "<!doctype html><ul><li>one<li>two</ul><br><p>x<div>y</div>"
+    let locations = SourceLocationMap(source)
+    let document = HTMLDocumentParser(source: source, locations: locations).parse()
+    var stack: [String] = []
+    var sawImplicitListItemClose = false
+    var sawVoidElementClose = false
+
+    for event in document.events {
+        switch event {
+        case let .startElement(element):
+            stack.append(element.name)
+        case let .endElement(name, _, implicit):
+            if name == "li", implicit {
+                sawImplicitListItemClose = true
+            }
+            if name == "br", implicit {
+                sawVoidElementClose = true
+            }
+            if let index = stack.lastIndex(of: name) {
+                stack.removeSubrange(index...)
+            }
+        default:
+            continue
+        }
+    }
+
+    #expect(stack.isEmpty)
+    #expect(sawImplicitListItemClose)
+    #expect(sawVoidElementClose)
+}
+
+@Test func requiredAttributeCheckerConsumesParserEvents() {
+    let result = checkHTML("<!doctype html><html lang=en><meta charset=utf-8><title>T</title><picture><source><img src=x alt></picture><a download>file</a>")
+    #expect(result.messages.contains { $0.message == "Element \u{201c}source\u{201d} is missing required attribute \u{201c}srcset\u{201d}." })
+    #expect(result.messages.contains { $0.message == "Element \u{201c}a\u{201d} is missing required attribute \u{201c}href\u{201d}." })
+}
+
 private func checkHTML(_ source: String) -> ValidationResult {
     NuValidator().check(
         input: DocumentInput(data: Data(source.utf8), contentType: "text/html; charset=utf-8"),

@@ -10,7 +10,8 @@ public final class HTMLValidator: Sendable {
 
     public func validate(source: String) -> [ValidationMessage] {
         let locations = SourceLocationMap(source)
-        let tokens = HTMLTokenizer(source: source, locations: locations).tokenize()
+        let document = HTMLDocumentParser(source: source, locations: locations).parse()
+        let tokens = document.tokens
         var messages: [ValidationMessage] = []
         var sawDoctype = false
         var sawStartTag = false
@@ -33,6 +34,8 @@ public final class HTMLValidator: Sendable {
                 appendError("Saw \u{201c}<\u{201d}. Probable cause: Unescaped \u{201c}<\u{201d}.", offset: offset, length: length, locations: locations, messages: &messages)
             case let .parseError(message, offset, length):
                 appendError(message, offset: offset, length: length, locations: locations, messages: &messages)
+            case .text, .comment:
+                continue
             case let .startTag(name, attributes, selfClosing, offset, length):
                 if sawClosedBody, name != "html" {
                     appendError("Stray start tag \u{201c}\(name)\u{201d}.", offset: offset, length: length, locations: locations, messages: &messages)
@@ -75,6 +78,8 @@ public final class HTMLValidator: Sendable {
                 }
             }
         }
+
+        messages.append(contentsOf: HTMLRequiredAttributeChecker().validate(document: document, locations: locations))
 
         if sawStartTag, !sawHTMLLang {
             if let htmlToken = tokens.firstHTMLStart {
