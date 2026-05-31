@@ -80,6 +80,9 @@ public final class HTMLValidator: Sendable {
         }
 
         messages.append(contentsOf: HTMLRequiredAttributeChecker().validate(document: document, locations: locations))
+        messages.append(contentsOf: HTMLURLAttributeChecker().validate(document: document, locations: locations))
+        messages.append(contentsOf: HTMLMicrodataAttributeChecker().validate(document: document, locations: locations))
+        messages.append(contentsOf: HTMLGeneralAttributeChecker().validate(document: document, locations: locations))
 
         if sawStartTag, !sawHTMLLang {
             if let htmlToken = tokens.firstHTMLStart {

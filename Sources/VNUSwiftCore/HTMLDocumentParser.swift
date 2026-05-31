@@ -189,6 +189,10 @@ struct HTMLRequiredAttributeChecker {
             if !element.hasAttribute("data") {
                 appendMissingAttribute("data", for: element, locations: locations, messages: &messages)
             }
+        case "link":
+            if !element.hasAttribute("href"), !element.hasAttribute("imagesrcset") {
+                appendLinkURLMissingMessage(for: element, locations: locations, messages: &messages)
+            }
         case "source":
             if parent == "picture", !element.hasAttribute("srcset") {
                 appendMissingAttribute("srcset", for: element, locations: locations, messages: &messages)
@@ -223,6 +227,18 @@ struct HTMLRequiredAttributeChecker {
     ) {
         messages.append(.error(
             "Element \u{201c}\(element.name)\u{201d} is missing required attribute \u{201c}\(attribute)\u{201d}.",
+            location: locations.location(offset: element.range.offset, length: element.range.length),
+            extract: locations.extract(offset: element.range.offset, length: element.range.length)
+        ))
+    }
+
+    private func appendLinkURLMissingMessage(
+        for element: HTMLStartElement,
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) {
+        messages.append(.error(
+            "A \u{201c}link\u{201d} element must have an \u{201c}href\u{201d} or \u{201c}imagesrcset\u{201d} attribute, or both.",
             location: locations.location(offset: element.range.offset, length: element.range.length),
             extract: locations.extract(offset: element.range.offset, length: element.range.length)
         ))
