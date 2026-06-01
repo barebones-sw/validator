@@ -191,6 +191,36 @@ import Testing
     #expect(result.messages.contains { $0.message == "The \u{201c}keygen\u{201d} element is obsolete." })
 }
 
+@Test func metaCheckerCoversDocumentAndContentRules() {
+    let result = checkHTML("""
+        <!doctype html><html lang=en><meta charset=iso-8859-1 content="text/html">
+        <meta http-equiv="content-type" content="text/html; charset=utf-8">
+        <title>T</title>
+        <meta name=description itemprop=description content="one">
+        <meta name=description media="screen" content="two">
+        <meta http-equiv=refresh content="5;url=http://example.com">
+        <meta http-equiv=X-UA-Compatible content="IE=10">
+        <meta http-equiv=content-language content=en>
+        <meta name=viewport content="width=device-width, user-scalable=no">
+        <meta http-equiv=Content-Security-Policy content="default-src 'self'; invalid-directive 'none'">
+        <meta http-equiv=Content-Security-Policy content="default-src 'invalid-keyword'">
+        <meta http-equiv=Content-Security-Policy content="img-src https://\u{4f8b}\u{3048}.com">
+        """)
+    #expect(result.messages.contains { $0.message == "Attribute \u{201c}content\u{201d} not allowed on element \u{201c}meta\u{201d} at this point." })
+    #expect(result.messages.contains { $0.message == "Internal encoding declaration \u{201c}iso-8859-1\u{201d} disagrees with the actual encoding of the document (\u{201c}utf-8\u{201d})." })
+    #expect(result.messages.contains { $0.message == "A document must not include both a \u{201c}meta\u{201d} element with an \u{201c}http-equiv\u{201d} attribute whose value is \u{201c}content-type\u{201d}, and a \u{201c}meta\u{201d} element with a \u{201c}charset\u{201d} attribute." })
+    #expect(result.messages.contains { $0.message == "Attribute \u{201c}itemprop\u{201d} not allowed on element \u{201c}meta\u{201d} at this point." })
+    #expect(result.messages.contains { $0.message == "A document must not include more than one \u{201c}meta\u{201d} element with its \u{201c}name\u{201d} attribute set to the value \u{201c}description\u{201d}." })
+    #expect(result.messages.contains { $0.message == "A \u{201c}meta\u{201d} element with a \u{201c}media\u{201d} attribute must have a \u{201c}name\u{201d} attribute whose value is \u{201c}theme-color\u{201d}." })
+    #expect(result.messages.contains { $0.message == "Bad value \u{201c}5;url=http://example.com\u{201d} for attribute \u{201c}content\u{201d} on element \u{201c}meta\u{201d}." })
+    #expect(result.messages.contains { $0.message == "A \u{201c}meta\u{201d} element with an \u{201c}http-equiv\u{201d} attribute whose value is \u{201c}X-UA-Compatible\u{201d} must have a \u{201c}content\u{201d} attribute with the value \u{201c}IE=edge\u{201d}." })
+    #expect(result.messages.contains { $0.message == "Using the \u{201c}meta\u{201d} element to specify the document-wide default language is obsolete. Consider specifying the language on the root element instead." })
+    #expect(result.messages.contains { $0.message == "Consider avoiding viewport values that prevent users from resizing documents." && $0.subType == "warning" })
+    #expect(result.messages.contains { $0.message == "Bad value \u{201c}default-src 'self'; invalid-directive 'none'\u{201d} for attribute \u{201c}content\u{201d} on element \u{201c}meta\u{201d}." && $0.subType == "warning" })
+    #expect(result.messages.contains { $0.message == "Bad value \u{201c}default-src 'invalid-keyword'\u{201d} for attribute \u{201c}content\u{201d} on element \u{201c}meta\u{201d}." })
+    #expect(result.messages.contains { $0.message == "Bad value \u{201c}img-src https://\u{4f8b}\u{3048}.com\u{201d} for attribute \u{201c}content\u{201d} on element \u{201c}meta\u{201d}." })
+}
+
 @Test func generalAttributeCheckerCoversInputTypeRules() {
     let result = checkHTML("<!doctype html><html lang=en><meta charset=utf-8><title>T</title><input autocomplete=\"country shipping\"><input type=hidden autocomplete=on aria-label=x required><input type=button value=\"\"><input type=color value=red pattern=x><input type=number value=abc multiple><input type=checkbox role=button><input type=text list=missing form=notform><div id=notform></div><button commandfor=missing command=show-popover>Open</button>")
     #expect(result.messages.contains { $0.message == "Bad value \u{201c}country shipping\u{201d} for attribute \u{201c}autocomplete\u{201d} on element \u{201c}input\u{201d}." })

@@ -90,6 +90,7 @@ public final class HTMLValidator: Sendable {
         messages.append(contentsOf: HTMLRequiredAttributeChecker().validate(document: document, locations: locations))
         messages.append(contentsOf: HTMLURLAttributeChecker().validate(document: document, locations: locations))
         messages.append(contentsOf: HTMLMicrodataAttributeChecker().validate(document: document, locations: locations))
+        messages.append(contentsOf: HTMLMetaChecker().validate(document: document, locations: locations))
         messages.append(contentsOf: HTMLDefinitionListChecker().validate(document: document, locations: locations))
         messages.append(contentsOf: HTMLGeneralAttributeChecker().validate(document: document, locations: locations))
 
@@ -311,6 +312,190 @@ private extension Array where Element == HTMLToken {
         }
         return nil
     }
+}
+
+struct HTMLMetaChecker {
+    private struct CSPIssue {
+        var warning: Bool
+    }
+
+    func validate(document: HTMLParsedDocument, locations: SourceLocationMap) -> [ValidationMessage] {
+        let elements = metaElements(in: document)
+        var messages: [ValidationMessage] = []
+        var sawCharset = false
+        var sawContentType = false
+        var sawDescription = false
+
+        for element in elements {
+            let charset = normalizedValue(element.attributeValue("charset"))
+            let name = normalizedValue(element.attributeValue("name"))
+            let httpEquiv = normalizedValue(element.attributeValue("http-equiv"))
+            let content = element.attributeValue("content") ?? ""
+
+            if let charset {
+                sawCharset = true
+                if element.hasAttribute("content") {
+                    appendError("Attribute \u{201c}content\u{201d} not allowed on element \u{201c}meta\u{201d} at this point.", for: element, locations: locations, messages: &messages)
+                }
+                if charset != "utf-8" {
+                    appendError("Internal encoding declaration \u{201c}\(element.attributeValue("charset") ?? "")\u{201d} disagrees with the actual encoding of the document (\u{201c}utf-8\u{201d}).", for: element, locations: locations, messages: &messages)
+                }
+            }
+
+            if httpEquiv == "content-type" {
+                sawContentType = true
+            }
+            if sawCharset, sawContentType {
+                appendError("A document must not include both a \u{201c}meta\u{201d} element with an \u{201c}http-equiv\u{201d} attribute whose value is \u{201c}content-type\u{201d}, and a \u{201c}meta\u{201d} element with a \u{201c}charset\u{201d} attribute.", for: element, locations: locations, messages: &messages)
+                sawContentType = false
+            }
+
+            if name == "description" {
+                if sawDescription {
+                    appendError("A document must not include more than one \u{201c}meta\u{201d} element with its \u{201c}name\u{201d} attribute set to the value \u{201c}description\u{201d}.", for: element, locations: locations, messages: &messages)
+                }
+                sawDescription = true
+            }
+
+            if element.hasAttribute("itemprop"), element.hasAttribute("name") {
+                appendError("Attribute \u{201c}itemprop\u{201d} not allowed on element \u{201c}meta\u{201d} at this point.", for: element, locations: locations, messages: &messages)
+            }
+            if element.hasAttribute("media"), name != "theme-color" {
+                appendError("A \u{201c}meta\u{201d} element with a \u{201c}media\u{201d} attribute must have a \u{201c}name\u{201d} attribute whose value is \u{201c}theme-color\u{201d}.", for: element, locations: locations, messages: &messages)
+            }
+
+            appendHTTPEquivMessages(httpEquiv: httpEquiv, content: content, element: element, locations: locations, messages: &messages)
+            appendViewportMessages(name: name, content: content, element: element, locations: locations, messages: &messages)
+        }
+
+        return messages
+    }
+
+    private func metaElements(in document: HTMLParsedDocument) -> [HTMLStartElement] {
+        document.events.compactMap { event in
+            guard case let .startElement(element) = event, element.name == "meta" else {
+                return nil
+            }
+            return element
+        }
+    }
+
+    private func appendHTTPEquivMessages(
+        httpEquiv: String?,
+        content: String,
+        element: HTMLStartElement,
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) {
+        switch httpEquiv {
+        case "content-language":
+            appendError("Using the \u{201c}meta\u{201d} element to specify the document-wide default language is obsolete. Consider specifying the language on the root element instead.", for: element, locations: locations, messages: &messages)
+        case "refresh":
+            if !isValidRefresh(content) {
+                appendError("Bad value \u{201c}\(content)\u{201d} for attribute \u{201c}content\u{201d} on element \u{201c}meta\u{201d}.", for: element, locations: locations, messages: &messages)
+            }
+        case "x-ua-compatible":
+            if content.lowercased() != "ie=edge" {
+                appendError("A \u{201c}meta\u{201d} element with an \u{201c}http-equiv\u{201d} attribute whose value is \u{201c}X-UA-Compatible\u{201d} must have a \u{201c}content\u{201d} attribute with the value \u{201c}IE=edge\u{201d}.", for: element, locations: locations, messages: &messages)
+            }
+        case "content-security-policy":
+            if let issue = cspIssue(in: content) {
+                let message = "Bad value \u{201c}\(content)\u{201d} for attribute \u{201c}content\u{201d} on element \u{201c}meta\u{201d}."
+                if issue.warning {
+                    appendWarning(message, for: element, locations: locations, messages: &messages)
+                } else {
+                    appendError(message, for: element, locations: locations, messages: &messages)
+                }
+            }
+        default:
+            break
+        }
+    }
+
+    private func appendViewportMessages(
+        name: String?,
+        content: String,
+        element: HTMLStartElement,
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) {
+        guard name == "viewport" else { return }
+        let components = content.split(separator: ",").map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+        if components.contains(where: { $0.replacingOccurrences(of: " ", with: "") == "user-scalable=no" }) {
+            appendWarning("Consider avoiding viewport values that prevent users from resizing documents.", for: element, locations: locations, messages: &messages)
+        }
+    }
+
+    private func isValidRefresh(_ value: String) -> Bool {
+        let pattern = #"^\s*[0-9]+(?:\.[0-9]+)?\s*(?:;\s+url=[^'"\s].*)?\s*$"#
+        return value.range(of: pattern, options: [.regularExpression, .caseInsensitive]) != nil
+    }
+
+    private func cspIssue(in value: String) -> CSPIssue? {
+        if value.unicodeScalars.contains(where: { $0.value > 127 }) {
+            return CSPIssue(warning: false)
+        }
+        for policy in value.split(separator: ",", omittingEmptySubsequences: false) {
+            for rawDirective in policy.split(separator: ";", omittingEmptySubsequences: false) {
+                let parts = rawDirective.split(whereSeparator: { $0.isWhitespace }).map(String.init)
+                guard let directive = parts.first?.lowercased(), !directive.isEmpty else {
+                    continue
+                }
+                if !Self.cspDirectives.contains(directive) {
+                    return CSPIssue(warning: true)
+                }
+                for source in parts.dropFirst() where isInvalidQuotedCSPSource(source) {
+                    return CSPIssue(warning: false)
+                }
+            }
+        }
+        return nil
+    }
+
+    private func isInvalidQuotedCSPSource(_ source: String) -> Bool {
+        guard source.hasPrefix("'"), source.hasSuffix("'") else {
+            return false
+        }
+        let inner = String(source.dropFirst().dropLast()).lowercased()
+        return !Self.cspQuotedSources.contains(inner)
+            && !inner.hasPrefix("nonce-")
+            && !inner.hasPrefix("sha256-")
+            && !inner.hasPrefix("sha384-")
+            && !inner.hasPrefix("sha512-")
+    }
+
+    private func normalizedValue(_ value: String?) -> String? {
+        value?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased().replacingOccurrences(of: "_", with: "-")
+    }
+
+    private func appendError(_ message: String, for element: HTMLStartElement, locations: SourceLocationMap, messages: inout [ValidationMessage]) {
+        messages.append(.error(
+            message,
+            location: locations.location(offset: element.range.offset, length: element.range.length),
+            extract: locations.extract(offset: element.range.offset, length: element.range.length)
+        ))
+    }
+
+    private func appendWarning(_ message: String, for element: HTMLStartElement, locations: SourceLocationMap, messages: inout [ValidationMessage]) {
+        messages.append(.warning(
+            message,
+            location: locations.location(offset: element.range.offset, length: element.range.length),
+            extract: locations.extract(offset: element.range.offset, length: element.range.length)
+        ))
+    }
+
+    private static let cspDirectives: Set<String> = [
+        "base-uri", "block-all-mixed-content", "child-src", "connect-src", "default-src",
+        "font-src", "form-action", "frame-ancestors", "frame-src", "img-src", "manifest-src",
+        "media-src", "object-src", "prefetch-src", "require-trusted-types-for", "sandbox",
+        "script-src", "script-src-attr", "script-src-elem", "style-src", "style-src-attr",
+        "style-src-elem", "trusted-types", "upgrade-insecure-requests", "worker-src"
+    ]
+
+    private static let cspQuotedSources: Set<String> = [
+        "allow-duplicates", "none", "report-sample", "script", "self", "strict-dynamic",
+        "unsafe-eval", "unsafe-hashes", "unsafe-inline", "wasm-unsafe-eval"
+    ]
 }
 
 struct HTMLDefinitionListChecker {
