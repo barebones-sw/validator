@@ -6,14 +6,30 @@ public final class XMLValidator: NSObject, XMLParserDelegate, @unchecked Sendabl
         var location: SourceLocation
     }
 
+    private struct DefinitionListContext {
+        var termNames: Set<String> = []
+    }
+
+    private struct DTCapture {
+        var dlIndex: Int
+        var text = ""
+        var location: SourceLocation
+    }
+
     private var messages: [ValidationMessage] = []
     private var idElementNames: [String: String] = [:]
     private var pendingInputListReferences: [PendingInputListReference] = []
+    private var elementStack: [String] = []
+    private var definitionListContexts: [DefinitionListContext] = []
+    private var dtCaptures: [DTCapture] = []
 
     public func validate(data: Data, source: String) -> [ValidationMessage] {
         messages = []
         idElementNames = [:]
         pendingInputListReferences = []
+        elementStack = []
+        definitionListContexts = []
+        dtCaptures = []
         let parser = XMLParser(data: data)
         parser.delegate = self
         parser.shouldProcessNamespaces = true
@@ -72,6 +88,40 @@ public final class XMLValidator: NSObject, XMLParserDelegate, @unchecked Sendabl
         if name == "input", let list = attributeDict["list"] {
             pendingInputListReferences.append(PendingInputListReference(value: list, location: location))
         }
+        if name == "dl" {
+            definitionListContexts.append(DefinitionListContext())
+        } else if name == "dt", let dlIndex = definitionListContexts.indices.last {
+            dtCaptures.append(DTCapture(dlIndex: dlIndex, location: location))
+        }
+        elementStack.append(name)
+    }
+
+    public func parser(
+        _ parser: XMLParser,
+        didEndElement elementName: String,
+        namespaceURI: String?,
+        qualifiedName qName: String?
+    ) {
+        let name = elementName.lowercased()
+        guard isXHTMLElement(namespaceURI) else {
+            return
+        }
+
+        if name == "dt", let capture = dtCaptures.popLast() {
+            finishDTCapture(capture)
+        }
+        if name == "dl", !definitionListContexts.isEmpty {
+            _ = definitionListContexts.popLast()
+        }
+        if let index = elementStack.lastIndex(of: name) {
+            elementStack.removeSubrange(index...)
+        }
+    }
+
+    public func parser(_ parser: XMLParser, foundCharacters string: String) {
+        for index in dtCaptures.indices {
+            dtCaptures[index].text += string
+        }
     }
 
     public func parserDidEndDocument(_ parser: XMLParser) {
@@ -81,6 +131,25 @@ public final class XMLValidator: NSObject, XMLParserDelegate, @unchecked Sendabl
                 location: reference.location
             ))
         }
+    }
+
+    private func finishDTCapture(_ capture: DTCapture) {
+        let name = normalizedText(capture.text)
+        guard !name.isEmpty,
+              definitionListContexts.indices.contains(capture.dlIndex) else {
+            return
+        }
+        if definitionListContexts[capture.dlIndex].termNames.contains(name) {
+            messages.append(.warning(
+                "Duplicate \u{201c}dt\u{201d} name \u{201c}\(name)\u{201d} in \u{201c}dl\u{201d} element. Within a single \u{201c}dl\u{201d} element, there should not be more than one \u{201c}dt\u{201d} element for each name.",
+                location: capture.location
+            ))
+        }
+        definitionListContexts[capture.dlIndex].termNames.insert(name)
+    }
+
+    private func normalizedText(_ text: String) -> String {
+        text.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
     }
 
     private func isXHTMLElement(_ namespaceURI: String?) -> Bool {

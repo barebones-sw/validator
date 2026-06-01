@@ -173,6 +173,19 @@ import Testing
     #expect(result.messages.contains { $0.message == "Element \u{201c}img\u{201d} is missing one or more of the following attributes: \u{201c}src\u{201d}, \u{201c}srcset\u{201d}." })
 }
 
+@Test func definitionListCheckerCoversStructureAndDuplicateTerms() {
+    let result = checkHTML("<!doctype html><html lang=en><meta charset=utf-8><title>T</title><dl>x<dl></dl><dd>first</dd><dt>Term</dt><dd>one</dd><dt>Term</dt><dd>two</dd><dt><h2>Heading</h2><dd>heading</dd><div><span>bad</span></div></dl><dl><div><dt>Only</dt></div><div><dd>definition</dd></div><div><dt>A</dt><dd>B</dd><dt>C</dt></div></dl>")
+    #expect(result.messages.contains { $0.message == "Text not allowed in \u{201c}dl\u{201d} in this context." })
+    #expect(result.messages.contains { $0.message == "Element \u{201c}dl\u{201d} not allowed as child of \u{201c}dl\u{201d} in this context." })
+    #expect(result.messages.contains { $0.message == "Element \u{201c}dl\u{201d} is missing a required child element." })
+    #expect(result.messages.contains { $0.message == "Duplicate \u{201c}dt\u{201d} name \u{201c}Term\u{201d} in \u{201c}dl\u{201d} element. Within a single \u{201c}dl\u{201d} element, there should not be more than one \u{201c}dt\u{201d} element for each name." && $0.subType == "warning" })
+    #expect(result.messages.contains { $0.message == "The element \u{201c}h2\u{201d} must not appear as a descendant of the \u{201c}dt\u{201d} element." })
+    #expect(result.messages.contains { $0.message == "Element \u{201c}span\u{201d} not allowed as child of \u{201c}div\u{201d} in this context." })
+    #expect(result.messages.contains { $0.message == "Element \u{201c}div\u{201d} is missing a required instance of child element \u{201c}dd\u{201d}." })
+    #expect(result.messages.contains { $0.message == "Element \u{201c}div\u{201d} is missing a required instance of child element \u{201c}dt\u{201d}." })
+    #expect(result.messages.contains { $0.message == "Element \u{201c}dt\u{201d} not allowed as child of \u{201c}div\u{201d} in this context." })
+}
+
 @Test func generalAttributeCheckerCoversInputTypeRules() {
     let result = checkHTML("<!doctype html><html lang=en><meta charset=utf-8><title>T</title><input autocomplete=\"country shipping\"><input type=hidden autocomplete=on aria-label=x required><input type=button value=\"\"><input type=color value=red pattern=x><input type=number value=abc multiple><input type=checkbox role=button><input type=text list=missing form=notform><div id=notform></div><button commandfor=missing command=show-popover>Open</button>")
     #expect(result.messages.contains { $0.message == "Bad value \u{201c}country shipping\u{201d} for attribute \u{201c}autocomplete\u{201d} on element \u{201c}input\u{201d}." })
@@ -262,6 +275,14 @@ import Testing
         options: CheckerOptions(parameters: ["out": ["json"]])
     )
     #expect(result.messages.contains { $0.message == "The \u{201c}list\u{201d} attribute of the \u{201c}input\u{201d} element must refer to a \u{201c}datalist\u{201d} element." })
+}
+
+@Test func xmlValidatorCoversXHTMLDuplicateDefinitionTerms() {
+    let result = NuValidator().check(
+        input: DocumentInput(data: Data("<html xmlns=\"http://www.w3.org/1999/xhtml\"><head><title>T</title></head><body><dl><dt>text</dt><dd>one</dd><dt> text </dt><dd>two</dd></dl></body></html>".utf8), contentType: "application/xhtml+xml; charset=utf-8"),
+        options: CheckerOptions(parameters: ["out": ["json"]])
+    )
+    #expect(result.messages.contains { $0.message == "Duplicate \u{201c}dt\u{201d} name \u{201c}text\u{201d} in \u{201c}dl\u{201d} element. Within a single \u{201c}dl\u{201d} element, there should not be more than one \u{201c}dt\u{201d} element for each name." && $0.subType == "warning" })
 }
 
 private func checkHTML(_ source: String) -> ValidationResult {

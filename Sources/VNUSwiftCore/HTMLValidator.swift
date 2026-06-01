@@ -66,7 +66,11 @@ public final class HTMLValidator: Sendable {
                     continue
                 }
                 guard let match = stack.lastIndex(where: { $0.name == name }) else {
-                    appendError("Stray end tag \u{201c}\(name)\u{201d}.", offset: offset, length: length, locations: locations, messages: &messages)
+                    if name == "p" {
+                        appendError("No \u{201c}p\u{201d} element in scope but a \u{201c}p\u{201d} end tag seen.", offset: offset, length: length, locations: locations, messages: &messages)
+                    } else {
+                        appendError("Stray end tag \u{201c}\(name)\u{201d}.", offset: offset, length: length, locations: locations, messages: &messages)
+                    }
                     continue
                 }
                 if match != stack.index(before: stack.endIndex) {
@@ -86,6 +90,7 @@ public final class HTMLValidator: Sendable {
         messages.append(contentsOf: HTMLRequiredAttributeChecker().validate(document: document, locations: locations))
         messages.append(contentsOf: HTMLURLAttributeChecker().validate(document: document, locations: locations))
         messages.append(contentsOf: HTMLMicrodataAttributeChecker().validate(document: document, locations: locations))
+        messages.append(contentsOf: HTMLDefinitionListChecker().validate(document: document, locations: locations))
         messages.append(contentsOf: HTMLGeneralAttributeChecker().validate(document: document, locations: locations))
 
         if sawStartTag, !sawHTMLLang {
@@ -304,6 +309,339 @@ private extension Array where Element == HTMLToken {
         }
         return nil
     }
+}
+
+struct HTMLDefinitionListChecker {
+    private enum DLMode {
+        case undecided
+        case directGroups
+        case divGroups
+    }
+
+    private enum GroupState {
+        case expectingTerm
+        case readingTerms
+        case readingDefinitions
+    }
+
+    private struct DLContext {
+        var element: HTMLStartElement
+        var depth: Int
+        var mode: DLMode = .undecided
+        var state: GroupState = .expectingTerm
+        var termNames: Set<String> = []
+        var sawTemplateWhileReadingTerms = false
+    }
+
+    private struct DivContext {
+        var element: HTMLStartElement
+        var depth: Int
+        var state: GroupState = .expectingTerm
+        var sawChild = false
+    }
+
+    private struct DTCapture {
+        var element: HTMLStartElement
+        var dlDepth: Int
+        var text = ""
+    }
+
+    func validate(document: HTMLParsedDocument, locations: SourceLocationMap) -> [ValidationMessage] {
+        var messages: [ValidationMessage] = []
+        var stack: [String] = []
+        var dlContexts: [DLContext] = []
+        var divContexts: [DivContext] = []
+        var dtCaptures: [DTCapture] = []
+
+        for event in document.events {
+            switch event {
+            case let .startElement(element):
+                appendDTDescendantMessage(for: element, stack: stack, locations: locations, messages: &messages)
+                processStartElement(
+                    element,
+                    stack: stack,
+                    locations: locations,
+                    dlContexts: &dlContexts,
+                    divContexts: &divContexts,
+                    dtCaptures: &dtCaptures,
+                    messages: &messages
+                )
+                stack.append(element.name)
+            case let .characters(content, range):
+                for index in dtCaptures.indices {
+                    dtCaptures[index].text += content
+                }
+                guard content.contains(where: { !$0.isWhitespace }) else {
+                    continue
+                }
+                if stack.last == "dl" {
+                    messages.append(.error(
+                        "Text not allowed in \u{201c}dl\u{201d} in this context.",
+                        location: locations.location(offset: range.offset, length: range.length),
+                        extract: locations.extract(offset: range.offset, length: range.length)
+                    ))
+                } else if isInsideDirectDLDiv(stack: stack, divContexts: divContexts) {
+                    messages.append(.error(
+                        "Text not allowed in \u{201c}div\u{201d} in this context.",
+                        location: locations.location(offset: range.offset, length: range.length),
+                        extract: locations.extract(offset: range.offset, length: range.length)
+                    ))
+                }
+            case let .endElement(name, _, _):
+                if name == "dt", let capture = dtCaptures.popLast() {
+                    finishDTCapture(capture, dlContexts: &dlContexts, locations: locations, messages: &messages)
+                }
+                if name == "div", stack.count - 1 == divContexts.last?.depth, let context = divContexts.popLast() {
+                    appendMissingMessages(for: context, locations: locations, messages: &messages)
+                }
+                if name == "dl", stack.count - 1 == dlContexts.last?.depth, let context = dlContexts.popLast() {
+                    appendMissingMessages(for: context, locations: locations, messages: &messages)
+                }
+                if let index = stack.lastIndex(of: name) {
+                    stack.removeSubrange(index...)
+                }
+            default:
+                continue
+            }
+        }
+
+        return messages
+    }
+
+    private func processStartElement(
+        _ element: HTMLStartElement,
+        stack: [String],
+        locations: SourceLocationMap,
+        dlContexts: inout [DLContext],
+        divContexts: inout [DivContext],
+        dtCaptures: inout [DTCapture],
+        messages: inout [ValidationMessage]
+    ) {
+        if element.name == "dl" {
+            if stack.last == "dl" || isInsideDirectDLDiv(stack: stack, divContexts: divContexts) {
+                appendNotAllowed(element.name, parent: stack.last ?? "body", for: element, locations: locations, messages: &messages)
+            }
+            dlContexts.append(DLContext(element: element, depth: stack.count))
+            return
+        }
+
+        if isDirectDLChild(stack: stack, dlContexts: dlContexts) {
+            processDirectDLChild(element, locations: locations, dlContexts: &dlContexts, divContexts: &divContexts, dtCaptures: &dtCaptures, messages: &messages)
+            return
+        }
+
+        if isInsideDirectDLDiv(stack: stack, divContexts: divContexts) {
+            processDirectDLDivChild(element, locations: locations, divContexts: &divContexts, dlContexts: dlContexts, dtCaptures: &dtCaptures, messages: &messages)
+        }
+    }
+
+    private func processDirectDLChild(
+        _ element: HTMLStartElement,
+        locations: SourceLocationMap,
+        dlContexts: inout [DLContext],
+        divContexts: inout [DivContext],
+        dtCaptures: inout [DTCapture],
+        messages: inout [ValidationMessage]
+    ) {
+        guard let index = dlContexts.indices.last else { return }
+        switch element.name {
+        case "script":
+            return
+        case "template":
+            if dlContexts[index].state == .readingTerms {
+                dlContexts[index].sawTemplateWhileReadingTerms = true
+            }
+        case "div":
+            if dlContexts[index].mode == .directGroups {
+                appendNotAllowed("div", parent: "dl", for: element, locations: locations, messages: &messages)
+            } else {
+                dlContexts[index].mode = .divGroups
+            }
+            divContexts.append(DivContext(element: element, depth: dlContexts[index].depth + 1))
+        case "dt":
+            if dlContexts[index].mode == .divGroups {
+                appendNotAllowed("dt", parent: "dl", for: element, locations: locations, messages: &messages)
+                return
+            }
+            dlContexts[index].mode = .directGroups
+            dlContexts[index].state = .readingTerms
+            dlContexts[index].sawTemplateWhileReadingTerms = false
+            dtCaptures.append(DTCapture(element: element, dlDepth: dlContexts[index].depth))
+        case "dd":
+            if dlContexts[index].mode == .divGroups {
+                appendNotAllowed("dd", parent: "dl", for: element, locations: locations, messages: &messages)
+                return
+            }
+            dlContexts[index].mode = .directGroups
+            if dlContexts[index].state == .expectingTerm {
+                appendMissingDLTerm(for: dlContexts[index].element, locations: locations, messages: &messages)
+            }
+            dlContexts[index].state = .readingDefinitions
+        default:
+            appendNotAllowed(element.name, parent: "dl", for: element, locations: locations, messages: &messages)
+        }
+    }
+
+    private func processDirectDLDivChild(
+        _ element: HTMLStartElement,
+        locations: SourceLocationMap,
+        divContexts: inout [DivContext],
+        dlContexts: [DLContext],
+        dtCaptures: inout [DTCapture],
+        messages: inout [ValidationMessage]
+    ) {
+        guard let index = divContexts.indices.last else { return }
+        divContexts[index].sawChild = true
+        switch element.name {
+        case "script", "template":
+            return
+        case "dt":
+            if divContexts[index].state == .readingDefinitions {
+                appendNotAllowed("dt", parent: "div", for: element, locations: locations, messages: &messages)
+            } else {
+                divContexts[index].state = .readingTerms
+                if let dlDepth = dlContexts.last?.depth {
+                    dtCaptures.append(DTCapture(element: element, dlDepth: dlDepth))
+                }
+            }
+        case "dd":
+            if divContexts[index].state == .expectingTerm {
+                appendMissingDivTerm(for: divContexts[index].element, locations: locations, messages: &messages)
+            }
+            divContexts[index].state = .readingDefinitions
+        default:
+            appendNotAllowed(element.name, parent: "div", for: element, locations: locations, messages: &messages)
+        }
+    }
+
+    private func appendDTDescendantMessage(
+        for element: HTMLStartElement,
+        stack: [String],
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) {
+        guard let dtIndex = stack.lastIndex(of: "dt") else { return }
+        if HTMLVocabulary.headingElements.contains(element.name),
+           stack[stack.index(after: dtIndex)...].contains(where: { Self.dtSectioningElements.contains($0) }) {
+            return
+        }
+        guard Self.dtForbiddenDescendants.contains(element.name) else { return }
+        messages.append(.error(
+            "The element \u{201c}\(element.name)\u{201d} must not appear as a descendant of the \u{201c}dt\u{201d} element.",
+            location: locations.location(offset: element.range.offset, length: element.range.length),
+            extract: locations.extract(offset: element.range.offset, length: element.range.length)
+        ))
+    }
+
+    private func finishDTCapture(
+        _ capture: DTCapture,
+        dlContexts: inout [DLContext],
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) {
+        let name = normalizedText(capture.text)
+        guard !name.isEmpty,
+              let index = dlContexts.lastIndex(where: { $0.depth == capture.dlDepth }) else {
+            return
+        }
+        if dlContexts[index].termNames.contains(name) {
+            messages.append(.warning(
+                "Duplicate \u{201c}dt\u{201d} name \u{201c}\(name)\u{201d} in \u{201c}dl\u{201d} element. Within a single \u{201c}dl\u{201d} element, there should not be more than one \u{201c}dt\u{201d} element for each name.",
+                location: locations.location(offset: capture.element.range.offset, length: capture.element.range.length),
+                extract: locations.extract(offset: capture.element.range.offset, length: capture.element.range.length)
+            ))
+        }
+        dlContexts[index].termNames.insert(name)
+    }
+
+    private func appendMissingMessages(for context: DLContext, locations: SourceLocationMap, messages: inout [ValidationMessage]) {
+        if context.mode == .directGroups, context.state == .readingTerms {
+            let message = context.sawTemplateWhileReadingTerms
+                ? "Element \u{201c}dl\u{201d} is missing a required instance of one or more of the following child elements: \u{201c}dd\u{201d}."
+                : "Element \u{201c}dl\u{201d} is missing a required instance of child element \u{201c}dd\u{201d}."
+            messages.append(.error(
+                message,
+                location: locations.location(offset: context.element.range.offset, length: context.element.range.length),
+                extract: locations.extract(offset: context.element.range.offset, length: context.element.range.length)
+            ))
+        }
+    }
+
+    private func appendMissingMessages(for context: DivContext, locations: SourceLocationMap, messages: inout [ValidationMessage]) {
+        if context.state == .readingTerms || !context.sawChild {
+            messages.append(.error(
+                "Element \u{201c}div\u{201d} is missing a required instance of child element \u{201c}dd\u{201d}.",
+                location: locations.location(offset: context.element.range.offset, length: context.element.range.length),
+                extract: locations.extract(offset: context.element.range.offset, length: context.element.range.length)
+            ))
+        }
+    }
+
+    private func appendMissingDLTerm(
+        for element: HTMLStartElement,
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) {
+        messages.append(.error(
+            "Element \u{201c}dl\u{201d} is missing a required child element.",
+            location: locations.location(offset: element.range.offset, length: element.range.length),
+            extract: locations.extract(offset: element.range.offset, length: element.range.length)
+        ))
+    }
+
+    private func appendMissingDivTerm(
+        for element: HTMLStartElement,
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) {
+        messages.append(.error(
+            "Element \u{201c}div\u{201d} is missing a required instance of child element \u{201c}dt\u{201d}.",
+            location: locations.location(offset: element.range.offset, length: element.range.length),
+            extract: locations.extract(offset: element.range.offset, length: element.range.length)
+        ))
+    }
+
+    private func appendNotAllowed(
+        _ elementName: String,
+        parent: String,
+        for element: HTMLStartElement,
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) {
+        messages.append(.error(
+            "Element \u{201c}\(elementName)\u{201d} not allowed as child of \u{201c}\(parent)\u{201d} in this context.",
+            location: locations.location(offset: element.range.offset, length: element.range.length),
+            extract: locations.extract(offset: element.range.offset, length: element.range.length)
+        ))
+    }
+
+    private func isDirectDLChild(stack: [String], dlContexts: [DLContext]) -> Bool {
+        guard stack.last == "dl",
+              stack.count - 1 == dlContexts.last?.depth else {
+            return false
+        }
+        return true
+    }
+
+    private func isInsideDirectDLDiv(stack: [String], divContexts: [DivContext]) -> Bool {
+        guard stack.last == "div",
+              stack.count - 1 == divContexts.last?.depth else {
+            return false
+        }
+        return true
+    }
+
+    private func normalizedText(_ text: String) -> String {
+        text.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
+    }
+
+    private static let dtSectioningElements: Set<String> = [
+        "article", "nav", "section"
+    ]
+
+    private static let dtForbiddenDescendants: Set<String> = [
+        "article", "footer", "h1", "h2", "h3", "h4", "h5", "h6", "header", "hgroup", "nav", "section"
+    ]
 }
 
 enum HTMLVocabulary {
