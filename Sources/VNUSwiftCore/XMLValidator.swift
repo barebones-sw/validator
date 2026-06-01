@@ -77,6 +77,12 @@ public final class XMLValidator: NSObject, XMLParserDelegate, @unchecked Sendabl
                 location: location
             ))
         }
+        if name == "keygen" {
+            messages.append(.error(
+                "The \u{201c}keygen\u{201d} element is obsolete.",
+                location: location
+            ))
+        }
         if name == "link",
            attributeDict["href"] == nil,
            attributeDict["imagesrcset"] == nil {

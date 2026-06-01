@@ -167,6 +167,8 @@ public final class HTMLValidator: Sendable {
         if HTMLVocabulary.obsoleteElements.contains(name) {
             if name == "frameset" {
                 appendError("The \u{201c}frameset\u{201d} element is obsolete. Use the \u{201c}iframe\u{201d} element and CSS instead, or use server-side includes.", offset: offset, length: length, locations: locations, messages: &messages)
+            } else if name == "keygen" {
+                appendError("The \u{201c}keygen\u{201d} element is obsolete.", offset: offset, length: length, locations: locations, messages: &messages)
             } else {
                 appendError("Element \u{201c}\(name)\u{201d} is obsolete. Use CSS instead.", offset: offset, length: length, locations: locations, messages: &messages)
             }
@@ -652,8 +654,8 @@ enum HTMLVocabulary {
 
     static let obsoleteElements: Set<String> = [
         "acronym", "applet", "basefont", "bgsound", "big", "blink", "center",
-        "font", "frame", "frameset", "marquee", "nobr", "noembed", "noframes",
-        "plaintext", "rb", "rtc", "strike", "tt", "xmp"
+        "font", "frame", "frameset", "keygen", "marquee", "nobr", "noembed",
+        "noframes", "plaintext", "rb", "rtc", "strike", "tt", "xmp"
     ]
 
     static let transparentElements: Set<String> = [

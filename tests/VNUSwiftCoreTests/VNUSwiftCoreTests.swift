@@ -186,6 +186,11 @@ import Testing
     #expect(result.messages.contains { $0.message == "Element \u{201c}dt\u{201d} not allowed as child of \u{201c}div\u{201d} in this context." })
 }
 
+@Test func htmlValidatorReportsObsoleteKeygen() {
+    let result = checkHTML("<!doctype html><html lang=en><meta charset=utf-8><title>T</title><form><keygen name=k></form>")
+    #expect(result.messages.contains { $0.message == "The \u{201c}keygen\u{201d} element is obsolete." })
+}
+
 @Test func generalAttributeCheckerCoversInputTypeRules() {
     let result = checkHTML("<!doctype html><html lang=en><meta charset=utf-8><title>T</title><input autocomplete=\"country shipping\"><input type=hidden autocomplete=on aria-label=x required><input type=button value=\"\"><input type=color value=red pattern=x><input type=number value=abc multiple><input type=checkbox role=button><input type=text list=missing form=notform><div id=notform></div><button commandfor=missing command=show-popover>Open</button>")
     #expect(result.messages.contains { $0.message == "Bad value \u{201c}country shipping\u{201d} for attribute \u{201c}autocomplete\u{201d} on element \u{201c}input\u{201d}." })
@@ -275,6 +280,14 @@ import Testing
         options: CheckerOptions(parameters: ["out": ["json"]])
     )
     #expect(result.messages.contains { $0.message == "The \u{201c}list\u{201d} attribute of the \u{201c}input\u{201d} element must refer to a \u{201c}datalist\u{201d} element." })
+}
+
+@Test func xmlValidatorCoversXHTMLObsoleteKeygen() {
+    let result = NuValidator().check(
+        input: DocumentInput(data: Data("<html xmlns=\"http://www.w3.org/1999/xhtml\"><head><title>T</title></head><body><keygen name=\"k\"/></body></html>".utf8), contentType: "application/xhtml+xml; charset=utf-8"),
+        options: CheckerOptions(parameters: ["out": ["json"]])
+    )
+    #expect(result.messages.contains { $0.message == "The \u{201c}keygen\u{201d} element is obsolete." })
 }
 
 @Test func xmlValidatorCoversXHTMLDuplicateDefinitionTerms() {
