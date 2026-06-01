@@ -184,6 +184,10 @@ public final class HTMLValidator: Sendable {
             }
         }
 
+        if let impliedEndTagMessage = impliedEndTagMessage(beforeStarting: name, stack: stack) {
+            appendError(impliedEndTagMessage, offset: offset, length: length, locations: locations, messages: &messages)
+        }
+
         if let parentMessage = contentModelMessage(for: name, stack: stack) {
             appendError(parentMessage, offset: offset, length: length, locations: locations, messages: &messages)
         }
@@ -206,6 +210,15 @@ public final class HTMLValidator: Sendable {
         return nil
     }
 
+    private func impliedEndTagMessage(beforeStarting child: String, stack: [OpenElement]) -> String? {
+        guard HTMLVocabulary.flowButNotPhrasing.contains(child),
+              let pIndex = stack.lastIndex(where: { $0.name == "p" }),
+              pIndex != stack.index(before: stack.endIndex) else {
+            return nil
+        }
+        return "End tag \u{201c}p\u{201d} implied, but there were open elements."
+    }
+
     private func applyImplicitClosures(beforeStarting name: String, stack: inout [OpenElement]) {
         if name == "li" {
             closeLast("li", in: &stack)
@@ -214,8 +227,9 @@ public final class HTMLValidator: Sendable {
             closeLast("dd", in: &stack)
         } else if name == "p", stack.last?.name == "p" {
             _ = stack.popLast()
-        } else if HTMLVocabulary.flowButNotPhrasing.contains(name), stack.last?.name == "p" {
-            _ = stack.popLast()
+        } else if HTMLVocabulary.flowButNotPhrasing.contains(name),
+                  let pIndex = stack.lastIndex(where: { $0.name == "p" }) {
+            stack.removeSubrange(pIndex...)
         }
     }
 

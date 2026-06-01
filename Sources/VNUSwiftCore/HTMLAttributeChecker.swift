@@ -325,6 +325,7 @@ struct HTMLGeneralAttributeChecker {
             switch event {
             case let .startElement(element):
                 appendLanguageAttributeMessages(for: element, locations: locations, messages: &messages)
+                appendDateTimeAttributeMessages(for: element, locations: locations, messages: &messages)
                 appendResponsiveImageMessages(for: element, stack: stack, locations: locations, messages: &messages)
                 if element.name == "picture" {
                     pictureStack.append(PictureState())
@@ -395,6 +396,33 @@ struct HTMLGeneralAttributeChecker {
             location: locations.location(offset: element.range.offset, length: element.range.length),
             extract: locations.extract(offset: element.range.offset, length: element.range.length)
         ))
+    }
+
+    private func appendDateTimeAttributeMessages(
+        for element: HTMLStartElement,
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) {
+        guard let value = element.attributeValue("datetime") else { return }
+
+        let valid: Bool
+        switch element.name {
+        case "del", "ins":
+            valid = isValidDateString(value) || isValidGlobalDateAndTimeString(value, strictTimeZone: true)
+        case "time":
+            valid = isValidTimeDateTimeString(value)
+        default:
+            return
+        }
+
+        if !valid {
+            appendMessage(
+                "Bad value \u{201c}\(value)\u{201d} for attribute \u{201c}datetime\u{201d} on element \u{201c}\(element.name)\u{201d}.",
+                for: element,
+                locations: locations,
+                messages: &messages
+            )
+        }
     }
 
     private func appendResponsiveImageMessages(
@@ -855,6 +883,165 @@ struct HTMLGeneralAttributeChecker {
         analyzeSrcset(srcset, requiresWidthDescriptors: false).hasWidthDescriptor
     }
 
+    private func isValidTimeDateTimeString(_ value: String) -> Bool {
+        isValidDateString(value)
+            || isValidTimeString(value)
+            || isValidLocalDateAndTimeString(value)
+            || isValidGlobalDateAndTimeString(value, strictTimeZone: false)
+    }
+
+    private func isValidDateString(_ value: String) -> Bool {
+        let bytes = Array(value.utf8)
+        guard bytes.count == 10,
+              bytes[4] == Self.hyphen,
+              bytes[7] == Self.hyphen,
+              let year = parseASCIIInteger(bytes, in: 0..<4),
+              let month = parseASCIIInteger(bytes, in: 5..<7),
+              let day = parseASCIIInteger(bytes, in: 8..<10),
+              year >= 1000,
+              month >= 1,
+              month <= 12 else {
+            return false
+        }
+
+        return day >= 1 && day <= daysInMonth(month, year: year)
+    }
+
+    private func isValidLocalDateAndTimeString(_ value: String) -> Bool {
+        splitDateAndTime(value).contains { datePart, timePart in
+            isValidDateString(datePart) && isValidTimeString(timePart)
+        }
+    }
+
+    private func isValidGlobalDateAndTimeString(_ value: String, strictTimeZone: Bool) -> Bool {
+        splitDateAndTime(value).contains { datePart, timeAndZone in
+            guard isValidDateString(datePart),
+                  let split = splitTimeAndTimeZone(timeAndZone) else {
+                return false
+            }
+            return isValidTimeString(split.time)
+                && isValidTimeZoneOffset(split.timeZone, strict: strictTimeZone)
+        }
+    }
+
+    private func splitDateAndTime(_ value: String) -> [(date: String, time: String)] {
+        ["T", " "].compactMap { separator in
+            guard let range = value.range(of: separator) else { return nil }
+            return (
+                date: String(value[..<range.lowerBound]),
+                time: String(value[range.upperBound...])
+            )
+        }
+    }
+
+    private func splitTimeAndTimeZone(_ value: String) -> (time: String, timeZone: String)? {
+        if value.hasSuffix("Z") {
+            return (String(value.dropLast()), "Z")
+        }
+
+        guard let offsetStart = value.firstIndex(where: { $0 == "+" || $0 == "-" }),
+              offsetStart != value.startIndex else {
+            return nil
+        }
+        return (String(value[..<offsetStart]), String(value[offsetStart...]))
+    }
+
+    private func isValidTimeString(_ value: String) -> Bool {
+        let pieces = value.split(separator: ":", omittingEmptySubsequences: false)
+        guard pieces.count == 2 || pieces.count == 3,
+              let hour = twoDigitInteger(String(pieces[0])),
+              let minute = twoDigitInteger(String(pieces[1])),
+              hour <= 23,
+              minute <= 59 else {
+            return false
+        }
+
+        guard pieces.count == 3 else { return true }
+        let secondsAndFraction = pieces[2].split(separator: ".", omittingEmptySubsequences: false)
+        guard secondsAndFraction.count == 1 || secondsAndFraction.count == 2,
+              let seconds = twoDigitInteger(String(secondsAndFraction[0])),
+              seconds <= 59 else {
+            return false
+        }
+
+        if secondsAndFraction.count == 2 {
+            let fraction = secondsAndFraction[1]
+            guard (1...3).contains(fraction.count),
+                  fraction.utf8.allSatisfy(isASCIIDigit) else {
+                return false
+            }
+        }
+        return true
+    }
+
+    private func isValidTimeZoneOffset(_ value: String, strict: Bool) -> Bool {
+        if value == "Z" {
+            return true
+        }
+
+        let bytes = Array(value.utf8)
+        guard bytes.count == 5 || bytes.count == 6,
+              bytes[0] == Self.plus || bytes[0] == Self.hyphen else {
+            return false
+        }
+
+        let hourRange = 1..<3
+        let minuteRange: Range<Int>
+        if bytes.count == 6 {
+            guard bytes[3] == Self.colon else { return false }
+            minuteRange = 4..<6
+        } else {
+            minuteRange = 3..<5
+        }
+
+        guard let hour = parseASCIIInteger(bytes, in: hourRange),
+              let minute = parseASCIIInteger(bytes, in: minuteRange),
+              minute <= 59 else {
+            return false
+        }
+
+        if strict {
+            return hour <= 12 && [0, 30, 45].contains(minute)
+        }
+        return hour <= 23
+    }
+
+    private func twoDigitInteger(_ value: String) -> Int? {
+        let bytes = Array(value.utf8)
+        guard bytes.count == 2 else { return nil }
+        return parseASCIIInteger(bytes, in: 0..<2)
+    }
+
+    private func parseASCIIInteger(_ bytes: [UInt8], in range: Range<Int>) -> Int? {
+        var value = 0
+        for index in range {
+            guard isASCIIDigit(bytes[index]) else { return nil }
+            value = value * 10 + Int(bytes[index] - Self.zero)
+        }
+        return value
+    }
+
+    private func isASCIIDigit(_ byte: UInt8) -> Bool {
+        byte >= Self.zero && byte <= UInt8(ascii: "9")
+    }
+
+    private func daysInMonth(_ month: Int, year: Int) -> Int {
+        switch month {
+        case 1, 3, 5, 7, 8, 10, 12:
+            return 31
+        case 4, 6, 9, 11:
+            return 30
+        case 2:
+            return isLeapYear(year) ? 29 : 28
+        default:
+            return 0
+        }
+    }
+
+    private func isLeapYear(_ year: Int) -> Bool {
+        year.isMultiple(of: 4) && (!year.isMultiple(of: 100) || year.isMultiple(of: 400))
+    }
+
     private static let bodyLinkRelTokens: Set<String> = [
         "dns-prefetch", "modulepreload", "pingback", "preconnect", "prefetch", "preload", "prerender", "stylesheet"
     ]
@@ -874,6 +1061,11 @@ struct HTMLGeneralAttributeChecker {
     private static let modulepreloadDestinations: Set<String> = [
         "json", "script", "style", "worker"
     ]
+
+    private static let zero = UInt8(ascii: "0")
+    private static let plus = UInt8(ascii: "+")
+    private static let colon = UInt8(ascii: ":")
+    private static let hyphen = UInt8(ascii: "-")
 
     private func appendMessage(
         _ message: String,
