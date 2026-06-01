@@ -1,0 +1,41 @@
+{
+  "configurations" : [
+    {
+      "id" : "5B936C47-78EF-4C90-872E-1FE55EC426BB",
+      "name" : "Test Scheme Action",
+      "options" : {
+
+      }
+    }
+  ],
+  "defaultOptions" : {
+    "commandLineArgumentEntries" : [
+      {
+        "argument" : "--port 8888"
+      }
+    ],
+    "performanceAntipatternCheckerEnabled" : true,
+    "targetForVariableExpansion" : {
+      "containerPath" : "container:NuValidator.xcodeproj",
+      "identifier" : "100000000000000000000002",
+      "name" : "NuValidator"
+    }
+  },
+  "testTargets" : [
+    {
+      "target" : {
+        "containerPath" : "container:NuValidator.xcodeproj",
+        "identifier" : "100000000000000000000003",
+        "name" : "VNUSwiftCoreTests"
+      }
+    },
+    {
+      "target" : {
+        "containerPath" : "container:NuValidator.xcodeproj",
+        "identifier" : "100000000000000000000006",
+        "name" : "VNUParityCoreTests"
+      }
+    }
+  ],
+  "version" : 1
+}

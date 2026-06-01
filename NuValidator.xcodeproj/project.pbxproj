@@ -9,8 +9,6 @@
 /* Begin PBXBuildFile section */
 		600000000000000000000001 /* CheckerOptions.swift in Sources */ = {isa = PBXBuildFile; fileRef = 500000000000000000000001 /* CheckerOptions.swift */; };
 		600000000000000000000002 /* ContentType.swift in Sources */ = {isa = PBXBuildFile; fileRef = 500000000000000000000002 /* ContentType.swift */; };
-		60000000000000000000001D /* HTMLAttributeChecker.swift in Sources */ = {isa = PBXBuildFile; fileRef = 500000000000000000000018 /* HTMLAttributeChecker.swift */; };
-		60000000000000000000001C /* HTMLDocumentParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = 500000000000000000000017 /* HTMLDocumentParser.swift */; };
 		600000000000000000000003 /* HTMLTokenizer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 500000000000000000000003 /* HTMLTokenizer.swift */; };
 		600000000000000000000004 /* HTMLValidator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 500000000000000000000004 /* HTMLValidator.swift */; };
 		600000000000000000000005 /* HTTPServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 500000000000000000000005 /* HTTPServer.swift */; };
@@ -36,6 +34,8 @@
 		600000000000000000000019 /* VNUSwiftCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 400000000000000000000001 /* VNUSwiftCore.framework */; };
 		60000000000000000000001A /* VNUParityCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 400000000000000000000004 /* VNUParityCore.framework */; };
 		60000000000000000000001B /* VNUSwiftCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 400000000000000000000001 /* VNUSwiftCore.framework */; };
+		60000000000000000000001C /* HTMLDocumentParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = 500000000000000000000017 /* HTMLDocumentParser.swift */; };
+		60000000000000000000001D /* HTMLAttributeChecker.swift in Sources */ = {isa = PBXBuildFile; fileRef = 500000000000000000000018 /* HTMLAttributeChecker.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -99,8 +99,6 @@
 		400000000000000000000006 /* vnu-parity */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = "vnu-parity"; sourceTree = BUILT_PRODUCTS_DIR; };
 		500000000000000000000001 /* CheckerOptions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CheckerOptions.swift; sourceTree = "<group>"; };
 		500000000000000000000002 /* ContentType.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentType.swift; sourceTree = "<group>"; };
-		500000000000000000000018 /* HTMLAttributeChecker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HTMLAttributeChecker.swift; sourceTree = "<group>"; };
-		500000000000000000000017 /* HTMLDocumentParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HTMLDocumentParser.swift; sourceTree = "<group>"; };
 		500000000000000000000003 /* HTMLTokenizer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HTMLTokenizer.swift; sourceTree = "<group>"; };
 		500000000000000000000004 /* HTMLValidator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HTMLValidator.swift; sourceTree = "<group>"; };
 		500000000000000000000005 /* HTTPServer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HTTPServer.swift; sourceTree = "<group>"; };
@@ -121,6 +119,9 @@
 		500000000000000000000014 /* main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
 		500000000000000000000015 /* VNUParityCoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VNUParityCoreTests.swift; sourceTree = "<group>"; };
 		500000000000000000000016 /* parity-baseline.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "parity-baseline.json"; sourceTree = "<group>"; };
+		500000000000000000000017 /* HTMLDocumentParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HTMLDocumentParser.swift; sourceTree = "<group>"; };
+		500000000000000000000018 /* HTMLAttributeChecker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HTMLAttributeChecker.swift; sourceTree = "<group>"; };
+		5668F70A2FCD1E7F00FB04EB /* NuValidator.xctestplan */ = {isa = PBXFileReference; lastKnownFileType = text; path = NuValidator.xctestplan; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -179,6 +180,7 @@
 		000000000000000000000002 = {
 			isa = PBXGroup;
 			children = (
+				5668F70A2FCD1E7F00FB04EB /* NuValidator.xctestplan */,
 				500000000000000000000012 /* Package.swift */,
 				000000000000000000000004 /* Sources */,
 				000000000000000000000007 /* tests */,
@@ -242,22 +244,6 @@
 			path = VNUServer;
 			sourceTree = "<group>";
 		};
-		00000000000000000000000B /* VNUParityCore */ = {
-			isa = PBXGroup;
-			children = (
-				500000000000000000000013 /* ParityHarness.swift */,
-			);
-			path = VNUParityCore;
-			sourceTree = "<group>";
-		};
-		00000000000000000000000C /* VNUParity */ = {
-			isa = PBXGroup;
-			children = (
-				500000000000000000000014 /* main.swift */,
-			);
-			path = VNUParity;
-			sourceTree = "<group>";
-		};
 		000000000000000000000007 /* tests */ = {
 			isa = PBXGroup;
 			children = (
@@ -275,14 +261,6 @@
 			path = VNUSwiftCoreTests;
 			sourceTree = "<group>";
 		};
-		00000000000000000000000D /* VNUParityCoreTests */ = {
-			isa = PBXGroup;
-			children = (
-				500000000000000000000015 /* VNUParityCoreTests.swift */,
-			);
-			path = VNUParityCoreTests;
-			sourceTree = "<group>";
-		};
 		000000000000000000000009 /* resources */ = {
 			isa = PBXGroup;
 			children = (
@@ -298,6 +276,30 @@
 				500000000000000000000016 /* parity-baseline.json */,
 			);
 			path = NuValidator;
+			sourceTree = "<group>";
+		};
+		00000000000000000000000B /* VNUParityCore */ = {
+			isa = PBXGroup;
+			children = (
+				500000000000000000000013 /* ParityHarness.swift */,
+			);
+			path = VNUParityCore;
+			sourceTree = "<group>";
+		};
+		00000000000000000000000C /* VNUParity */ = {
+			isa = PBXGroup;
+			children = (
+				500000000000000000000014 /* main.swift */,
+			);
+			path = VNUParity;
+			sourceTree = "<group>";
+		};
+		00000000000000000000000D /* VNUParityCoreTests */ = {
+			isa = PBXGroup;
+			children = (
+				500000000000000000000015 /* VNUParityCoreTests.swift */,
+			);
+			path = VNUParityCoreTests;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -713,7 +715,7 @@
 				CODE_SIGN_STYLE = Manual;
 				EXECUTABLE_NAME = "vnu-swift";
 				GENERATE_INFOPLIST_FILE = NO;
-				INFOPLIST_FILE = "resources/NuValidator/Info.plist";
+				INFOPLIST_FILE = resources/NuValidator/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",
@@ -732,7 +734,7 @@
 				CODE_SIGN_STYLE = Manual;
 				EXECUTABLE_NAME = "vnu-swift";
 				GENERATE_INFOPLIST_FILE = NO;
-				INFOPLIST_FILE = "resources/NuValidator/Info.plist";
+				INFOPLIST_FILE = resources/NuValidator/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/../Frameworks",

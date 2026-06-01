@@ -48,6 +48,9 @@ compile_commands.json*
 xcuserdata/
 # Keep Xcode shared chatter hidden, but allow branch-critical shared metadata.
 **/xcshareddata/*
+!NuValidator.xcodeproj/xcshareddata/
+!NuValidator.xcodeproj/xcshareddata/xcschemes/
+!NuValidator.xcodeproj/xcshareddata/xcschemes/NuValidator.xcscheme
 default.profraw
 WorkspaceSettings.xcsettings
 .pls_cache/

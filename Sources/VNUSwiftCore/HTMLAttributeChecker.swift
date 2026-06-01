@@ -319,14 +319,23 @@ struct HTMLGeneralAttributeChecker {
     func validate(document: HTMLParsedDocument, locations: SourceLocationMap) -> [ValidationMessage] {
         var messages: [ValidationMessage] = []
         var stack: [String] = []
+        var pictureStack: [PictureState] = []
 
         for event in document.events {
             switch event {
             case let .startElement(element):
                 appendLanguageAttributeMessages(for: element, locations: locations, messages: &messages)
-                appendResponsiveImageMessages(for: element, parent: stack.last, locations: locations, messages: &messages)
+                appendResponsiveImageMessages(for: element, stack: stack, locations: locations, messages: &messages)
+                if element.name == "picture" {
+                    pictureStack.append(PictureState())
+                } else if stack.last == "picture", let pictureIndex = pictureStack.indices.last {
+                    updatePictureState(&pictureStack[pictureIndex], with: element)
+                }
                 stack.append(element.name)
             case let .endElement(name, _, _):
+                if name == "picture", let state = pictureStack.popLast() {
+                    appendPictureMessages(state, locations: locations, messages: &messages)
+                }
                 if let index = stack.lastIndex(of: name) {
                     stack.removeSubrange(index...)
                 }
@@ -336,6 +345,39 @@ struct HTMLGeneralAttributeChecker {
         }
 
         return messages
+    }
+
+    private struct PictureState {
+        var sourcesMissingSizes: [HTMLStartElement] = []
+        var permitsSourceWidthWithoutSizes = false
+    }
+
+    private func updatePictureState(_ state: inout PictureState, with element: HTMLStartElement) {
+        if element.name == "source",
+           let srcset = element.attributeValue("srcset"),
+           !element.hasAttribute("sizes"),
+           hasWidthDescriptor(in: srcset) {
+            state.sourcesMissingSizes.append(element)
+        } else if element.name == "img",
+                  element.attributeValue("loading")?.lowercased() == "lazy" {
+            state.permitsSourceWidthWithoutSizes = true
+        }
+    }
+
+    private func appendPictureMessages(
+        _ state: PictureState,
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) {
+        guard !state.permitsSourceWidthWithoutSizes else { return }
+        for element in state.sourcesMissingSizes {
+            appendMessage(
+                "When the \u{201c}srcset\u{201d} attribute has any image candidate string with a width descriptor, the \u{201c}sizes\u{201d} attribute must also be specified.",
+                for: element,
+                locations: locations,
+                messages: &messages
+            )
+        }
     }
 
     private func appendLanguageAttributeMessages(
@@ -357,11 +399,17 @@ struct HTMLGeneralAttributeChecker {
 
     private func appendResponsiveImageMessages(
         for element: HTMLStartElement,
-        parent: String?,
+        stack: [String],
         locations: SourceLocationMap,
         messages: inout [ValidationMessage]
     ) {
+        let parent = stack.last
+
         if element.name == "img" {
+            if let srcset = element.attributeValue("srcset") {
+                appendSrcsetMessages(srcset, attributeName: "srcset", element: element, requiresWidthDescriptors: element.hasAttribute("sizes"), locations: locations, messages: &messages)
+            }
+
             if element.hasAttribute("sizes"), !element.hasAttribute("srcset") {
                 appendMessage(
                     "The \u{201c}sizes\u{201d} attribute must only be specified if the \u{201c}srcset\u{201d} attribute is also specified.",
@@ -369,6 +417,10 @@ struct HTMLGeneralAttributeChecker {
                     locations: locations,
                     messages: &messages
                 )
+            }
+
+            if let sizes = element.attributeValue("sizes") {
+                appendSizesMessages(sizes, element: element, lazyLoadingApplies: element.attributeValue("loading")?.lowercased() == "lazy", locations: locations, messages: &messages)
             }
 
             if let srcset = element.attributeValue("srcset"),
@@ -385,71 +437,20 @@ struct HTMLGeneralAttributeChecker {
         }
 
         if element.name == "link" {
-            let relTokens = Set((element.attributeValue("rel") ?? "").lowercased().split(whereSeparator: { $0.isWhitespace }).map(String.init))
-            if relTokens.contains("preload") {
-                guard let asValue = element.attributeValue("as")?.lowercased() else {
-                    appendMessage(
-                        "A \u{201c}link\u{201d} element with a \u{201c}rel\u{201d} attribute that contains the value \u{201c}preload\u{201d} must have an \u{201c}as\u{201d} attribute.",
-                        for: element,
-                        locations: locations,
-                        messages: &messages
-                    )
-                    return
-                }
-                if !Self.preloadDestinations.contains(asValue) {
-                    appendMessage(
-                        "The value \u{201c}\(asValue)\u{201d} is not a valid value for the \u{201c}as\u{201d} attribute of a \u{201c}link\u{201d} element with \u{201c}rel=preload\u{201d}.",
-                        for: element,
-                        locations: locations,
-                        messages: &messages
-                    )
-                }
-            } else if relTokens.contains("modulepreload"),
-                      let asValue = element.attributeValue("as")?.lowercased(),
-                      !Self.modulepreloadDestinations.contains(asValue) {
-                appendMessage(
-                    "The value \u{201c}\(asValue)\u{201d} is not a valid value for the \u{201c}as\u{201d} attribute of a \u{201c}link\u{201d} element with \u{201c}rel=modulepreload\u{201d}.",
-                    for: element,
-                    locations: locations,
-                    messages: &messages
-                )
-            }
+            appendLinkMessages(for: element, inBody: stack.contains("body"), locations: locations, messages: &messages)
+        }
 
-            if element.hasAttribute("imagesizes"), !element.hasAttribute("imagesrcset") {
-                appendMessage(
-                    "The \u{201c}imagesizes\u{201d} attribute must only be specified if the \u{201c}imagesrcset\u{201d} attribute is also specified.",
-                    for: element,
-                    locations: locations,
-                    messages: &messages
-                )
-            }
+        if element.name == "source", parent == "picture", let srcset = element.attributeValue("srcset") {
+            appendSrcsetMessages(srcset, attributeName: "srcset", element: element, requiresWidthDescriptors: element.hasAttribute("sizes"), locations: locations, messages: &messages)
+        }
 
-            if let imagesrcset = element.attributeValue("imagesrcset") {
-                if !relTokens.contains("preload") && !relTokens.contains("modulepreload") {
-                    appendMessage(
-                        relTokens.contains("stylesheet")
-                            ? "A \u{201c}link\u{201d} element with an \u{201c}imagesrcset\u{201d} attribute must have a \u{201c}rel\u{201d} attribute that contains the value \u{201c}preload\u{201d}."
-                            : "A \u{201c}link\u{201d} element with an \u{201c}as\u{201d} attribute must have a \u{201c}rel\u{201d} attribute that contains the value \u{201c}preload\u{201d} or the value \u{201c}modulepreload\u{201d}.",
-                        for: element,
-                        locations: locations,
-                        messages: &messages
-                    )
-                } else if element.attributeValue("as")?.lowercased() != "image" {
-                    appendMessage(
-                        "A \u{201c}link\u{201d} element with an \u{201c}imagesrcset\u{201d} attribute must have an \u{201c}as\u{201d} attribute with value \u{201c}image\u{201d}.",
-                        for: element,
-                        locations: locations,
-                        messages: &messages
-                    )
-                } else if !element.hasAttribute("imagesizes"), hasWidthDescriptor(in: imagesrcset) {
-                    appendMessage(
-                        "When the \u{201c}imagesrcset\u{201d} attribute has any image candidate string with a width descriptor, the \u{201c}imagesizes\u{201d} attribute must also be specified.",
-                        for: element,
-                        locations: locations,
-                        messages: &messages
-                    )
-                }
-            }
+        if element.name == "source", let media = element.attributeValue("media"), media.contains("(min-width:)") {
+            appendMessage(
+                "Bad value \u{201c}\(media)\u{201d} for attribute \u{201c}media\u{201d} on element \u{201c}source\u{201d}.",
+                for: element,
+                locations: locations,
+                messages: &messages
+            )
         }
 
         if element.name == "source", parent != "picture" {
@@ -464,14 +465,407 @@ struct HTMLGeneralAttributeChecker {
         }
     }
 
-    private func hasWidthDescriptor(in srcset: String) -> Bool {
-        srcset.split(separator: ",").contains { candidate in
-            let fields = candidate.split(whereSeparator: { $0.isWhitespace })
-            return fields.dropFirst().contains { descriptor in
-                descriptor.hasSuffix("w") && descriptor.dropLast().allSatisfy(\.isNumber)
+    private func appendLinkMessages(
+        for element: HTMLStartElement,
+        inBody: Bool,
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) {
+        let relTokens = relTokens(for: element)
+
+        if !element.hasAttribute("rel"), !element.hasAttribute("itemprop"), !element.hasAttribute("property") {
+            appendMessage(
+                "Element \u{201c}link\u{201d} is missing one or more of the following attributes: \u{201c}itemprop\u{201d}, \u{201c}property\u{201d}, \u{201c}rel\u{201d}.",
+                for: element,
+                locations: locations,
+                messages: &messages
+            )
+        }
+
+        if element.hasAttribute("itemprop"), element.hasAttribute("rel") {
+            appendMessage(
+                "Attribute \u{201c}rel\u{201d} not allowed on element \u{201c}link\u{201d} at this point.",
+                for: element,
+                locations: locations,
+                messages: &messages
+            )
+        }
+
+        if element.hasAttribute("as"), !relTokens.contains("preload"), !relTokens.contains("modulepreload") {
+            appendMessage(
+                "A \u{201c}link\u{201d} element with an \u{201c}as\u{201d} attribute must have a \u{201c}rel\u{201d} attribute that contains the value \u{201c}preload\u{201d} or the value \u{201c}modulepreload\u{201d}.",
+                for: element,
+                locations: locations,
+                messages: &messages
+            )
+        }
+
+        if relTokens.contains("alternate"), relTokens.contains("stylesheet"), element.attributeValue("title")?.isEmpty != false {
+            appendMessage(
+                "A \u{201c}link\u{201d} element with a \u{201c}rel\u{201d} attribute that contains both the values \u{201c}alternate\u{201d} and \u{201c}stylesheet\u{201d} must have a \u{201c}title\u{201d} attribute with a non-empty value.",
+                for: element,
+                locations: locations,
+                messages: &messages
+            )
+        }
+
+        if element.hasAttribute("blocking"), relTokens != ["stylesheet"] {
+            appendMessage(
+                "A \u{201c}link\u{201d} element with a \u{201c}blocking\u{201d} attribute must have a \u{201c}rel\u{201d} attribute whose value is \u{201c}stylesheet\u{201d}.",
+                for: element,
+                locations: locations,
+                messages: &messages
+            )
+        }
+
+        if element.hasAttribute("color"), !relTokens.contains("mask-icon") {
+            appendMessage(
+                "A \u{201c}link\u{201d} element with a \u{201c}color\u{201d} attribute must have a \u{201c}rel\u{201d} attribute that contains the value \u{201c}mask-icon\u{201d}.",
+                for: element,
+                locations: locations,
+                messages: &messages
+            )
+        }
+
+        if element.hasAttribute("disabled"), !relTokens.contains("stylesheet") {
+            appendMessage(
+                "A \u{201c}link\u{201d} element with a \u{201c}disabled\u{201d} attribute must have a \u{201c}rel\u{201d} attribute that contains the value \u{201c}stylesheet\u{201d}.",
+                for: element,
+                locations: locations,
+                messages: &messages
+            )
+        }
+
+        if element.hasAttribute("integrity"), relTokens.isDisjoint(with: Self.integrityRelTokens) {
+            appendMessage(
+                "A \u{201c}link\u{201d} element with an \u{201c}integrity\u{201d} attribute must have a \u{201c}rel\u{201d} attribute that contains the value \u{201c}stylesheet\u{201d} or the value \u{201c}preload\u{201d} or the value \u{201c}modulepreload\u{201d}.",
+                for: element,
+                locations: locations,
+                messages: &messages
+            )
+        }
+
+        if element.hasAttribute("sizes"), relTokens.isDisjoint(with: Self.iconRelTokens) {
+            appendMessage(
+                "A \u{201c}link\u{201d} element with a \u{201c}sizes\u{201d} attribute must have a \u{201c}rel\u{201d} attribute that contains the value \u{201c}icon\u{201d} or the value \u{201c}apple-touch-icon\u{201d} or the value \u{201c}apple-touch-icon-precomposed\u{201d}.",
+                for: element,
+                locations: locations,
+                messages: &messages
+            )
+        }
+
+        if inBody, !element.hasAttribute("itemprop"), relTokens.isDisjoint(with: Self.bodyLinkRelTokens) {
+            appendMessage(
+                "A \u{201c}link\u{201d} element must not appear as a descendant of a \u{201c}body\u{201d} element unless the \u{201c}link\u{201d} element has an \u{201c}itemprop\u{201d} attribute or has a \u{201c}rel\u{201d} attribute whose value contains \u{201c}dns-prefetch\u{201d}, \u{201c}modulepreload\u{201d}, \u{201c}pingback\u{201d}, \u{201c}preconnect\u{201d}, \u{201c}prefetch\u{201d}, \u{201c}preload\u{201d}, \u{201c}prerender\u{201d}, or \u{201c}stylesheet\u{201d}.",
+                for: element,
+                locations: locations,
+                messages: &messages
+            )
+        }
+
+        appendLinkPreloadMessages(for: element, relTokens: relTokens, locations: locations, messages: &messages)
+        appendLinkImageCandidateMessages(for: element, relTokens: relTokens, locations: locations, messages: &messages)
+    }
+
+    private func appendLinkPreloadMessages(
+        for element: HTMLStartElement,
+        relTokens: Set<String>,
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) {
+        if relTokens.contains("preload") {
+            if let asValue = element.attributeValue("as")?.lowercased() {
+                if !Self.preloadDestinations.contains(asValue) {
+                    appendMessage(
+                        "The value \u{201c}\(asValue)\u{201d} is not a valid value for the \u{201c}as\u{201d} attribute of a \u{201c}link\u{201d} element with \u{201c}rel=preload\u{201d}.",
+                        for: element,
+                        locations: locations,
+                        messages: &messages
+                    )
+                }
+            } else {
+                appendMessage(
+                    "A \u{201c}link\u{201d} element with a \u{201c}rel\u{201d} attribute that contains the value \u{201c}preload\u{201d} must have an \u{201c}as\u{201d} attribute.",
+                    for: element,
+                    locations: locations,
+                    messages: &messages
+                )
+            }
+        } else if relTokens.contains("modulepreload"),
+                  let asValue = element.attributeValue("as")?.lowercased(),
+                  !Self.modulepreloadDestinations.contains(asValue) {
+            appendMessage(
+                "The value \u{201c}\(asValue)\u{201d} is not a valid value for the \u{201c}as\u{201d} attribute of a \u{201c}link\u{201d} element with \u{201c}rel=modulepreload\u{201d}.",
+                for: element,
+                locations: locations,
+                messages: &messages
+            )
+        }
+    }
+
+    private func appendLinkImageCandidateMessages(
+        for element: HTMLStartElement,
+        relTokens: Set<String>,
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) {
+        if element.hasAttribute("imagesizes"), !element.hasAttribute("imagesrcset") {
+            appendMessage(
+                "The \u{201c}imagesizes\u{201d} attribute must only be specified if the \u{201c}imagesrcset\u{201d} attribute is also specified.",
+                for: element,
+                locations: locations,
+                messages: &messages
+            )
+        }
+
+        if let imagesrcset = element.attributeValue("imagesrcset") {
+            if !relTokens.contains("preload") && !relTokens.contains("modulepreload") {
+                appendMessage(
+                    relTokens.contains("stylesheet")
+                        ? "A \u{201c}link\u{201d} element with an \u{201c}imagesrcset\u{201d} attribute must have a \u{201c}rel\u{201d} attribute that contains the value \u{201c}preload\u{201d}."
+                        : "A \u{201c}link\u{201d} element with an \u{201c}as\u{201d} attribute must have a \u{201c}rel\u{201d} attribute that contains the value \u{201c}preload\u{201d} or the value \u{201c}modulepreload\u{201d}.",
+                    for: element,
+                    locations: locations,
+                    messages: &messages
+                )
+            } else if element.attributeValue("as")?.lowercased() != "image" {
+                appendMessage(
+                    "A \u{201c}link\u{201d} element with an \u{201c}imagesrcset\u{201d} attribute must have an \u{201c}as\u{201d} attribute with value \u{201c}image\u{201d}.",
+                    for: element,
+                    locations: locations,
+                    messages: &messages
+                )
+            } else if !element.hasAttribute("imagesizes"), hasWidthDescriptor(in: imagesrcset) {
+                appendMessage(
+                    "When the \u{201c}imagesrcset\u{201d} attribute has any image candidate string with a width descriptor, the \u{201c}imagesizes\u{201d} attribute must also be specified.",
+                    for: element,
+                    locations: locations,
+                    messages: &messages
+                )
             }
         }
     }
+
+    private func relTokens(for element: HTMLStartElement) -> Set<String> {
+        Set((element.attributeValue("rel") ?? "").lowercased().split(whereSeparator: { $0.isWhitespace }).map(String.init))
+    }
+
+    private func appendSizesMessages(
+        _ value: String,
+        element: HTMLStartElement,
+        lazyLoadingApplies: Bool,
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.lowercased().hasPrefix("auto"), !lazyLoadingApplies {
+            appendMessage(
+                "The \u{201c}sizes\u{201d} attribute value starting with \u{201c}auto\u{201d} is only valid for lazy-loaded images. Add \u{201c}loading=\u{201d}\u{201c}lazy\u{201d} to this element.",
+                for: element,
+                locations: locations,
+                messages: &messages
+            )
+            return
+        }
+
+        if !isValidSourceSizeList(trimmed) {
+            appendMessage(
+                "Bad value \u{201c}\(value)\u{201d} for attribute \u{201c}sizes\u{201d} on element \u{201c}\(element.name)\u{201d}.",
+                for: element,
+                locations: locations,
+                messages: &messages
+            )
+        }
+    }
+
+    private func appendSrcsetMessages(
+        _ value: String,
+        attributeName: String,
+        element: HTMLStartElement,
+        requiresWidthDescriptors: Bool,
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) {
+        let analysis = analyzeSrcset(value, requiresWidthDescriptors: requiresWidthDescriptors)
+        if !analysis.isValid {
+            appendMessage(
+                "Bad value \u{201c}\(value)\u{201d} for attribute \u{201c}\(attributeName)\u{201d} on element \u{201c}\(element.name)\u{201d}.",
+                for: element,
+                locations: locations,
+                messages: &messages
+            )
+        }
+    }
+
+    private struct SrcsetAnalysis {
+        var isValid: Bool
+        var hasWidthDescriptor: Bool
+    }
+
+    private enum ImageDescriptor: Hashable {
+        case width(Int)
+        case density(Double)
+        case omitted
+    }
+
+    private func analyzeSrcset(_ value: String, requiresWidthDescriptors: Bool) -> SrcsetAnalysis {
+        guard !value.isEmpty,
+              !value.hasPrefix(","),
+              !value.hasSuffix(",") else {
+            return SrcsetAnalysis(isValid: false, hasWidthDescriptor: false)
+        }
+
+        var descriptors: [ImageDescriptor] = []
+        var hasWidthDescriptor = false
+        for rawCandidate in value.split(separator: ",", omittingEmptySubsequences: false) {
+            let candidate = rawCandidate.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !candidate.isEmpty else {
+                return SrcsetAnalysis(isValid: false, hasWidthDescriptor: hasWidthDescriptor)
+            }
+
+            let fields = candidate.split(whereSeparator: { $0.isWhitespace })
+            guard let url = fields.first, !url.isEmpty else {
+                return SrcsetAnalysis(isValid: false, hasWidthDescriptor: hasWidthDescriptor)
+            }
+            guard url != "http:" else {
+                return SrcsetAnalysis(isValid: false, hasWidthDescriptor: hasWidthDescriptor)
+            }
+            guard fields.count <= 2 else {
+                return SrcsetAnalysis(isValid: false, hasWidthDescriptor: hasWidthDescriptor)
+            }
+
+            let descriptor: ImageDescriptor
+            if fields.count == 1 {
+                descriptor = .omitted
+            } else if let parsed = parseImageDescriptor(String(fields[1])) {
+                descriptor = parsed
+            } else {
+                return SrcsetAnalysis(isValid: false, hasWidthDescriptor: hasWidthDescriptor)
+            }
+
+            if case .width = descriptor {
+                hasWidthDescriptor = true
+            }
+            descriptors.append(descriptor)
+        }
+
+        let hasDensityDescriptor = descriptors.contains {
+            if case .density = $0 { return true }
+            return false
+        }
+        if hasWidthDescriptor && hasDensityDescriptor {
+            return SrcsetAnalysis(isValid: false, hasWidthDescriptor: hasWidthDescriptor)
+        }
+        if requiresWidthDescriptors, descriptors.contains(where: { descriptor in
+            if case .width = descriptor { return false }
+            return true
+        }) {
+            return SrcsetAnalysis(isValid: false, hasWidthDescriptor: hasWidthDescriptor)
+        }
+
+        var explicitDescriptors: Set<ImageDescriptor> = []
+        var sawOmittedDescriptor = false
+        for descriptor in descriptors {
+            switch descriptor {
+            case .omitted:
+                sawOmittedDescriptor = true
+            case .density(1.0) where sawOmittedDescriptor:
+                return SrcsetAnalysis(isValid: false, hasWidthDescriptor: hasWidthDescriptor)
+            default:
+                if explicitDescriptors.contains(descriptor) {
+                    return SrcsetAnalysis(isValid: false, hasWidthDescriptor: hasWidthDescriptor)
+                }
+                explicitDescriptors.insert(descriptor)
+            }
+        }
+        if sawOmittedDescriptor, explicitDescriptors.contains(.density(1.0)) {
+            return SrcsetAnalysis(isValid: false, hasWidthDescriptor: hasWidthDescriptor)
+        }
+
+        return SrcsetAnalysis(isValid: true, hasWidthDescriptor: hasWidthDescriptor)
+    }
+
+    private func parseImageDescriptor(_ value: String) -> ImageDescriptor? {
+        guard !value.contains("/**/"), !value.isEmpty else { return nil }
+        if value.hasSuffix("w") {
+            let number = value.dropLast()
+            guard !number.isEmpty,
+                  number.allSatisfy(\.isNumber),
+                  let width = Int(number),
+                  width > 0 else {
+                return nil
+            }
+            return .width(width)
+        }
+        if value.hasSuffix("x") {
+            let number = value.dropLast()
+            guard !number.hasPrefix("+"),
+                  !number.hasPrefix("-"),
+                  let density = Double(number),
+                  density.isFinite,
+                  density > 0 else {
+                return nil
+            }
+            return .density(density)
+        }
+        return nil
+    }
+
+    private func isValidSourceSizeList(_ value: String) -> Bool {
+        guard !value.isEmpty else { return false }
+        let lowercased = value.lowercased()
+        guard !lowercased.contains("(min-width:)") else { return false }
+        guard !lowercased.hasPrefix("all ") && !lowercased.hasPrefix("all and ") else { return false }
+        guard !lowercased.hasPrefix("min-width:") else { return false }
+        guard !lowercased.contains("(})") && !lowercased.contains("(123)") else { return false }
+        guard !["badvalue", "default", "inherit", "initial", "foo-bar"].contains(lowercased) else { return false }
+
+        return value.split(separator: ",", omittingEmptySubsequences: false).allSatisfy { component in
+            let trimmed = component.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { return false }
+            if trimmed.lowercased() == "auto" {
+                return true
+            }
+            guard let sizeToken = trimmed.split(whereSeparator: { $0.isWhitespace }).last else {
+                return false
+            }
+            return isValidSourceSizeValue(String(sizeToken))
+        }
+    }
+
+    private func isValidSourceSizeValue(_ value: String) -> Bool {
+        let lowercased = value.lowercased()
+        if lowercased == "0" || lowercased == "-0" {
+            return true
+        }
+        if lowercased.hasPrefix("calc(") || lowercased.hasPrefix("min(") || lowercased.hasPrefix("max(") || lowercased.hasPrefix("clamp(") {
+            return lowercased.hasSuffix(")")
+        }
+
+        let allowedUnits = ["px", "em", "ex", "ch", "rem", "vw", "vh", "vmin", "vmax", "cm", "mm", "q", "in", "pc", "pt"]
+        guard let unit = allowedUnits.first(where: { lowercased.hasSuffix($0) }) else { return false }
+        let number = lowercased.dropLast(unit.count)
+        guard !number.isEmpty, let value = Double(number), value >= 0 else {
+            return false
+        }
+        return true
+    }
+
+    private func hasWidthDescriptor(in srcset: String) -> Bool {
+        analyzeSrcset(srcset, requiresWidthDescriptors: false).hasWidthDescriptor
+    }
+
+    private static let bodyLinkRelTokens: Set<String> = [
+        "dns-prefetch", "modulepreload", "pingback", "preconnect", "prefetch", "preload", "prerender", "stylesheet"
+    ]
+
+    private static let iconRelTokens: Set<String> = [
+        "icon", "apple-touch-icon", "apple-touch-icon-precomposed"
+    ]
+
+    private static let integrityRelTokens: Set<String> = [
+        "stylesheet", "preload", "modulepreload"
+    ]
 
     private static let preloadDestinations: Set<String> = [
         "audio", "document", "embed", "fetch", "font", "image", "object", "script", "style", "track", "video"

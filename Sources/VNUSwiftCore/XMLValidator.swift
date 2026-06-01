@@ -24,6 +24,33 @@ public final class XMLValidator: NSObject, XMLParserDelegate, @unchecked Sendabl
         )
         messages.append(.error(parseError.localizedDescription, location: location))
     }
+
+    public func parser(
+        _ parser: XMLParser,
+        didStartElement elementName: String,
+        namespaceURI: String?,
+        qualifiedName qName: String?,
+        attributes attributeDict: [String: String] = [:]
+    ) {
+        let name = elementName.lowercased()
+        guard name == "link",
+              namespaceURI == "http://www.w3.org/1999/xhtml" || namespaceURI == nil,
+              attributeDict["href"] == nil,
+              attributeDict["imagesrcset"] == nil else {
+            return
+        }
+
+        let location = SourceLocation(
+            firstLine: parser.lineNumber,
+            firstColumn: parser.columnNumber,
+            lastLine: parser.lineNumber,
+            lastColumn: parser.columnNumber
+        )
+        messages.append(.error(
+            "A \u{201c}link\u{201d} element must have an \u{201c}href\u{201d} or \u{201c}imagesrcset\u{201d} attribute, or both.",
+            location: location
+        ))
+    }
 }
 
 public final class CSSValidator: Sendable {
