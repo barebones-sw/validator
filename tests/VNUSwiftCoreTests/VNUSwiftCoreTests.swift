@@ -148,6 +148,31 @@ import Testing
     #expect(result.messages.contains { $0.message == "When the \u{201c}imagesrcset\u{201d} attribute has any image candidate string with a width descriptor, the \u{201c}imagesizes\u{201d} attribute must also be specified." })
 }
 
+@Test func generalAttributeCheckerCoversPictureContentModel() {
+    let result = checkHTML("<!doctype html><html lang=en><meta charset=utf-8><title>T</title><picture>x<br><source srcset=x><source srcset=y><img src=x alt><img src=y alt></picture><picture><script></script></picture>")
+    #expect(result.messages.contains { $0.message == "Text not allowed in \u{201c}picture\u{201d} in this context." })
+    #expect(result.messages.contains { $0.message == "Element \u{201c}br\u{201d} not allowed as child of \u{201c}picture\u{201d} in this context." })
+    #expect(result.messages.contains { $0.message == "A \u{201c}source\u{201d} element that has a following sibling \u{201c}source\u{201d} element or \u{201c}img\u{201d} element with a \u{201c}srcset\u{201d} attribute must have a \u{201c}media\u{201d} attribute and/or \u{201c}type\u{201d} attribute." })
+    #expect(result.messages.contains { $0.message == "Element \u{201c}img\u{201d} not allowed as child of \u{201c}picture\u{201d} in this context." })
+    #expect(result.messages.contains { $0.message == "Element \u{201c}picture\u{201d} is missing a required instance of child element \u{201c}img\u{201d}." })
+}
+
+@Test func generalAttributeCheckerCoversPictureAttributes() {
+    let result = checkHTML("<!doctype html><html lang=en><meta charset=utf-8><title>T</title><picture role=img><source srcset=x crossorigin><img src=x alt type=image/png></picture><video srcset=x></video>")
+    #expect(result.messages.contains { $0.message == "Attribute \u{201c}role\u{201d} not allowed on element \u{201c}picture\u{201d} at this point." })
+    #expect(result.messages.contains { $0.message == "Attribute \u{201c}crossorigin\u{201d} not allowed on element \u{201c}source\u{201d} at this point." })
+    #expect(result.messages.contains { $0.message == "Attribute \u{201c}type\u{201d} not allowed on element \u{201c}img\u{201d} at this point." })
+    #expect(result.messages.contains { $0.message == "Attribute \u{201c}srcset\u{201d} not allowed on element \u{201c}video\u{201d} at this point." })
+}
+
+@Test func generalAttributeCheckerCoversPictureSelectionAndSizesRules() {
+    let result = checkHTML("<!doctype html><html lang=en><meta charset=utf-8><title>T</title><picture><source srcset=x media=all><source srcset=y><img src=x alt></picture><picture><source srcset=\"x 100w\" sizes=auto media=screen><img src=x alt></picture><img src=x alt srcset=\"x 100w, y 200w\" sizes=\"100vw, (min-width:500px) 500px\"><img alt>")
+    #expect(result.messages.contains { $0.message == "Value of \u{201c}media\u{201d} attribute here must not be \u{201c}all\u{201d}." })
+    #expect(result.messages.contains { $0.message == "The \u{201c}sizes\u{201d} attribute value starting with \u{201c}auto\u{201d} is only valid for lazy-loaded images. The \u{201c}img\u{201d} element must have a \u{201c}loading\u{201d} attribute set to \u{201c}lazy\u{201d}." })
+    #expect(result.messages.contains { $0.message == "Bad value \u{201c}100vw, (min-width:500px) 500px\u{201d} for attribute \u{201c}sizes\u{201d} on element \u{201c}img\u{201d}." })
+    #expect(result.messages.contains { $0.message == "Element \u{201c}img\u{201d} is missing one or more of the following attributes: \u{201c}src\u{201d}, \u{201c}srcset\u{201d}." })
+}
+
 @Test func generalAttributeCheckerCoversLinkRelationConstraints() {
     let result = checkHTML("<!doctype html><html lang=en><meta charset=utf-8><title>T</title><link rel=\"alternate stylesheet\" href=x><link rel=stylesheet href=x as=style><link rel=canonical href=x integrity=sha256-x><body><link rel=canonical href=x></body>")
     #expect(result.messages.contains { $0.message == "A \u{201c}link\u{201d} element with a \u{201c}rel\u{201d} attribute that contains both the values \u{201c}alternate\u{201d} and \u{201c}stylesheet\u{201d} must have a \u{201c}title\u{201d} attribute with a non-empty value." })

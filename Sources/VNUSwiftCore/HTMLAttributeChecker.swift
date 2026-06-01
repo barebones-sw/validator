@@ -325,17 +325,20 @@ struct HTMLGeneralAttributeChecker {
         for event in document.events {
             switch event {
             case let .startElement(element):
+                let parent = stack.last
+                appendDisallowedAttributeMessages(for: element, parent: parent, locations: locations, messages: &messages)
                 appendLanguageAttributeMessages(for: element, locations: locations, messages: &messages)
                 appendDateTimeAttributeMessages(for: element, locations: locations, messages: &messages)
                 appendScriptAttributeMessages(for: element, locations: locations, messages: &messages)
                 appendResponsiveImageMessages(for: element, stack: stack, locations: locations, messages: &messages)
+                if parent == "picture", let pictureIndex = pictureStack.indices.last {
+                    appendPictureChildMessages(for: element, state: &pictureStack[pictureIndex], locations: locations, messages: &messages)
+                }
                 if element.name == "script" {
                     scriptContent = scriptContentState(for: element)
                 }
                 if element.name == "picture" {
-                    pictureStack.append(PictureState())
-                } else if stack.last == "picture", let pictureIndex = pictureStack.indices.last {
-                    updatePictureState(&pictureStack[pictureIndex], with: element)
+                    pictureStack.append(PictureState(element: element))
                 }
                 stack.append(element.name)
             case let .endElement(name, _, _):
@@ -349,9 +352,17 @@ struct HTMLGeneralAttributeChecker {
                 if let index = stack.lastIndex(of: name) {
                     stack.removeSubrange(index...)
                 }
-            case let .characters(content, _):
+            case let .characters(content, range):
                 if scriptContent != nil {
                     scriptContent?.content += content
+                }
+                if stack.last == "picture", pictureStack.indices.last != nil, !content.unicodeScalars.allSatisfy(isASCIIWhitespace) {
+                    appendMessage(
+                        "Text not allowed in \u{201c}picture\u{201d} in this context.",
+                        range: range,
+                        locations: locations,
+                        messages: &messages
+                    )
                 }
             default:
                 continue
@@ -362,19 +373,53 @@ struct HTMLGeneralAttributeChecker {
     }
 
     private struct PictureState {
+        var element: HTMLStartElement
         var sourcesMissingSizes: [HTMLStartElement] = []
+        var sourcesWithAutoSizes: [HTMLStartElement] = []
+        var sourceSelectionCandidates: [HTMLStartElement] = []
         var permitsSourceWidthWithoutSizes = false
+        var sawImage = false
     }
 
-    private func updatePictureState(_ state: inout PictureState, with element: HTMLStartElement) {
-        if element.name == "source",
-           let srcset = element.attributeValue("srcset"),
-           !element.hasAttribute("sizes"),
-           hasWidthDescriptor(in: srcset) {
-            state.sourcesMissingSizes.append(element)
-        } else if element.name == "img",
-                  element.attributeValue("loading")?.lowercased() == "lazy" {
-            state.permitsSourceWidthWithoutSizes = true
+    private func appendPictureChildMessages(
+        for element: HTMLStartElement,
+        state: inout PictureState,
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) {
+        let hasSrcset = element.hasAttribute("srcset")
+        if hasSrcset, element.name == "source" || element.name == "img" {
+            appendAlwaysMatchingSourceMessages(for: state.sourceSelectionCandidates, locations: locations, messages: &messages)
+            state.sourceSelectionCandidates.removeAll()
+        }
+
+        switch element.name {
+        case "script", "template":
+            return
+        case "source":
+            if state.sawImage {
+                appendElementNotAllowedInPictureMessage(for: element, locations: locations, messages: &messages)
+                return
+            }
+            guard let srcset = element.attributeValue("srcset") else { return }
+            if !element.hasAttribute("sizes"), hasWidthDescriptor(in: srcset) {
+                state.sourcesMissingSizes.append(element)
+            }
+            if element.attributeValue("sizes")?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased().hasPrefix("auto") == true {
+                state.sourcesWithAutoSizes.append(element)
+            }
+            state.sourceSelectionCandidates.append(element)
+        case "img":
+            if state.sawImage {
+                appendElementNotAllowedInPictureMessage(for: element, locations: locations, messages: &messages)
+                return
+            }
+            state.sawImage = true
+            if element.attributeValue("loading")?.lowercased() == "lazy" {
+                state.permitsSourceWidthWithoutSizes = true
+            }
+        default:
+            appendElementNotAllowedInPictureMessage(for: element, locations: locations, messages: &messages)
         }
     }
 
@@ -383,10 +428,97 @@ struct HTMLGeneralAttributeChecker {
         locations: SourceLocationMap,
         messages: inout [ValidationMessage]
     ) {
-        guard !state.permitsSourceWidthWithoutSizes else { return }
-        for element in state.sourcesMissingSizes {
+        if !state.sawImage {
             appendMessage(
-                "When the \u{201c}srcset\u{201d} attribute has any image candidate string with a width descriptor, the \u{201c}sizes\u{201d} attribute must also be specified.",
+                "Element \u{201c}picture\u{201d} is missing a required instance of child element \u{201c}img\u{201d}.",
+                for: state.element,
+                locations: locations,
+                messages: &messages
+            )
+        }
+
+        if !state.permitsSourceWidthWithoutSizes {
+            for element in state.sourcesMissingSizes {
+                appendMessage(
+                    "When the \u{201c}srcset\u{201d} attribute has any image candidate string with a width descriptor, the \u{201c}sizes\u{201d} attribute must also be specified.",
+                    for: element,
+                    locations: locations,
+                    messages: &messages
+                )
+            }
+            for element in state.sourcesWithAutoSizes {
+                appendMessage(
+                    "The \u{201c}sizes\u{201d} attribute value starting with \u{201c}auto\u{201d} is only valid for lazy-loaded images. The \u{201c}img\u{201d} element must have a \u{201c}loading\u{201d} attribute set to \u{201c}lazy\u{201d}.",
+                    for: element,
+                    locations: locations,
+                    messages: &messages
+                )
+            }
+        }
+
+        appendAlwaysMatchingSourceMessages(for: state.sourceSelectionCandidates, locations: locations, messages: &messages)
+    }
+
+    private func appendAlwaysMatchingSourceMessages(
+        for sources: [HTMLStartElement],
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) {
+        for element in sources {
+            if element.hasAttribute("media") {
+                let media = element.attributeValue("media") ?? ""
+                let trimmed = media.trimmingCharacters(in: .whitespacesAndNewlines)
+                if trimmed.isEmpty {
+                    appendMessage("Value of \u{201c}media\u{201d} attribute here must not be empty.", for: element, locations: locations, messages: &messages)
+                } else if trimmed.lowercased() == "all" {
+                    appendMessage("Value of \u{201c}media\u{201d} attribute here must not be \u{201c}all\u{201d}.", for: element, locations: locations, messages: &messages)
+                }
+            } else if !element.hasAttribute("type") {
+                appendMessage(
+                    "A \u{201c}source\u{201d} element that has a following sibling \u{201c}source\u{201d} element or \u{201c}img\u{201d} element with a \u{201c}srcset\u{201d} attribute must have a \u{201c}media\u{201d} attribute and/or \u{201c}type\u{201d} attribute.",
+                    for: element,
+                    locations: locations,
+                    messages: &messages
+                )
+            }
+        }
+    }
+
+    private func appendElementNotAllowedInPictureMessage(
+        for element: HTMLStartElement,
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) {
+        appendMessage(
+            "Element \u{201c}\(element.name)\u{201d} not allowed as child of \u{201c}picture\u{201d} in this context.",
+            for: element,
+            locations: locations,
+            messages: &messages
+        )
+    }
+
+    private func appendDisallowedAttributeMessages(
+        for element: HTMLStartElement,
+        parent: String?,
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) {
+        let disallowed: Set<String>
+        if element.name == "picture" {
+            disallowed = Self.pictureDisallowedAttributes
+        } else if element.name == "source", parent == "picture" {
+            disallowed = Self.pictureSourceDisallowedAttributes
+        } else if element.name == "img" {
+            disallowed = element.hasAttribute("type") ? ["type"] : []
+        } else if Self.srcsetDisallowedElements.contains(element.name), element.hasAttribute("srcset") {
+            disallowed = ["srcset"]
+        } else {
+            disallowed = []
+        }
+
+        for attribute in element.attributes where disallowed.contains(attribute.name) {
+            appendMessage(
+                "Attribute \u{201c}\(attribute.name)\u{201d} not allowed on element \u{201c}\(element.name)\u{201d} at this point.",
                 for: element,
                 locations: locations,
                 messages: &messages
@@ -1565,17 +1697,32 @@ struct HTMLGeneralAttributeChecker {
         guard !lowercased.contains("(})") && !lowercased.contains("(123)") else { return false }
         guard !["badvalue", "default", "inherit", "initial", "foo-bar"].contains(lowercased) else { return false }
 
-        return value.split(separator: ",", omittingEmptySubsequences: false).allSatisfy { component in
+        let components = value.split(separator: ",", omittingEmptySubsequences: false)
+        let lastIndex = components.index(before: components.endIndex)
+        var sawDefaultSize = false
+        for (index, component) in components.enumerated() {
             let trimmed = component.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !trimmed.isEmpty else { return false }
             if trimmed.lowercased() == "auto" {
-                return true
+                if sawDefaultSize || index != lastIndex {
+                    return false
+                }
+                sawDefaultSize = true
+                continue
             }
             guard let sizeToken = trimmed.split(whereSeparator: { $0.isWhitespace }).last else {
                 return false
             }
-            return isValidSourceSizeValue(String(sizeToken))
+            let isDefaultSize = trimmed.split(whereSeparator: { $0.isWhitespace }).count == 1
+            if isDefaultSize {
+                if sawDefaultSize || index != lastIndex {
+                    return false
+                }
+                sawDefaultSize = true
+            }
+            guard isValidSourceSizeValue(String(sizeToken)) else { return false }
         }
+        return true
     }
 
     private func isValidSourceSizeValue(_ value: String) -> Bool {
@@ -1779,6 +1926,20 @@ struct HTMLGeneralAttributeChecker {
         "json", "script", "style", "worker"
     ]
 
+    private static let pictureDisallowedAttributes: Set<String> = [
+        "align", "alt", "border", "crossorigin", "height", "hspace", "ismap", "longdesc", "lowsrc",
+        "media", "name", "role", "sizes", "src", "srcset", "usemap", "vspace", "width"
+    ]
+
+    private static let pictureSourceDisallowedAttributes: Set<String> = [
+        "align", "alt", "border", "crossorigin", "hspace", "ismap", "longdesc", "role", "src",
+        "usemap", "vspace"
+    ]
+
+    private static let srcsetDisallowedElements: Set<String> = [
+        "audio", "image", "input", "link", "object", "track", "video"
+    ]
+
     private static let javaScriptMIMETypes: Set<String> = [
         "application/ecmascript",
         "application/javascript",
@@ -1848,6 +2009,19 @@ struct HTMLGeneralAttributeChecker {
         ))
     }
 
+    private func appendMessage(
+        _ message: String,
+        range: HTMLSourceRange,
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) {
+        messages.append(.error(
+            message,
+            location: locations.location(offset: range.offset, length: range.length),
+            extract: locations.extract(offset: range.offset, length: range.length)
+        ))
+    }
+
     private func appendWarningMessage(
         _ message: String,
         for element: HTMLStartElement,
@@ -1859,6 +2033,15 @@ struct HTMLGeneralAttributeChecker {
             location: locations.location(offset: element.range.offset, length: element.range.length),
             extract: locations.extract(offset: element.range.offset, length: element.range.length)
         ))
+    }
+
+    private func isASCIIWhitespace(_ scalar: Unicode.Scalar) -> Bool {
+        switch scalar.value {
+        case 0x09, 0x0A, 0x0C, 0x0D, 0x20:
+            return true
+        default:
+            return false
+        }
     }
 
     private func isPlausibleLanguageTag(_ value: String) -> Bool {

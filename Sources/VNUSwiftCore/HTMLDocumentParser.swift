@@ -185,6 +185,10 @@ struct HTMLRequiredAttributeChecker {
             }
         case "area":
             appendAreaRequiredAttributeMessages(for: element, locations: locations, messages: &messages)
+        case "img":
+            if !element.hasAttribute("src"), !element.hasAttribute("srcset") {
+                appendOneOrMoreMissingAttributes(["src", "srcset"], for: element, locations: locations, messages: &messages)
+            }
         case "object":
             if !element.hasAttribute("data") {
                 appendMissingAttribute("data", for: element, locations: locations, messages: &messages)
@@ -227,6 +231,20 @@ struct HTMLRequiredAttributeChecker {
     ) {
         messages.append(.error(
             "Element \u{201c}\(element.name)\u{201d} is missing required attribute \u{201c}\(attribute)\u{201d}.",
+            location: locations.location(offset: element.range.offset, length: element.range.length),
+            extract: locations.extract(offset: element.range.offset, length: element.range.length)
+        ))
+    }
+
+    private func appendOneOrMoreMissingAttributes(
+        _ attributes: [String],
+        for element: HTMLStartElement,
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) {
+        let list = attributes.map { "\u{201c}\($0)\u{201d}" }.joined(separator: ", ")
+        messages.append(.error(
+            "Element \u{201c}\(element.name)\u{201d} is missing one or more of the following attributes: \(list).",
             location: locations.location(offset: element.range.offset, length: element.range.length),
             extract: locations.extract(offset: element.range.offset, length: element.range.length)
         ))

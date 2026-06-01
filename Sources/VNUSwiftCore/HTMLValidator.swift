@@ -79,6 +79,10 @@ public final class HTMLValidator: Sendable {
             }
         }
 
+        if stack.contains(where: { $0.name == "picture" }) {
+            appendError("End of file seen and there were open elements.", offset: source.utf16.count, length: 1, locations: locations, messages: &messages)
+        }
+
         messages.append(contentsOf: HTMLRequiredAttributeChecker().validate(document: document, locations: locations))
         messages.append(contentsOf: HTMLURLAttributeChecker().validate(document: document, locations: locations))
         messages.append(contentsOf: HTMLMicrodataAttributeChecker().validate(document: document, locations: locations))
@@ -198,6 +202,14 @@ public final class HTMLValidator: Sendable {
     }
 
     private func contentModelMessage(for child: String, stack: [OpenElement]) -> String? {
+        if child == "picture" {
+            if stack.last?.name == "noscript", !stack.contains(where: { $0.name == "body" }) {
+                return "Bad start tag in \u{201c}picture\u{201d} in \u{201c}noscript\u{201d} in \u{201c}head\u{201d}."
+            }
+            if let parent = stack.last?.name, Self.invalidPictureParents.contains(parent) {
+                return "Element \u{201c}picture\u{201d} not allowed as child of \u{201c}\(parent)\u{201d} in this context."
+            }
+        }
         guard HTMLVocabulary.flowButNotPhrasing.contains(child) else { return nil }
         if let parent = stack.last?.name, HTMLVocabulary.phrasingOnlyContainers.contains(parent) {
             return "Element \u{201c}\(child)\u{201d} not allowed as child of \u{201c}\(parent)\u{201d} in this context."
@@ -277,6 +289,10 @@ public final class HTMLValidator: Sendable {
         let pattern = #"^[A-Za-z]{2,8}(-[A-Za-z0-9]{1,8})*$"#
         return value.range(of: pattern, options: .regularExpression) != nil && !value.contains("--") && !value.hasSuffix("-") && !value.hasPrefix("-")
     }
+
+    private static let invalidPictureParents: Set<String> = [
+        "dl", "hgroup", "rp", "ul"
+    ]
 }
 
 private extension Array where Element == HTMLToken {
