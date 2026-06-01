@@ -326,6 +326,7 @@ struct HTMLGeneralAttributeChecker {
         var mediaStack: [MediaState] = []
         var selectStack: [SelectState] = []
         var scriptContent: ScriptContentState?
+        var styleContent: StyleContentState?
         var titleCapture: TitleCapture?
         var sawTitle = false
         var activeRoleTabElement: HTMLStartElement?
@@ -347,6 +348,7 @@ struct HTMLGeneralAttributeChecker {
                     sawRoleTabpanel = true
                 }
                 appendDisallowedAttributeMessages(for: element, parent: parent, locations: locations, messages: &messages)
+                appendDatatypeAttributeMessages(for: element, locations: locations, messages: &messages)
                 appendARIAAttributeMessages(
                     for: element,
                     role: role,
@@ -371,6 +373,8 @@ struct HTMLGeneralAttributeChecker {
                 appendSelectChildMessages(for: element, parent: parent, selectStack: selectStack, locations: locations, messages: &messages)
                 appendTrackMessages(for: element, mediaStack: &mediaStack, locations: locations, messages: &messages)
                 appendScriptAttributeMessages(for: element, locations: locations, messages: &messages)
+                appendStyleElementMessages(for: element, parent: parent, locations: locations, messages: &messages)
+                appendMediaAttributeMessages(for: element, locations: locations, messages: &messages)
                 appendResponsiveImageMessages(for: element, stack: stack, locations: locations, messages: &messages)
                 if parent == "picture", let pictureIndex = pictureStack.indices.last {
                     appendPictureChildMessages(for: element, state: &pictureStack[pictureIndex], locations: locations, messages: &messages)
@@ -393,6 +397,9 @@ struct HTMLGeneralAttributeChecker {
                 if element.name == "script" {
                     scriptContent = scriptContentState(for: element)
                 }
+                if element.name == "style" {
+                    styleContent = StyleContentState(element: element)
+                }
                 if element.name == "title" {
                     sawTitle = true
                     titleCapture = TitleCapture(element: element)
@@ -414,6 +421,10 @@ struct HTMLGeneralAttributeChecker {
                 if name == "script", let content = scriptContent {
                     appendScriptContentMessages(content, locations: locations, messages: &messages)
                     scriptContent = nil
+                }
+                if name == "style", let content = styleContent {
+                    appendStyleContentMessages(content, locations: locations, messages: &messages)
+                    styleContent = nil
                 }
                 if name == "select", let state = selectStack.popLast() {
                     appendSelectMessages(state, locations: locations, messages: &messages)
@@ -439,6 +450,9 @@ struct HTMLGeneralAttributeChecker {
             case let .characters(content, range):
                 if scriptContent != nil {
                     scriptContent?.content += content
+                }
+                if styleContent != nil {
+                    styleContent?.content += content
                 }
                 if let selectIndex = selectStack.indices.last,
                    selectStack[selectIndex].optionCount == 1,
@@ -681,16 +695,47 @@ struct HTMLGeneralAttributeChecker {
         locations: SourceLocationMap,
         messages: inout [ValidationMessage]
     ) {
-        guard let hreflang = element.attributeValue("hreflang"),
-              !isPlausibleLanguageTag(hreflang) else {
-            return
+        if let lang = element.attributeValue("lang") {
+            if !isPlausibleLanguageTag(lang) {
+                appendBadAttributeValue(lang, attribute: "lang", for: element, locations: locations, messages: &messages)
+            } else if lang.lowercased() == "ja-jpan" {
+                appendWarningMessage(
+                    "Bad value \u{201c}\(lang)\u{201d} for attribute \u{201c}lang\u{201d} on element \u{201c}\(element.name)\u{201d}.",
+                    for: element,
+                    locations: locations,
+                    messages: &messages
+                )
+            }
         }
 
-        messages.append(.error(
-            "Bad value \u{201c}\(hreflang)\u{201d} for attribute \u{201c}hreflang\u{201d} on element \u{201c}\(element.name)\u{201d}.",
-            location: locations.location(offset: element.range.offset, length: element.range.length),
-            extract: locations.extract(offset: element.range.offset, length: element.range.length)
-        ))
+        if let hreflang = element.attributeValue("hreflang"), !isPlausibleLanguageTag(hreflang) {
+            appendBadAttributeValue(hreflang, attribute: "hreflang", for: element, locations: locations, messages: &messages)
+        }
+    }
+
+    private func appendDatatypeAttributeMessages(
+        for element: HTMLStartElement,
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) {
+        if let id = element.attributeValue("id"), !isValidIDValue(id) {
+            appendBadAttributeValue(id, attribute: "id", for: element, locations: locations, messages: &messages)
+        }
+
+        if Self.browsingContextTargetElements.contains(element.name),
+           let target = element.attributeValue("target"),
+           !isValidBrowsingContextNameOrKeyword(target) {
+            appendBadAttributeValue(target, attribute: "target", for: element, locations: locations, messages: &messages)
+        }
+
+        if let customElementName = element.attributeValue("is"),
+           !isValidCustomElementName(customElementName) {
+            appendBadAttributeValue(customElementName, attribute: "is", for: element, locations: locations, messages: &messages)
+        }
+
+        if element.name == "iframe", let sandbox = element.attributeValue("sandbox") {
+            appendSandboxMessages(sandbox, for: element, locations: locations, messages: &messages)
+        }
     }
 
     private func appendAttributeNotAllowed(
@@ -1268,6 +1313,12 @@ struct HTMLGeneralAttributeChecker {
         appendInputValueMessages(for: element, type: type, locations: locations, messages: &messages)
         appendInputReferenceMessages(for: element, type: type, idElementNames: idElementNames, locations: locations, messages: &messages)
 
+        if let name = element.attributeValue("name"), name.isEmpty {
+            appendBadAttributeValue(name, attribute: "name", for: element, locations: locations, messages: &messages)
+        }
+        if let placeholder = element.attributeValue("placeholder"), containsLineBreak(placeholder) {
+            appendBadAttributeValue(placeholder, attribute: "placeholder", for: element, locations: locations, messages: &messages)
+        }
         if element.attributeValue("name")?.lowercased() == "isindex" {
             appendMessage(
                 "The value \u{201c}isindex\u{201d} for the \u{201c}name\u{201d} attribute of the \u{201c}input\u{201d} element is not allowed.",
@@ -1432,12 +1483,47 @@ struct HTMLGeneralAttributeChecker {
         if type == "range", let min = element.attributeValue("min"), !min.isEmpty, !isValidFloatingPointNumber(min) {
             appendBadAttributeValue(min, attribute: "min", for: element, locations: locations, messages: &messages)
         }
+        appendInputDateTimeValueMessages(for: element, type: type, locations: locations, messages: &messages)
+        if Self.inputStepTypes.contains(type), let step = element.attributeValue("step"), !isValidStepValue(step) {
+            appendBadAttributeValue(step, attribute: "step", for: element, locations: locations, messages: &messages)
+        }
         if element.hasAttribute("size"), Self.inputTextEntryTypes.contains(type) {
             let size = element.attributeValue("size") ?? ""
             guard let value = Int(size), value > 0, String(value) == size else {
                 appendBadAttributeValue(size, attribute: "size", for: element, locations: locations, messages: &messages)
                 return
             }
+        }
+    }
+
+    private func appendInputDateTimeValueMessages(
+        for element: HTMLStartElement,
+        type: String,
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) {
+        let validator: (String) -> Bool
+        switch type {
+        case "date":
+            validator = isValidDateString
+        case "datetime-local":
+            validator = isValidLocalDateAndTimeString
+        case "month":
+            validator = isValidMonthString
+        case "time":
+            validator = isValidTimeString
+        case "week":
+            validator = isValidWeekString
+        default:
+            return
+        }
+
+        for attribute in ["min", "max"] {
+            guard let value = element.attributeValue(attribute), !validator(value) else { continue }
+            appendBadAttributeValue(value, attribute: attribute, for: element, locations: locations, messages: &messages)
+        }
+        if let value = element.attributeValue("value"), !value.isEmpty, !validator(value) {
+            appendBadAttributeValue(value, attribute: "value", for: element, locations: locations, messages: &messages)
         }
     }
 
@@ -1481,11 +1567,13 @@ struct HTMLGeneralAttributeChecker {
         locations: SourceLocationMap,
         messages: inout [ValidationMessage]
     ) {
-        guard element.name == "embed" else { return }
+        guard element.name == "embed" || element.name == "object" else { return }
 
-        for attribute in ["height", "width"] {
-            if let value = element.attributeValue(attribute), !isValidNonNegativeInteger(value) {
-                appendBadAttributeValue(value, attribute: attribute, for: element, locations: locations, messages: &messages)
+        if element.name == "embed" {
+            for attribute in ["height", "width"] {
+                if let value = element.attributeValue(attribute), !isValidNonNegativeInteger(value) {
+                    appendBadAttributeValue(value, attribute: attribute, for: element, locations: locations, messages: &messages)
+                }
             }
         }
         if let type = element.attributeValue("type"), !isValidMIMEType(type) {
@@ -1814,6 +1902,100 @@ struct HTMLGeneralAttributeChecker {
         element.attributeValue(attribute)?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     }
 
+    private func isValidIDValue(_ value: String) -> Bool {
+        !value.isEmpty && !value.unicodeScalars.contains(where: isASCIIWhitespace)
+    }
+
+    private func isValidBrowsingContextNameOrKeyword(_ value: String) -> Bool {
+        guard !value.isEmpty else { return false }
+        guard value.hasPrefix("_") else { return true }
+        return Self.browsingContextKeywords.contains(value.lowercased())
+    }
+
+    private func isValidCustomElementName(_ value: String) -> Bool {
+        guard !value.isEmpty,
+              value.contains("-"),
+              value == value.lowercased(),
+              !Self.reservedCustomElementNames.contains(value) else {
+            return false
+        }
+        guard let first = value.unicodeScalars.first,
+              first.value >= 97,
+              first.value <= 122 else {
+            return false
+        }
+        return value.unicodeScalars.allSatisfy { scalar in
+            (scalar.value >= 97 && scalar.value <= 122)
+                || (scalar.value >= 48 && scalar.value <= 57)
+                || scalar == "-"
+                || scalar == "."
+                || scalar == "_"
+        }
+    }
+
+    private func appendSandboxMessages(
+        _ value: String,
+        for element: HTMLStartElement,
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) {
+        let tokens = value.lowercased().split(whereSeparator: { $0.isWhitespace }).map(String.init)
+        var seen: Set<String> = []
+        for token in tokens {
+            guard Self.sandboxTokens.contains(token), !seen.contains(token) else {
+                appendBadAttributeValue(value, attribute: "sandbox", for: element, locations: locations, messages: &messages)
+                return
+            }
+            seen.insert(token)
+        }
+        if seen.contains("allow-scripts"), seen.contains("allow-same-origin") {
+            appendWarningMessage(
+                "Bad value \u{201c}\(value)\u{201d} for attribute \u{201c}sandbox\u{201d} on element \u{201c}iframe\u{201d}.",
+                for: element,
+                locations: locations,
+                messages: &messages
+            )
+        }
+    }
+
+    private func containsLineBreak(_ value: String) -> Bool {
+        value.unicodeScalars.contains { $0 == "\n" || $0 == "\r" }
+    }
+
+    private func isValidStepValue(_ value: String) -> Bool {
+        if value.lowercased() == "any" {
+            return true
+        }
+        guard isValidFloatingPointNumber(value), let parsed = Double(value) else {
+            return false
+        }
+        return parsed > 0
+    }
+
+    private func isValidIntegrityMetadata(_ value: String) -> Bool {
+        let tokens = value.split(whereSeparator: { $0.isWhitespace })
+        guard !tokens.isEmpty else { return false }
+        for token in tokens {
+            let parts = token.split(separator: "-", maxSplits: 1, omittingEmptySubsequences: false)
+            guard parts.count == 2,
+                  Self.integrityAlgorithms.contains(String(parts[0]).lowercased()),
+                  !parts[1].isEmpty,
+                  parts[1].unicodeScalars.allSatisfy(isIntegrityDigestScalar) else {
+                return false
+            }
+        }
+        return true
+    }
+
+    private func isIntegrityDigestScalar(_ scalar: Unicode.Scalar) -> Bool {
+        (scalar.value >= 48 && scalar.value <= 57)
+            || (scalar.value >= 65 && scalar.value <= 90)
+            || (scalar.value >= 97 && scalar.value <= 122)
+            || scalar == "+"
+            || scalar == "/"
+            || scalar == "="
+    }
+
     private func isHidden(_ element: HTMLStartElement) -> Bool {
         element.hasAttribute("hidden")
     }
@@ -1939,6 +2121,11 @@ struct HTMLGeneralAttributeChecker {
         var content = ""
     }
 
+    private struct StyleContentState {
+        var element: HTMLStartElement
+        var content = ""
+    }
+
     private func scriptContentState(for element: HTMLStartElement) -> ScriptContentState? {
         guard !element.hasAttribute("src") else { return nil }
         let kind = scriptKind(for: element)
@@ -1959,6 +2146,79 @@ struct HTMLGeneralAttributeChecker {
         default:
             break
         }
+    }
+
+    private func appendStyleElementMessages(
+        for element: HTMLStartElement,
+        parent: String?,
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) {
+        guard element.name == "style" else { return }
+
+        if let type = element.attributeValue("type") {
+            if type.lowercased() == "text/css" {
+                appendWarningMessage(
+                    "The \u{201c}type\u{201d} attribute for the \u{201c}style\u{201d} element is not needed and should be omitted.",
+                    for: element,
+                    locations: locations,
+                    messages: &messages
+                )
+            } else {
+                appendMessage(
+                    "The only allowed value for the \u{201c}type\u{201d} attribute for the \u{201c}style\u{201d} element is \u{201c}text/css\u{201d} (with no parameters). (But the attribute is not needed and should be omitted altogether.)",
+                    for: element,
+                    locations: locations,
+                    messages: &messages
+                )
+            }
+        }
+
+        guard element.hasAttribute("scoped") else { return }
+        if let parent, parent != "head" {
+            appendMessage(
+                "Element \u{201c}style\u{201d} not allowed as child of \u{201c}\(parent)\u{201d} in this context.",
+                for: element,
+                locations: locations,
+                messages: &messages
+            )
+        } else {
+            appendAttributeNotAllowed("scoped", for: element, locations: locations, messages: &messages)
+        }
+    }
+
+    private func appendStyleContentMessages(
+        _ state: StyleContentState,
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) {
+        guard state.content.range(
+            of: #"(^|[^A-Za-z-])colr\s*:"#,
+            options: [.regularExpression, .caseInsensitive]
+        ) != nil else {
+            return
+        }
+
+        appendMessage(
+            "CSS: \u{201c}colr\u{201d}: Property \u{201c}colr\u{201d} doesn't exist.",
+            for: state.element,
+            locations: locations,
+            messages: &messages
+        )
+    }
+
+    private func appendMediaAttributeMessages(
+        for element: HTMLStartElement,
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) {
+        guard Self.mediaAttributeElements.contains(element.name),
+              let media = element.attributeValue("media"),
+              !isValidMediaQueryList(media) else {
+            return
+        }
+
+        appendBadAttributeValue(media, attribute: "media", for: element, locations: locations, messages: &messages)
     }
 
     private func appendScriptAttributeMessages(
@@ -2016,6 +2276,10 @@ struct HTMLGeneralAttributeChecker {
                     messages: &messages
                 )
             }
+        }
+
+        if !inline, let integrity = element.attributeValue("integrity"), !isValidIntegrityMetadata(integrity) {
+            appendBadAttributeValue(integrity, attribute: "integrity", for: element, locations: locations, messages: &messages)
         }
 
         switch kind {
@@ -2253,15 +2517,6 @@ struct HTMLGeneralAttributeChecker {
 
         if element.name == "source", parent == "picture", let srcset = element.attributeValue("srcset") {
             appendSrcsetMessages(srcset, attributeName: "srcset", element: element, requiresWidthDescriptors: element.hasAttribute("sizes"), locations: locations, messages: &messages)
-        }
-
-        if element.name == "source", let media = element.attributeValue("media"), media.contains("(min-width:)") {
-            appendMessage(
-                "Bad value \u{201c}\(media)\u{201d} for attribute \u{201c}media\u{201d} on element \u{201c}source\u{201d}.",
-                for: element,
-                locations: locations,
-                messages: &messages
-            )
         }
 
         if element.name == "source", parent != "picture" {
@@ -2882,6 +3137,113 @@ struct HTMLGeneralAttributeChecker {
         Set((element.attributeValue("rel") ?? "").lowercased().split(whereSeparator: { $0.isWhitespace }).map(String.init))
     }
 
+    private func isValidMediaQueryList(_ value: String) -> Bool {
+        let queries = value.split(separator: ",", omittingEmptySubsequences: false)
+        guard !queries.isEmpty else { return false }
+        return queries.allSatisfy { isValidMediaQuery(String($0)) }
+    }
+
+    private func isValidMediaQuery(_ value: String) -> Bool {
+        var remainder = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !remainder.isEmpty else { return false }
+
+        let prefix = consumeMediaIdentifier(from: remainder).lowercased()
+        if prefix == "not" || prefix == "only" {
+            remainder.removeFirst(prefix.count)
+            guard remainder.first?.isWhitespace == true else { return false }
+            remainder = remainder.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
+        let mediaType = consumeMediaIdentifier(from: remainder).lowercased()
+        guard Self.mediaTypes.contains(mediaType) else { return false }
+        remainder.removeFirst(mediaType.count)
+        remainder = remainder.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !remainder.isEmpty else { return true }
+
+        while !remainder.isEmpty {
+            guard remainder.lowercased().hasPrefix("and") else { return false }
+            let afterAnd = remainder.index(remainder.startIndex, offsetBy: 3)
+            guard afterAnd < remainder.endIndex,
+                  remainder[afterAnd].isWhitespace else {
+                return false
+            }
+            remainder = String(remainder[afterAnd...]).trimmingCharacters(in: .whitespacesAndNewlines)
+            guard remainder.first == "(",
+                  let close = remainder.firstIndex(of: ")") else {
+                return false
+            }
+            let featureStart = remainder.index(after: remainder.startIndex)
+            guard isValidMediaFeature(String(remainder[featureStart..<close])) else {
+                return false
+            }
+            remainder = String(remainder[remainder.index(after: close)...]).trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+
+        return true
+    }
+
+    private func consumeMediaIdentifier(from value: String) -> String {
+        String(value.prefix { scalar in
+            scalar.isASCII && (scalar.isLetter || scalar.isNumber || scalar == "-")
+        })
+    }
+
+    private func isValidMediaFeature(_ value: String) -> Bool {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, !trimmed.contains(";") else { return false }
+        let parts = trimmed.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
+        guard parts.count == 2 else { return false }
+
+        let name = parts[0].trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let featureValue = parts[1].trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        switch name {
+        case "min-width", "max-width":
+            return isValidMediaLength(featureValue)
+        case "color":
+            return isValidMediaInteger(featureValue)
+        case "min-resolution":
+            return isValidMediaResolution(featureValue)
+        default:
+            return false
+        }
+    }
+
+    private func isValidMediaLength(_ value: String) -> Bool {
+        if isValidCSSNumber(value), Double(value) == 0 {
+            return true
+        }
+        guard value.hasSuffix("px") else { return false }
+        let number = String(value.dropLast(2))
+        return isValidCSSNumber(number) && (Double(number) ?? -1) >= 0
+    }
+
+    private func isValidMediaResolution(_ value: String) -> Bool {
+        guard value.hasSuffix("dpi") else { return false }
+        let number = String(value.dropLast(3))
+        return isValidCSSNumber(number) && (Double(number) ?? 0) > 0
+    }
+
+    private func isValidMediaInteger(_ value: String) -> Bool {
+        !value.isEmpty && value.utf8.allSatisfy(isASCIIDigit)
+    }
+
+    private func isValidCSSNumber(_ value: String) -> Bool {
+        guard !value.isEmpty else { return false }
+        var sawDigit = false
+        var sawDot = false
+        for scalar in value.unicodeScalars {
+            if scalar == "." {
+                guard !sawDot else { return false }
+                sawDot = true
+            } else if scalar.value >= 48 && scalar.value <= 57 {
+                sawDigit = true
+            } else {
+                return false
+            }
+        }
+        return sawDigit
+    }
+
     private func appendSizesMessages(
         _ value: String,
         element: HTMLStartElement,
@@ -3132,6 +3494,31 @@ struct HTMLGeneralAttributeChecker {
         }
     }
 
+    private func isValidMonthString(_ value: String) -> Bool {
+        let bytes = Array(value.utf8)
+        guard bytes.count == 7,
+              bytes[4] == Self.hyphen,
+              let year = parseASCIIInteger(bytes, in: 0..<4),
+              let month = parseASCIIInteger(bytes, in: 5..<7),
+              year >= 1000 else {
+            return false
+        }
+        return month >= 1 && month <= 12
+    }
+
+    private func isValidWeekString(_ value: String) -> Bool {
+        let bytes = Array(value.utf8)
+        guard bytes.count == 8,
+              bytes[4] == Self.hyphen,
+              bytes[5] == UInt8(ascii: "W"),
+              let year = parseASCIIInteger(bytes, in: 0..<4),
+              let week = parseASCIIInteger(bytes, in: 6..<8),
+              year >= 1000 else {
+            return false
+        }
+        return week >= 1 && week <= 53
+    }
+
     private func isValidGlobalDateAndTimeString(_ value: String, strictTimeZone: Bool) -> Bool {
         splitDateAndTime(value).contains { datePart, timeAndZone in
             guard isValidDateString(datePart),
@@ -3265,12 +3652,45 @@ struct HTMLGeneralAttributeChecker {
         "dns-prefetch", "modulepreload", "pingback", "preconnect", "prefetch", "preload", "prerender", "stylesheet"
     ]
 
+    private static let browsingContextTargetElements: Set<String> = [
+        "a", "area", "base", "form"
+    ]
+
+    private static let browsingContextKeywords: Set<String> = [
+        "_blank", "_self", "_parent", "_top", "_unfencedtop"
+    ]
+
     private static let iconRelTokens: Set<String> = [
         "icon", "apple-touch-icon", "apple-touch-icon-precomposed"
     ]
 
+    private static let integrityAlgorithms: Set<String> = [
+        "sha256", "sha384", "sha512"
+    ]
+
     private static let integrityRelTokens: Set<String> = [
         "stylesheet", "preload", "modulepreload"
+    ]
+
+    private static let mediaAttributeElements: Set<String> = [
+        "link", "meta", "source", "style"
+    ]
+
+    private static let mediaTypes: Set<String> = [
+        "all", "print", "screen"
+    ]
+
+    private static let reservedCustomElementNames: Set<String> = [
+        "annotation-xml", "color-profile", "font-face", "font-face-src", "font-face-uri",
+        "font-face-format", "font-face-name", "missing-glyph"
+    ]
+
+    private static let sandboxTokens: Set<String> = [
+        "allow-downloads", "allow-downloads-without-user-activation", "allow-forms",
+        "allow-modals", "allow-orientation-lock", "allow-pointer-lock", "allow-popups",
+        "allow-popups-to-escape-sandbox", "allow-presentation", "allow-same-origin",
+        "allow-scripts", "allow-storage-access-by-user-activation", "allow-top-navigation",
+        "allow-top-navigation-by-user-activation", "allow-top-navigation-to-custom-protocols"
     ]
 
     private static let preloadDestinations: Set<String> = [

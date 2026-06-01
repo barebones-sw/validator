@@ -140,6 +140,64 @@ import Testing
     #expect(result.messages.contains { $0.message == "Bad value \u{201c}not a valid lang tag\u{201d} for attribute \u{201c}hreflang\u{201d} on element \u{201c}area\u{201d}." })
 }
 
+@Test func generalAttributeCheckerCoversMediaQueryAttributes() {
+    let invalid = checkHTML("<!doctype html><html lang=en><meta charset=utf-8><title>T</title><link rel=stylesheet href=x media=\"screen and(min-width: 400px)\"><link rel=stylesheet href=x media=\"screen and (color: 1em)\"><link rel=stylesheet href=x media=\"screen,,print\"><link rel=stylesheet href=x media=\"projection\">")
+    #expect(invalid.messages.contains { $0.message == "Bad value \u{201c}screen and(min-width: 400px)\u{201d} for attribute \u{201c}media\u{201d} on element \u{201c}link\u{201d}." })
+    #expect(invalid.messages.contains { $0.message == "Bad value \u{201c}screen and (color: 1em)\u{201d} for attribute \u{201c}media\u{201d} on element \u{201c}link\u{201d}." })
+    #expect(invalid.messages.contains { $0.message == "Bad value \u{201c}screen,,print\u{201d} for attribute \u{201c}media\u{201d} on element \u{201c}link\u{201d}." })
+    #expect(invalid.messages.contains { $0.message == "Bad value \u{201c}projection\u{201d} for attribute \u{201c}media\u{201d} on element \u{201c}link\u{201d}." })
+
+    let valid = checkHTML("<!doctype html><html lang=en><meta charset=utf-8><title>T</title><link rel=stylesheet href=x media=\"screen and (min-width: 400px)and (max-width: 600px)\"><link rel=stylesheet href=x media=\"screen and (min-width: .0)\"><link rel=stylesheet href=x media=\"print and (min-resolution: 100dpi)\"><style media=\"screen and (color: 1)\"></style>")
+    #expect(valid.messages.filter { $0.type == "error" }.isEmpty)
+}
+
+@Test func generalAttributeCheckerCoversDatatypeAttributeValues() {
+    let result = checkHTML("""
+        <!doctype html><html lang=en><meta charset=utf-8><title>T</title>
+        <a href=x target=""></a><a href=x target="_foo"></a>
+        <div id=""></div><div id="foo bar"></div>
+        <button is="mybutton">click</button><button is="1-button">click</button>
+        <input type=date min="2024-02-30">
+        <input type=datetime-local min="2024-13-01T12:00">
+        <input type=month min="2024-00">
+        <input type=time min="25:00">
+        <input type=week min="2024-W54">
+        <input type=number step="abc">
+        <input name="">
+        <input type=text placeholder="line1
+        line2">
+        <object type="text"></object>
+        <iframe sandbox="allow-everything"></iframe>
+        <iframe sandbox="allow-scripts allow-scripts"></iframe>
+        <iframe sandbox="allow-scripts allow-same-origin"></iframe>
+        <script src=x integrity="md5-abc123"></script>
+        <span lang="ja-Jpan">Japanese</span>
+        """)
+    #expect(result.messages.contains { $0.message == "Bad value \u{201c}\u{201d} for attribute \u{201c}target\u{201d} on element \u{201c}a\u{201d}." })
+    #expect(result.messages.contains { $0.message == "Bad value \u{201c}_foo\u{201d} for attribute \u{201c}target\u{201d} on element \u{201c}a\u{201d}." })
+    #expect(result.messages.contains { $0.message == "Bad value \u{201c}\u{201d} for attribute \u{201c}id\u{201d} on element \u{201c}div\u{201d}." })
+    #expect(result.messages.contains { $0.message == "Bad value \u{201c}foo bar\u{201d} for attribute \u{201c}id\u{201d} on element \u{201c}div\u{201d}." })
+    #expect(result.messages.contains { $0.message == "Bad value \u{201c}mybutton\u{201d} for attribute \u{201c}is\u{201d} on element \u{201c}button\u{201d}." })
+    #expect(result.messages.contains { $0.message == "Bad value \u{201c}1-button\u{201d} for attribute \u{201c}is\u{201d} on element \u{201c}button\u{201d}." })
+    #expect(result.messages.contains { $0.message == "Bad value \u{201c}2024-02-30\u{201d} for attribute \u{201c}min\u{201d} on element \u{201c}input\u{201d}." })
+    #expect(result.messages.contains { $0.message == "Bad value \u{201c}2024-13-01T12:00\u{201d} for attribute \u{201c}min\u{201d} on element \u{201c}input\u{201d}." })
+    #expect(result.messages.contains { $0.message == "Bad value \u{201c}2024-00\u{201d} for attribute \u{201c}min\u{201d} on element \u{201c}input\u{201d}." })
+    #expect(result.messages.contains { $0.message == "Bad value \u{201c}25:00\u{201d} for attribute \u{201c}min\u{201d} on element \u{201c}input\u{201d}." })
+    #expect(result.messages.contains { $0.message == "Bad value \u{201c}2024-W54\u{201d} for attribute \u{201c}min\u{201d} on element \u{201c}input\u{201d}." })
+    #expect(result.messages.contains { $0.message == "Bad value \u{201c}abc\u{201d} for attribute \u{201c}step\u{201d} on element \u{201c}input\u{201d}." })
+    #expect(result.messages.contains { $0.message == "Bad value \u{201c}\u{201d} for attribute \u{201c}name\u{201d} on element \u{201c}input\u{201d}." })
+    #expect(result.messages.contains { $0.message.contains("attribute \u{201c}placeholder\u{201d}") && $0.message.contains("line1") })
+    #expect(result.messages.contains { $0.message == "Bad value \u{201c}text\u{201d} for attribute \u{201c}type\u{201d} on element \u{201c}object\u{201d}." })
+    #expect(result.messages.contains { $0.message == "Bad value \u{201c}allow-everything\u{201d} for attribute \u{201c}sandbox\u{201d} on element \u{201c}iframe\u{201d}." })
+    #expect(result.messages.contains { $0.message == "Bad value \u{201c}allow-scripts allow-scripts\u{201d} for attribute \u{201c}sandbox\u{201d} on element \u{201c}iframe\u{201d}." })
+    #expect(result.messages.contains { $0.message == "Bad value \u{201c}allow-scripts allow-same-origin\u{201d} for attribute \u{201c}sandbox\u{201d} on element \u{201c}iframe\u{201d}." && $0.subType == "warning" })
+    #expect(result.messages.contains { $0.message == "Bad value \u{201c}md5-abc123\u{201d} for attribute \u{201c}integrity\u{201d} on element \u{201c}script\u{201d}." })
+    #expect(result.messages.contains { $0.message == "Bad value \u{201c}ja-Jpan\u{201d} for attribute \u{201c}lang\u{201d} on element \u{201c}span\u{201d}." && $0.subType == "warning" })
+
+    let valid = checkHTML("<!doctype html><html lang=en><meta charset=utf-8><title>T</title><a href=x target=_blank></a><a href=x target=myframe></a><div id=foo></div><button is=my-button>click</button><input type=date min=2024-02-29><input type=datetime-local min=2024-12-31T12:00><input type=month min=2024-12><input type=time min=12:30:59><input type=week min=2024-W52><input type=number step=any><input type=number step=0.1><object data=x type=text/html></object><iframe sandbox=\"allow-scripts\"></iframe><script src=x integrity=sha256-abc123></script>")
+    #expect(valid.messages.filter { $0.type == "error" }.isEmpty)
+}
+
 @Test func generalAttributeCheckerCoversResponsiveImageDependencies() {
     let result = checkHTML("<!doctype html><html lang=en><meta charset=utf-8><title>T</title><img src=x alt sizes=100vw><img src=x alt srcset=\"x 100w, y 200w\"><link rel=preload as=image imagesizes=100vw><link rel=preload as=image imagesrcset=\"x 100w\">")
     #expect(result.messages.contains { $0.message == "The \u{201c}sizes\u{201d} attribute must only be specified if the \u{201c}srcset\u{201d} attribute is also specified." })
@@ -219,6 +277,16 @@ import Testing
     #expect(result.messages.contains { $0.message == "Bad value \u{201c}default-src 'self'; invalid-directive 'none'\u{201d} for attribute \u{201c}content\u{201d} on element \u{201c}meta\u{201d}." && $0.subType == "warning" })
     #expect(result.messages.contains { $0.message == "Bad value \u{201c}default-src 'invalid-keyword'\u{201d} for attribute \u{201c}content\u{201d} on element \u{201c}meta\u{201d}." })
     #expect(result.messages.contains { $0.message == "Bad value \u{201c}img-src https://\u{4f8b}\u{3048}.com\u{201d} for attribute \u{201c}content\u{201d} on element \u{201c}meta\u{201d}." })
+}
+
+@Test func metaCheckerCoversContentTypeCharsets() {
+    let result = checkHTML("""
+        <!doctype html><html lang=en><title>T</title>
+        <meta http-equiv="content-type" content="text/html; charset=">
+        <meta http-equiv="content-type" content="text/html; charset=not-a-charset">
+        """)
+    #expect(result.messages.contains { $0.message == "Bad value \u{201c}text/html; charset=\u{201d} for attribute \u{201c}content\u{201d} on element \u{201c}meta\u{201d}." })
+    #expect(result.messages.contains { $0.message == "Internal encoding declaration named an unsupported chararacter encoding \u{201c}not-a-charset\u{201d}." })
 }
 
 @Test func generalAttributeCheckerCoversNumericMediaTitleAndTrackRules() {
@@ -315,6 +383,25 @@ import Testing
     #expect(result.messages.contains { $0.message == "A specifier map defined in a \u{201c}imports\u{201d} property within the content of a \u{201c}script\u{201d} element with a \u{201c}type\u{201d} attribute whose value is \u{201c}importmap\u{201d} must only contain non-empty keys." })
     #expect(result.messages.contains { $0.message == "The \u{201c}urls\u{201d} property in a speculation rule must contain at least one URL." })
     #expect(result.messages.contains { $0.message == "The \u{201c}href_matches\u{201d} property in a document rule must be a non-empty string." })
+}
+
+@Test func generalAttributeCheckerCoversStyleElementRules() {
+    let headResult = checkHTML("""
+        <!doctype html><html lang=en><head><meta charset=utf-8><title>T</title>
+        <style>body { colr: red; }</style>
+        <style scoped></style>
+        <style type="text/plain"></style>
+        <style type="text/css"></style>
+        </head><body></body>
+        """)
+    #expect(headResult.messages.contains { $0.message == "CSS: \u{201c}colr\u{201d}: Property \u{201c}colr\u{201d} doesn't exist." })
+    #expect(headResult.messages.contains { $0.message == "Attribute \u{201c}scoped\u{201d} not allowed on element \u{201c}style\u{201d} at this point." })
+    #expect(headResult.messages.contains { $0.message == "The only allowed value for the \u{201c}type\u{201d} attribute for the \u{201c}style\u{201d} element is \u{201c}text/css\u{201d} (with no parameters). (But the attribute is not needed and should be omitted altogether.)" })
+    #expect(headResult.messages.contains { $0.message == "The \u{201c}type\u{201d} attribute for the \u{201c}style\u{201d} element is not needed and should be omitted." && $0.subType == "warning" })
+
+    let bodyResult = checkHTML("<!doctype html><html lang=en><meta charset=utf-8><title>T</title><body><div><style scoped></style></div><p><style scoped></style></p></body>")
+    #expect(bodyResult.messages.contains { $0.message == "Element \u{201c}style\u{201d} not allowed as child of \u{201c}div\u{201d} in this context." })
+    #expect(bodyResult.messages.contains { $0.message == "Element \u{201c}style\u{201d} not allowed as child of \u{201c}p\u{201d} in this context." })
 }
 
 @Test func generalAttributeCheckerCoversARIAImageLabelAndSelectRules() {

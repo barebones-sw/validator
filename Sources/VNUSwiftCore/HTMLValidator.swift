@@ -390,6 +390,8 @@ struct HTMLMetaChecker {
         switch httpEquiv {
         case "content-language":
             appendError("Using the \u{201c}meta\u{201d} element to specify the document-wide default language is obsolete. Consider specifying the language on the root element instead.", for: element, locations: locations, messages: &messages)
+        case "content-type":
+            appendContentTypeEncodingMessages(content: content, element: element, locations: locations, messages: &messages)
         case "refresh":
             if !isValidRefresh(content) {
                 appendError("Bad value \u{201c}\(content)\u{201d} for attribute \u{201c}content\u{201d} on element \u{201c}meta\u{201d}.", for: element, locations: locations, messages: &messages)
@@ -409,6 +411,32 @@ struct HTMLMetaChecker {
             }
         default:
             break
+        }
+    }
+
+    private func appendContentTypeEncodingMessages(
+        content: String,
+        element: HTMLStartElement,
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) {
+        guard let charsetRange = content.range(of: "charset=", options: [.caseInsensitive]) else {
+            return
+        }
+        let charset = content[charsetRange.upperBound...]
+            .split(separator: ";", maxSplits: 1, omittingEmptySubsequences: false)[0]
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !charset.isEmpty else {
+            appendError("Bad value \u{201c}\(content)\u{201d} for attribute \u{201c}content\u{201d} on element \u{201c}meta\u{201d}.", for: element, locations: locations, messages: &messages)
+            return
+        }
+
+        let normalized = charset.lowercased()
+        guard normalized != "utf-8" else { return }
+        if Self.supportedEncodingLabels.contains(normalized) {
+            appendError("Internal encoding declaration \u{201c}\(charset)\u{201d} disagrees with the actual encoding of the document (\u{201c}utf-8\u{201d}).", for: element, locations: locations, messages: &messages)
+        } else {
+            appendError("Internal encoding declaration named an unsupported chararacter encoding \u{201c}\(charset)\u{201d}.", for: element, locations: locations, messages: &messages)
         }
     }
 
@@ -495,6 +523,10 @@ struct HTMLMetaChecker {
     private static let cspQuotedSources: Set<String> = [
         "allow-duplicates", "none", "report-sample", "script", "self", "strict-dynamic",
         "unsafe-eval", "unsafe-hashes", "unsafe-inline", "wasm-unsafe-eval"
+    ]
+
+    private static let supportedEncodingLabels: Set<String> = [
+        "utf-8", "utf8", "us-ascii", "iso-8859-1", "windows-1252"
     ]
 }
 
