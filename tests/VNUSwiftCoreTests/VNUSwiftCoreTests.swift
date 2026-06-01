@@ -221,6 +221,35 @@ import Testing
     #expect(result.messages.contains { $0.message == "Bad value \u{201c}img-src https://\u{4f8b}\u{3048}.com\u{201d} for attribute \u{201c}content\u{201d} on element \u{201c}meta\u{201d}." })
 }
 
+@Test func generalAttributeCheckerCoversNumericMediaTitleAndTrackRules() {
+    let result = checkHTML("""
+        <!doctype html><html lang=en><meta charset=utf-8><title></title>
+        <meter value=2 min=5 max=3 low=6 high=4 optimum=7 aria-valuemax=10>Meter</meter>
+        <progress value=2 max=1 aria-valuemax=1>Progress</progress>
+        <embed width=20% height=20% type=foo>
+        <textarea cols=0 rows=0 autocomplete="country work"></textarea>
+        <video><track default label="" src=en.vtt><track default src=es.vtt></video>
+        """)
+    #expect(result.messages.contains { $0.message == "Element \u{201c}title\u{201d} must not be empty." })
+    #expect(result.messages.contains { $0.message == "The value of the \u{201c}min\u{201d} attribute must be less than or equal to the value of the \u{201c}value\u{201d} attribute." })
+    #expect(result.messages.contains { $0.message == "The value of the \u{201c}low\u{201d} attribute must be less than or equal to the value of the \u{201c}high\u{201d} attribute." })
+    #expect(result.messages.contains { $0.message == "The value of the \u{201c}optimum\u{201d} attribute must be less than or equal to the value of the \u{201c}max\u{201d} attribute." })
+    #expect(result.messages.contains { $0.message == "The \u{201c}aria-valuemax\u{201d} attribute should not be used on a \u{201c}meter\u{201d} element." && $0.subType == "warning" })
+    #expect(result.messages.contains { $0.message == "The value of the  \u{201c}value\u{201d} attribute must be less than or equal to the value of the \u{201c}max\u{201d} attribute." })
+    #expect(result.messages.contains { $0.message == "The \u{201c}aria-valuemax\u{201d} attribute should not be used on a \u{201c}progress\u{201d} element." && $0.subType == "warning" })
+    #expect(result.messages.contains { $0.message == "Bad value \u{201c}20%\u{201d} for attribute \u{201c}width\u{201d} on element \u{201c}embed\u{201d}." })
+    #expect(result.messages.contains { $0.message == "Bad value \u{201c}20%\u{201d} for attribute \u{201c}height\u{201d} on element \u{201c}embed\u{201d}." })
+    #expect(result.messages.contains { $0.message == "Bad value \u{201c}foo\u{201d} for attribute \u{201c}type\u{201d} on element \u{201c}embed\u{201d}." })
+    #expect(result.messages.contains { $0.message == "Bad value \u{201c}country work\u{201d} for attribute \u{201c}autocomplete\u{201d} on element \u{201c}textarea\u{201d}." })
+    #expect(result.messages.contains { $0.message == "Bad value \u{201c}0\u{201d} for attribute \u{201c}cols\u{201d} on element \u{201c}textarea\u{201d}." })
+    #expect(result.messages.contains { $0.message == "Bad value \u{201c}0\u{201d} for attribute \u{201c}rows\u{201d} on element \u{201c}textarea\u{201d}." })
+    #expect(result.messages.contains { $0.message == "Attribute \u{201c}label\u{201d} for element \u{201c}track\u{201d} must have non-empty value." })
+    #expect(result.messages.contains { $0.message == "The \u{201c}default\u{201d} attribute must not occur on more than one \u{201c}track\u{201d} element within the same \u{201c}audio\u{201d} or \u{201c}video\u{201d} element." })
+
+    let missingTitle = checkHTML("<!doctype html><html lang=en><meta charset=utf-8><p>No title")
+    #expect(missingTitle.messages.contains { $0.message == "Element \u{201c}head\u{201d} is missing a required instance of child element \u{201c}title\u{201d}." })
+}
+
 @Test func generalAttributeCheckerCoversInputTypeRules() {
     let result = checkHTML("<!doctype html><html lang=en><meta charset=utf-8><title>T</title><input autocomplete=\"country shipping\"><input type=hidden autocomplete=on aria-label=x required><input type=button value=\"\"><input type=color value=red pattern=x><input type=number value=abc multiple><input type=checkbox role=button><input type=text list=missing form=notform><div id=notform></div><button commandfor=missing command=show-popover>Open</button>")
     #expect(result.messages.contains { $0.message == "Bad value \u{201c}country shipping\u{201d} for attribute \u{201c}autocomplete\u{201d} on element \u{201c}input\u{201d}." })
@@ -326,6 +355,19 @@ import Testing
         options: CheckerOptions(parameters: ["out": ["json"]])
     )
     #expect(result.messages.contains { $0.message == "Duplicate \u{201c}dt\u{201d} name \u{201c}text\u{201d} in \u{201c}dl\u{201d} element. Within a single \u{201c}dl\u{201d} element, there should not be more than one \u{201c}dt\u{201d} element for each name." && $0.subType == "warning" })
+}
+
+@Test func xmlValidatorCoversXHTMLNumericAndEmbeddedRules() {
+    let result = NuValidator().check(
+        input: DocumentInput(data: Data("<html xmlns=\"http://www.w3.org/1999/xhtml\"><head><title>T</title></head><body><meter min=\"0.2\" value=\"0.1\"/><meter min=\"0.3\" low=\"0.2\"/><progress value=\"0.9\" max=\"0.5\"/><embed height=\"20%\" width=\"20%\" type=\"foo\"/></body></html>".utf8), contentType: "application/xhtml+xml; charset=utf-8"),
+        options: CheckerOptions(parameters: ["out": ["json"]])
+    )
+    #expect(result.messages.contains { $0.message == "The value of the \u{201c}min\u{201d} attribute must be less than or equal to the value of the \u{201c}value\u{201d} attribute." })
+    #expect(result.messages.contains { $0.message == "Element \u{201c}meter\u{201d} is missing required attribute \u{201c}value\u{201d}." })
+    #expect(result.messages.contains { $0.message == "The value of the  \u{201c}value\u{201d} attribute must be less than or equal to the value of the \u{201c}max\u{201d} attribute." })
+    #expect(result.messages.contains { $0.message == "Bad value \u{201c}20%\u{201d} for attribute \u{201c}height\u{201d} on element \u{201c}embed\u{201d}." })
+    #expect(result.messages.contains { $0.message == "Bad value \u{201c}20%\u{201d} for attribute \u{201c}width\u{201d} on element \u{201c}embed\u{201d}." })
+    #expect(result.messages.contains { $0.message == "Bad value \u{201c}foo\u{201d} for attribute \u{201c}type\u{201d} on element \u{201c}embed\u{201d}." })
 }
 
 private func checkHTML(_ source: String) -> ValidationResult {

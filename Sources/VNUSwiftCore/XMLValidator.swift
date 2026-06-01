@@ -83,6 +83,15 @@ public final class XMLValidator: NSObject, XMLParserDelegate, @unchecked Sendabl
                 location: location
             ))
         }
+        if name == "embed" {
+            appendEmbedMessages(attributes: attributeDict, location: location)
+        }
+        if name == "meter" {
+            appendMeterMessages(attributes: attributeDict, location: location)
+        }
+        if name == "progress" {
+            appendProgressMessages(attributes: attributeDict, location: location)
+        }
         if name == "link",
            attributeDict["href"] == nil,
            attributeDict["imagesrcset"] == nil {
@@ -139,6 +148,147 @@ public final class XMLValidator: NSObject, XMLParserDelegate, @unchecked Sendabl
         }
     }
 
+    private func appendEmbedMessages(attributes: [String: String], location: SourceLocation) {
+        for attribute in ["height", "width"] {
+            if let value = attributes[attribute], !isValidNonNegativeInteger(value) {
+                appendBadAttributeValue(value, attribute: attribute, element: "embed", location: location)
+            }
+        }
+        if let type = attributes["type"], !isValidMIMEType(type) {
+            appendBadAttributeValue(type, attribute: "type", element: "embed", location: location)
+        }
+    }
+
+    private func appendMeterMessages(attributes: [String: String], location: SourceLocation) {
+        guard let value = attributes["value"] else {
+            messages.append(.error("Element \u{201c}meter\u{201d} is missing required attribute \u{201c}value\u{201d}.", location: location))
+            return
+        }
+        guard let meterValue = validFloatingPointAttribute("value", value, element: "meter", location: location) else {
+            return
+        }
+        let minValue = numberAttribute("min", attributes: attributes, defaultValue: 0, element: "meter", location: location)
+        let maxValue = numberAttribute("max", attributes: attributes, defaultValue: 1, element: "meter", location: location)
+        guard let minValue, let maxValue else { return }
+        let lowValue = numberAttribute("low", attributes: attributes, defaultValue: minValue, element: "meter", location: location)
+        let highValue = numberAttribute("high", attributes: attributes, defaultValue: maxValue, element: "meter", location: location)
+        let optimumValue = optionalNumberAttribute("optimum", attributes: attributes, element: "meter", location: location)
+
+        if attributes["min"] == nil, meterValue < 0 {
+            messages.append(.error("The value of the \u{201c}value\u{201d} attribute must be greater than or equal to zero when the \u{201c}min\u{201d} attribute is absent.", location: location))
+        }
+        if attributes["max"] == nil, meterValue > 1 {
+            messages.append(.error("The value of the \u{201c}value\u{201d} attribute must be less than or equal to one when the \u{201c}max\u{201d} attribute is absent.", location: location))
+        }
+        if minValue > meterValue {
+            messages.append(.error("The value of the \u{201c}min\u{201d} attribute must be less than or equal to the value of the \u{201c}value\u{201d} attribute.", location: location))
+        }
+        if meterValue > maxValue {
+            messages.append(.error("The value of the \u{201c}value\u{201d} attribute must be less than or equal to the value of the \u{201c}max\u{201d} attribute.", location: location))
+        }
+        if let lowValue {
+            if minValue > lowValue {
+                messages.append(.error("The value of the \u{201c}min\u{201d} attribute must be less than or equal to the value of the \u{201c}low\u{201d} attribute.", location: location))
+            }
+            if let highValue, lowValue > highValue {
+                messages.append(.error("The value of the \u{201c}low\u{201d} attribute must be less than or equal to the value of the \u{201c}high\u{201d} attribute.", location: location))
+            }
+            if lowValue > maxValue {
+                messages.append(.error("The value of the \u{201c}low\u{201d} attribute must be less than or equal to the value of the \u{201c}max\u{201d} attribute.", location: location))
+            }
+        }
+        if let highValue {
+            if minValue > highValue {
+                messages.append(.error("The value of the \u{201c}min\u{201d} attribute must be less than or equal to the value of the \u{201c}high\u{201d} attribute.", location: location))
+            }
+            if highValue > maxValue {
+                messages.append(.error("The value of the \u{201c}high\u{201d} attribute must be less than or equal to the value of the \u{201c}max\u{201d} attribute.", location: location))
+            }
+        }
+        if let optimumValue {
+            if minValue > optimumValue {
+                messages.append(.error("The value of the \u{201c}min\u{201d} attribute must be less than or equal to the value of the \u{201c}optimum\u{201d} attribute.", location: location))
+            }
+            if optimumValue > maxValue {
+                messages.append(.error("The value of the \u{201c}optimum\u{201d} attribute must be less than or equal to the value of the \u{201c}max\u{201d} attribute.", location: location))
+            }
+        }
+    }
+
+    private func appendProgressMessages(attributes: [String: String], location: SourceLocation) {
+        let maxValue = numberAttribute("max", attributes: attributes, defaultValue: 1, element: "progress", location: location)
+        if let max = maxValue, max <= 0 {
+            appendBadAttributeValue(attributes["max"] ?? "", attribute: "max", element: "progress", location: location)
+        }
+        guard let value = attributes["value"],
+              let progressValue = validFloatingPointAttribute("value", value, element: "progress", location: location) else {
+            return
+        }
+        if progressValue < 0 {
+            appendBadAttributeValue(value, attribute: "value", element: "progress", location: location)
+        }
+        if attributes["max"] == nil, progressValue > 1 {
+            messages.append(.error("The value of the  \u{201c}value\u{201d} attribute must be less than or equal to one when the \u{201c}max\u{201d} attribute is absent.", location: location))
+        } else if let max = maxValue, progressValue > max {
+            messages.append(.error("The value of the  \u{201c}value\u{201d} attribute must be less than or equal to the value of the \u{201c}max\u{201d} attribute.", location: location))
+        }
+    }
+
+    private func validFloatingPointAttribute(_ attribute: String, _ value: String, element: String, location: SourceLocation) -> Double? {
+        guard isValidFloatingPointNumber(value), let parsed = Double(value) else {
+            appendBadAttributeValue(value, attribute: attribute, element: element, location: location)
+            return nil
+        }
+        return parsed
+    }
+
+    private func optionalNumberAttribute(_ attribute: String, attributes: [String: String], element: String, location: SourceLocation) -> Double? {
+        guard let value = attributes[attribute] else { return nil }
+        return validFloatingPointAttribute(attribute, value, element: element, location: location)
+    }
+
+    private func numberAttribute(_ attribute: String, attributes: [String: String], defaultValue: Double, element: String, location: SourceLocation) -> Double? {
+        guard let value = attributes[attribute] else { return defaultValue }
+        return validFloatingPointAttribute(attribute, value, element: element, location: location)
+    }
+
+    private func isValidFloatingPointNumber(_ value: String) -> Bool {
+        guard !value.unicodeScalars.contains(where: isASCIIWhitespace),
+              let parsed = Double(value),
+              parsed.isFinite else {
+            return false
+        }
+        return true
+    }
+
+    private func isValidNonNegativeInteger(_ value: String) -> Bool {
+        guard !value.isEmpty, value.utf8.allSatisfy(isASCIIDigit) else { return false }
+        return Int(value) != nil
+    }
+
+    private func isValidMIMEType(_ value: String) -> Bool {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        let parts = trimmed.split(separator: "/", omittingEmptySubsequences: false)
+        guard parts.count == 2, !parts[0].isEmpty, !parts[1].isEmpty else {
+            return false
+        }
+        return trimmed.unicodeScalars.allSatisfy { scalar in
+            switch scalar {
+            case " ", "\t", "\n", "\r", "(", ")", "<", ">", "@", ",", ";", ":", "\\", "\"", "[", "]", "?":
+                return false
+            default:
+                return scalar.value > 0x20 && scalar.value < 0x7f
+            }
+        }
+    }
+
+    private func appendBadAttributeValue(_ value: String, attribute: String, element: String, location: SourceLocation) {
+        messages.append(.error(
+            "Bad value \u{201c}\(value)\u{201d} for attribute \u{201c}\(attribute)\u{201d} on element \u{201c}\(element)\u{201d}.",
+            location: location
+        ))
+    }
+
     private func finishDTCapture(_ capture: DTCapture) {
         let name = normalizedText(capture.text)
         guard !name.isEmpty,
@@ -160,6 +310,19 @@ public final class XMLValidator: NSObject, XMLParserDelegate, @unchecked Sendabl
 
     private func isXHTMLElement(_ namespaceURI: String?) -> Bool {
         namespaceURI == "http://www.w3.org/1999/xhtml" || namespaceURI == nil
+    }
+
+    private func isASCIIWhitespace(_ scalar: Unicode.Scalar) -> Bool {
+        switch scalar.value {
+        case 0x09, 0x0A, 0x0C, 0x0D, 0x20:
+            return true
+        default:
+            return false
+        }
+    }
+
+    private func isASCIIDigit(_ byte: UInt8) -> Bool {
+        byte >= UInt8(ascii: "0") && byte <= UInt8(ascii: "9")
     }
 }
 

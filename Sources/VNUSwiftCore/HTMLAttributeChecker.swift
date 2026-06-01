@@ -320,7 +320,10 @@ struct HTMLGeneralAttributeChecker {
         var messages: [ValidationMessage] = []
         var stack: [String] = []
         var pictureStack: [PictureState] = []
+        var mediaStack: [MediaState] = []
         var scriptContent: ScriptContentState?
+        var titleCapture: TitleCapture?
+        var sawTitle = false
         let idElementNames = idElementNames(in: document)
 
         for event in document.events {
@@ -331,13 +334,25 @@ struct HTMLGeneralAttributeChecker {
                 appendLanguageAttributeMessages(for: element, locations: locations, messages: &messages)
                 appendDateTimeAttributeMessages(for: element, locations: locations, messages: &messages)
                 appendInputAttributeMessages(for: element, idElementNames: idElementNames, locations: locations, messages: &messages)
+                appendEmbeddedContentMessages(for: element, locations: locations, messages: &messages)
+                appendMeterMessages(for: element, locations: locations, messages: &messages)
+                appendProgressMessages(for: element, locations: locations, messages: &messages)
+                appendTextareaMessages(for: element, locations: locations, messages: &messages)
+                appendTrackMessages(for: element, mediaStack: &mediaStack, locations: locations, messages: &messages)
                 appendScriptAttributeMessages(for: element, locations: locations, messages: &messages)
                 appendResponsiveImageMessages(for: element, stack: stack, locations: locations, messages: &messages)
                 if parent == "picture", let pictureIndex = pictureStack.indices.last {
                     appendPictureChildMessages(for: element, state: &pictureStack[pictureIndex], locations: locations, messages: &messages)
                 }
+                if element.name == "audio" || element.name == "video" {
+                    mediaStack.append(MediaState(element: element))
+                }
                 if element.name == "script" {
                     scriptContent = scriptContentState(for: element)
+                }
+                if element.name == "title" {
+                    sawTitle = true
+                    titleCapture = TitleCapture(element: element)
                 }
                 if element.name == "picture" {
                     pictureStack.append(PictureState(element: element))
@@ -350,6 +365,13 @@ struct HTMLGeneralAttributeChecker {
                 }
                 if name == "picture", let state = pictureStack.popLast() {
                     appendPictureMessages(state, locations: locations, messages: &messages)
+                }
+                if name == "audio" || name == "video", !mediaStack.isEmpty {
+                    _ = mediaStack.popLast()
+                }
+                if name == "title", let capture = titleCapture {
+                    appendTitleMessages(capture, locations: locations, messages: &messages)
+                    titleCapture = nil
                 }
                 if let index = stack.lastIndex(of: name) {
                     stack.removeSubrange(index...)
@@ -366,11 +388,17 @@ struct HTMLGeneralAttributeChecker {
                         messages: &messages
                     )
                 }
+                if titleCapture != nil {
+                    titleCapture?.text += content
+                }
             default:
                 continue
             }
         }
 
+        if !sawTitle {
+            messages.append(.error("Element \u{201c}head\u{201d} is missing a required instance of child element \u{201c}title\u{201d}."))
+        }
         return messages
     }
 
@@ -395,6 +423,16 @@ struct HTMLGeneralAttributeChecker {
         var sourceSelectionCandidates: [HTMLStartElement] = []
         var permitsSourceWidthWithoutSizes = false
         var sawImage = false
+    }
+
+    private struct MediaState {
+        var element: HTMLStartElement
+        var sawDefaultTrack = false
+    }
+
+    private struct TitleCapture {
+        var element: HTMLStartElement
+        var text = ""
     }
 
     private func appendPictureChildMessages(
@@ -841,6 +879,161 @@ struct HTMLGeneralAttributeChecker {
         )
     }
 
+    private func appendEmbeddedContentMessages(
+        for element: HTMLStartElement,
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) {
+        guard element.name == "embed" else { return }
+
+        for attribute in ["height", "width"] {
+            if let value = element.attributeValue(attribute), !isValidNonNegativeInteger(value) {
+                appendBadAttributeValue(value, attribute: attribute, for: element, locations: locations, messages: &messages)
+            }
+        }
+        if let type = element.attributeValue("type"), !isValidMIMEType(type) {
+            appendBadAttributeValue(type, attribute: "type", for: element, locations: locations, messages: &messages)
+        }
+    }
+
+    private func appendMeterMessages(
+        for element: HTMLStartElement,
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) {
+        guard element.name == "meter" else { return }
+
+        if element.hasAttribute("aria-valuemax") {
+            appendWarningMessage("The \u{201c}aria-valuemax\u{201d} attribute should not be used on a \u{201c}meter\u{201d} element.", for: element, locations: locations, messages: &messages)
+        }
+        guard let value = element.attributeValue("value") else {
+            appendMessage("Element \u{201c}meter\u{201d} is missing required attribute \u{201c}value\u{201d}.", for: element, locations: locations, messages: &messages)
+            return
+        }
+        guard let meterValue = validFloatingPointAttribute("value", value, for: element, locations: locations, messages: &messages) else {
+            return
+        }
+        let minValue = numberAttribute("min", for: element, defaultValue: 0, locations: locations, messages: &messages)
+        let maxValue = numberAttribute("max", for: element, defaultValue: 1, locations: locations, messages: &messages)
+        guard let minValue, let maxValue else { return }
+        let lowValue = numberAttribute("low", for: element, defaultValue: minValue, locations: locations, messages: &messages)
+        let highValue = numberAttribute("high", for: element, defaultValue: maxValue, locations: locations, messages: &messages)
+        let optimumValue = optionalNumberAttribute("optimum", for: element, locations: locations, messages: &messages)
+
+        if !element.hasAttribute("min"), meterValue < 0 {
+            appendMessage("The value of the \u{201c}value\u{201d} attribute must be greater than or equal to zero when the \u{201c}min\u{201d} attribute is absent.", for: element, locations: locations, messages: &messages)
+        }
+        if !element.hasAttribute("max"), meterValue > 1 {
+            appendMessage("The value of the \u{201c}value\u{201d} attribute must be less than or equal to one when the \u{201c}max\u{201d} attribute is absent.", for: element, locations: locations, messages: &messages)
+        }
+        if minValue > meterValue {
+            appendMessage("The value of the \u{201c}min\u{201d} attribute must be less than or equal to the value of the \u{201c}value\u{201d} attribute.", for: element, locations: locations, messages: &messages)
+        }
+        if meterValue > maxValue {
+            appendMessage("The value of the \u{201c}value\u{201d} attribute must be less than or equal to the value of the \u{201c}max\u{201d} attribute.", for: element, locations: locations, messages: &messages)
+        }
+        if let lowValue {
+            if minValue > lowValue {
+                appendMessage("The value of the \u{201c}min\u{201d} attribute must be less than or equal to the value of the \u{201c}low\u{201d} attribute.", for: element, locations: locations, messages: &messages)
+            }
+            if let highValue, lowValue > highValue {
+                appendMessage("The value of the \u{201c}low\u{201d} attribute must be less than or equal to the value of the \u{201c}high\u{201d} attribute.", for: element, locations: locations, messages: &messages)
+            }
+            if lowValue > maxValue {
+                appendMessage("The value of the \u{201c}low\u{201d} attribute must be less than or equal to the value of the \u{201c}max\u{201d} attribute.", for: element, locations: locations, messages: &messages)
+            }
+        }
+        if let highValue {
+            if minValue > highValue {
+                appendMessage("The value of the \u{201c}min\u{201d} attribute must be less than or equal to the value of the \u{201c}high\u{201d} attribute.", for: element, locations: locations, messages: &messages)
+            }
+            if highValue > maxValue {
+                appendMessage("The value of the \u{201c}high\u{201d} attribute must be less than or equal to the value of the \u{201c}max\u{201d} attribute.", for: element, locations: locations, messages: &messages)
+            }
+        }
+        if let optimumValue {
+            if minValue > optimumValue {
+                appendMessage("The value of the \u{201c}min\u{201d} attribute must be less than or equal to the value of the \u{201c}optimum\u{201d} attribute.", for: element, locations: locations, messages: &messages)
+            }
+            if optimumValue > maxValue {
+                appendMessage("The value of the \u{201c}optimum\u{201d} attribute must be less than or equal to the value of the \u{201c}max\u{201d} attribute.", for: element, locations: locations, messages: &messages)
+            }
+        }
+    }
+
+    private func appendProgressMessages(
+        for element: HTMLStartElement,
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) {
+        guard element.name == "progress" else { return }
+
+        if element.hasAttribute("aria-valuemax") {
+            appendWarningMessage("The \u{201c}aria-valuemax\u{201d} attribute should not be used on a \u{201c}progress\u{201d} element.", for: element, locations: locations, messages: &messages)
+        }
+        let maxValue = numberAttribute("max", for: element, defaultValue: 1, locations: locations, messages: &messages)
+        if let max = maxValue, max <= 0 {
+            appendBadAttributeValue(element.attributeValue("max") ?? "", attribute: "max", for: element, locations: locations, messages: &messages)
+        }
+        guard let value = element.attributeValue("value"),
+              let progressValue = validFloatingPointAttribute("value", value, for: element, locations: locations, messages: &messages) else {
+            return
+        }
+        if progressValue < 0 {
+            appendBadAttributeValue(value, attribute: "value", for: element, locations: locations, messages: &messages)
+        }
+        if !element.hasAttribute("max"), progressValue > 1 {
+            appendMessage("The value of the  \u{201c}value\u{201d} attribute must be less than or equal to one when the \u{201c}max\u{201d} attribute is absent.", for: element, locations: locations, messages: &messages)
+        } else if let max = maxValue, progressValue > max {
+            appendMessage("The value of the  \u{201c}value\u{201d} attribute must be less than or equal to the value of the \u{201c}max\u{201d} attribute.", for: element, locations: locations, messages: &messages)
+        }
+    }
+
+    private func appendTextareaMessages(
+        for element: HTMLStartElement,
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) {
+        guard element.name == "textarea" else { return }
+
+        if let autocomplete = element.attributeValue("autocomplete"), !isValidAutocompleteValue(autocomplete) {
+            appendBadAttributeValue(autocomplete, attribute: "autocomplete", for: element, locations: locations, messages: &messages)
+        }
+        for attribute in ["cols", "rows"] {
+            if let value = element.attributeValue(attribute), !isValidPositiveInteger(value) {
+                appendBadAttributeValue(value, attribute: attribute, for: element, locations: locations, messages: &messages)
+            }
+        }
+    }
+
+    private func appendTrackMessages(
+        for element: HTMLStartElement,
+        mediaStack: inout [MediaState],
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) {
+        guard element.name == "track" else { return }
+
+        if element.attributeValue("label") == "" {
+            appendMessage("Attribute \u{201c}label\u{201d} for element \u{201c}track\u{201d} must have non-empty value.", for: element, locations: locations, messages: &messages)
+        }
+        if element.hasAttribute("default"), let mediaIndex = mediaStack.indices.last {
+            if mediaStack[mediaIndex].sawDefaultTrack {
+                appendMessage("The \u{201c}default\u{201d} attribute must not occur on more than one \u{201c}track\u{201d} element within the same \u{201c}audio\u{201d} or \u{201c}video\u{201d} element.", for: element, locations: locations, messages: &messages)
+            }
+            mediaStack[mediaIndex].sawDefaultTrack = true
+        }
+    }
+
+    private func appendTitleMessages(
+        _ capture: TitleCapture,
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) {
+        guard capture.text.isEmpty else { return }
+        appendMessage("Element \u{201c}title\u{201d} must not be empty.", for: capture.element, locations: locations, messages: &messages)
+    }
+
     private func inputType(for element: HTMLStartElement) -> String {
         let type = element.attributeValue("type")?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
         return Self.inputTypes.contains(type) ? type : "text"
@@ -889,6 +1082,67 @@ struct HTMLGeneralAttributeChecker {
             return false
         }
         return true
+    }
+
+    private func validFloatingPointAttribute(
+        _ attribute: String,
+        _ value: String,
+        for element: HTMLStartElement,
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) -> Double? {
+        guard isValidFloatingPointNumber(value), let parsed = Double(value) else {
+            appendBadAttributeValue(value, attribute: attribute, for: element, locations: locations, messages: &messages)
+            return nil
+        }
+        return parsed
+    }
+
+    private func optionalNumberAttribute(
+        _ attribute: String,
+        for element: HTMLStartElement,
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) -> Double? {
+        guard let value = element.attributeValue(attribute) else { return nil }
+        return validFloatingPointAttribute(attribute, value, for: element, locations: locations, messages: &messages)
+    }
+
+    private func numberAttribute(
+        _ attribute: String,
+        for element: HTMLStartElement,
+        defaultValue: Double,
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) -> Double? {
+        guard let value = element.attributeValue(attribute) else { return defaultValue }
+        return validFloatingPointAttribute(attribute, value, for: element, locations: locations, messages: &messages)
+    }
+
+    private func isValidNonNegativeInteger(_ value: String) -> Bool {
+        guard !value.isEmpty, value.utf8.allSatisfy(isASCIIDigit) else { return false }
+        return Int(value) != nil
+    }
+
+    private func isValidPositiveInteger(_ value: String) -> Bool {
+        guard let parsed = Int(value), String(parsed) == value else { return false }
+        return parsed > 0
+    }
+
+    private func isValidMIMEType(_ value: String) -> Bool {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        let parts = trimmed.split(separator: "/", omittingEmptySubsequences: false)
+        guard parts.count == 2, !parts[0].isEmpty, !parts[1].isEmpty else {
+            return false
+        }
+        return trimmed.unicodeScalars.allSatisfy { scalar in
+            switch scalar {
+            case " ", "\t", "\n", "\r", "(", ")", "<", ">", "@", ",", ";", ":", "\\", "\"", "[", "]", "?":
+                return false
+            default:
+                return scalar.value > 0x20 && scalar.value < 0x7f
+            }
+        }
     }
 
     private enum ScriptKind {
