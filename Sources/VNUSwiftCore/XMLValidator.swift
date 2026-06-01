@@ -73,6 +73,15 @@ public final class XMLValidator: NSObject, XMLParserDelegate, @unchecked Sendabl
         if let id = attributeDict["id"], idElementNames[id] == nil {
             idElementNames[id] = name
         }
+        appendGlobalAttributeMessages(element: name, attributes: attributeDict, location: location)
+        if name == "base",
+           attributeDict["href"] == nil,
+           attributeDict["target"] == nil {
+            messages.append(.error(
+                "Element \u{201c}base\u{201d} is missing one or more of the following attributes: \u{201c}href\u{201d}, \u{201c}target\u{201d}.",
+                location: location
+            ))
+        }
         if name == "script", attributeDict["language"] != nil {
             messages.append(.warning(
                 "The \u{201c}language\u{201d} attribute on the \u{201c}script\u{201d} element is obsolete. Use the \u{201c}type\u{201d} attribute instead.",
@@ -137,6 +146,21 @@ public final class XMLValidator: NSObject, XMLParserDelegate, @unchecked Sendabl
         if let index = elementStack.lastIndex(of: name) {
             elementStack.removeSubrange(index...)
             anchorHrefStack.removeSubrange(index...)
+        }
+    }
+
+    private func appendGlobalAttributeMessages(element: String, attributes: [String: String], location: SourceLocation) {
+        if let accesskey = attributes["accesskey"], !isValidAccesskeyValue(accesskey) {
+            appendBadAttributeValue(accesskey, attribute: "accesskey", element: element, location: location)
+        }
+        if let spellcheck = attributes["spellcheck"], !isValidSpellcheckValue(spellcheck) {
+            appendBadAttributeValue(spellcheck, attribute: "spellcheck", element: element, location: location)
+        }
+        if attributes.keys.contains(where: isInvalidXMLDataAttributeName) {
+            messages.append(.error(
+                "\u{201c}data-*\u{201d} attributes must not have characters from the range \u{201c}A\u{201d}\u{2026}\u{201c}Z\u{201d} in the name.",
+                location: location
+            ))
         }
     }
 
@@ -306,6 +330,28 @@ public final class XMLValidator: NSObject, XMLParserDelegate, @unchecked Sendabl
             default:
                 return scalar.value > 0x20 && scalar.value < 0x7f
             }
+        }
+    }
+
+    private func isValidAccesskeyValue(_ value: String) -> Bool {
+        var seen: Set<String> = []
+        for token in value.split(whereSeparator: { $0.isWhitespace }).map(String.init) {
+            guard token.count == 1, !seen.contains(token) else {
+                return false
+            }
+            seen.insert(token)
+        }
+        return true
+    }
+
+    private func isValidSpellcheckValue(_ value: String) -> Bool {
+        value.isEmpty || value.lowercased() == "true" || value.lowercased() == "false"
+    }
+
+    private func isInvalidXMLDataAttributeName(_ name: String) -> Bool {
+        guard name.hasPrefix("data-"), name.count > "data-".count else { return false }
+        return name.unicodeScalars.contains { scalar in
+            scalar.value >= 65 && scalar.value <= 90
         }
     }
 

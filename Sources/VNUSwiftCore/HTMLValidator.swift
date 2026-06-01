@@ -17,6 +17,7 @@ public final class HTMLValidator: Sendable {
         var sawStartTag = false
         var sawHTMLLang = false
         var sawClosedBody = false
+        var firstStartTag: (offset: Int, length: Int)?
         var ids: [String: Int] = [:]
         var metaCharsetCount = 0
         var stack: [OpenElement] = []
@@ -37,6 +38,9 @@ public final class HTMLValidator: Sendable {
             case .text, .comment:
                 continue
             case let .startTag(name, attributes, selfClosing, offset, length):
+                if firstStartTag == nil {
+                    firstStartTag = (offset, length)
+                }
                 if sawClosedBody, name != "html" {
                     appendError("Stray start tag \u{201c}\(name)\u{201d}.", offset: offset, length: length, locations: locations, messages: &messages)
                 }
@@ -97,6 +101,8 @@ public final class HTMLValidator: Sendable {
         if sawStartTag, !sawHTMLLang {
             if let htmlToken = tokens.firstHTMLStart {
                 appendWarning("Consider adding a \u{201c}lang\u{201d} attribute to the \u{201c}html\u{201d} start tag to declare the language of this document.", offset: htmlToken.offset, length: htmlToken.length, locations: locations, messages: &messages)
+            } else if let firstStartTag {
+                appendWarning("Consider adding a \u{201c}lang\u{201d} attribute to the \u{201c}html\u{201d} start tag to declare the language of this document.", offset: firstStartTag.offset, length: firstStartTag.length, locations: locations, messages: &messages)
             }
         }
         return messages
@@ -151,6 +157,10 @@ public final class HTMLValidator: Sendable {
 
         if name == "form", stack.contains(where: { $0.name == "form" }) {
             appendError("Saw a \u{201c}form\u{201d} start tag, but there was already an active \u{201c}form\u{201d} element. Nested forms are not allowed. Ignoring the tag.", offset: offset, length: length, locations: locations, messages: &messages)
+        }
+
+        if name == "basefont" {
+            appendError("Element \u{201c}basefont\u{201d} not allowed as child of \u{201c}head\u{201d} in this context.", offset: offset, length: length, locations: locations, messages: &messages)
         }
 
         if HTMLVocabulary.headingElements.contains(name), stack.contains(where: { HTMLVocabulary.headingElements.contains($0.name) }) {
@@ -210,6 +220,13 @@ public final class HTMLValidator: Sendable {
     }
 
     private func contentModelMessage(for child: String, stack: [OpenElement]) -> String? {
+        if child == "li" {
+            let parent = stack.last?.name
+            if parent != "ol" && parent != "ul" && parent != "menu" {
+                let parentName = parent == nil || parent == "html" ? "body" : parent!
+                return "Element \u{201c}li\u{201d} not allowed as child of \u{201c}\(parentName)\u{201d} in this context."
+            }
+        }
         if child == "picture" {
             if stack.last?.name == "noscript", !stack.contains(where: { $0.name == "body" }) {
                 return "Bad start tag in \u{201c}picture\u{201d} in \u{201c}noscript\u{201d} in \u{201c}head\u{201d}."

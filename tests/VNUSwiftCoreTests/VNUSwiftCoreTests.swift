@@ -198,6 +198,66 @@ import Testing
     #expect(valid.messages.filter { $0.type == "error" }.isEmpty)
 }
 
+@Test func generalAttributeCheckerCoversGlobalAttributesAndBaseRules() {
+    let result = checkHTML("""
+        <!doctype html><html lang=zzz><meta charset=utf-8><title>T</title>
+        <a href=x accesskey="a b a" rel=authr spellcheck=badvalue>Author</a>
+        <p data->Text</p><div name=n popover=invalid></div>
+        <input enterkeyhint=""><article headingoffset=9><h1>Heading</h1></article>
+        <button autofocus></button><button autofocus></button>
+        <link rel=styleshet href=x><base><script src=x></script><base href=bar>
+        """)
+    #expect(result.messages.contains { $0.message == "Bad value \u{201c}zzz\u{201d} for attribute \u{201c}lang\u{201d} on element \u{201c}html\u{201d}." })
+    #expect(result.messages.contains { $0.message == "Bad value \u{201c}a b a\u{201d} for attribute \u{201c}accesskey\u{201d} on element \u{201c}a\u{201d}." })
+    #expect(result.messages.contains { $0.message == "Bad value \u{201c}authr\u{201d} for attribute \u{201c}rel\u{201d} on element \u{201c}a\u{201d}: Bad list of link-type keywords:  Typo for \u{201c}author\u{201d}?" && $0.type == "info" })
+    #expect(result.messages.contains { $0.message == "Bad value \u{201c}badvalue\u{201d} for attribute \u{201c}spellcheck\u{201d} on element \u{201c}a\u{201d}." })
+    #expect(result.messages.contains { $0.message == "Attribute \u{201c}data-\u{201d} not allowed on element \u{201c}p\u{201d} at this point." })
+    #expect(result.messages.contains { $0.message == "Attribute \u{201c}name\u{201d} not allowed on element \u{201c}div\u{201d} at this point." })
+    #expect(result.messages.contains { $0.message == "Bad value \u{201c}invalid\u{201d} for attribute \u{201c}popover\u{201d} on element \u{201c}div\u{201d}." })
+    #expect(result.messages.contains { $0.message == "Bad value \u{201c}\u{201d} for attribute \u{201c}enterkeyhint\u{201d} on element \u{201c}input\u{201d}." })
+    #expect(result.messages.contains { $0.message == "The value of the \u{201c}headingoffset\u{201d} attribute must be a number between \u{201c}0\u{201d} and \u{201c}8\u{201d}." })
+    #expect(result.messages.contains { $0.message == "There must not be two elements with the same \"nearest ancestor autofocus scoping root element\" that both have the \u{201c}autofocus\u{201d} attribute specified." })
+    #expect(result.messages.contains { $0.message == "Element \u{201c}base\u{201d} is missing one or more of the following attributes: \u{201c}href\u{201d}, \u{201c}target\u{201d}." })
+    #expect(result.messages.contains { $0.message == "Element \u{201c}base\u{201d} not allowed as child of \u{201c}body\u{201d} in this context." })
+
+    let missingLang = checkHTML("<!doctype html><meta charset=utf-8><title>T</title>")
+    #expect(missingLang.messages.contains { $0.message == "Consider adding a \u{201c}lang\u{201d} attribute to the \u{201c}html\u{201d} start tag to declare the language of this document." && $0.subType == "warning" })
+}
+
+@Test func generalAttributeCheckerCoversStructuralAssertions() {
+    let result = checkHTML("""
+        <!doctype html><html lang=en><meta charset=utf-8><title>T</title>
+        <area href=x>
+        <bdo>text</bdo><bdo dir=auto>text</bdo>
+        <figure><figcaption>One</figcaption><figcaption>Two</figcaption></figure>
+        <input type=file value=x>
+        <label for=other aria-hidden=true><input id=field><input id=second></label>
+        <label for=missing>Missing</label><div id=notcontrol></div><label for=notcontrol>Bad</label>
+        <article><main></main></article><nav><main></main></nav>
+        <map id=a name=b></map>
+        <ul><li value=5>Value</li></ul><ol><li value=abc>Bad</li></ol><div><li>Loose</li></div>
+        <label role=button><input></label>
+        <div aria-readonly=true></div>
+        """)
+    #expect(result.messages.contains { $0.message == "The \u{201c}area\u{201d} element must have a \u{201c}map\u{201d} ancestor." })
+    #expect(result.messages.contains { $0.message == "Element \u{201c}bdo\u{201d} must have attribute \u{201c}dir\u{201d}." })
+    #expect(result.messages.contains { $0.message == "The value of \u{201c}dir\u{201d} attribute for the \u{201c}bdo\u{201d} element must not be \u{201c}auto\u{201d}." })
+    #expect(result.messages.contains { $0.message == "Element \u{201c}figcaption\u{201d} not allowed as child of \u{201c}figure\u{201d} in this context." })
+    #expect(result.messages.contains { $0.message == "Attribute \u{201c}value\u{201d} not allowed on element \u{201c}input\u{201d} at this point." })
+    #expect(result.messages.contains { $0.message == "The \u{201c}aria-hidden\u{201d} attribute must not be used on any \u{201c}label\u{201d} element that is an ancestor of a labelable element." })
+    #expect(result.messages.contains { $0.message == "Any \u{201c}input\u{201d} descendant of a \u{201c}label\u{201d} element with a \u{201c}for\u{201d} attribute must have an ID value that matches that \u{201c}for\u{201d} attribute." })
+    #expect(result.messages.contains { $0.message == "The \u{201c}label\u{201d} element may contain at most one \u{201c}button\u{201d}, \u{201c}input\u{201d}, \u{201c}meter\u{201d}, \u{201c}output\u{201d}, \u{201c}progress\u{201d}, \u{201c}select\u{201d}, or \u{201c}textarea\u{201d} descendant." })
+    #expect(result.messages.contains { $0.message == "The value of the \u{201c}for\u{201d} attribute of the \u{201c}label\u{201d} element must be the ID of a non-hidden form control." })
+    #expect(result.messages.contains { $0.message == "The \u{201c}main\u{201d} element must not appear as a descendant of the \u{201c}article\u{201d} element." })
+    #expect(result.messages.contains { $0.message == "The \u{201c}main\u{201d} element must not appear as a descendant of the \u{201c}nav\u{201d} element." })
+    #expect(result.messages.contains { $0.message == "The \u{201c}id\u{201d} attribute on a \u{201c}map\u{201d} element must have an the same value as the \u{201c}name\u{201d} attribute." })
+    #expect(result.messages.contains { $0.message == "Attribute \u{201c}value\u{201d} not allowed on element \u{201c}li\u{201d} at this point." })
+    #expect(result.messages.contains { $0.message == "Bad value \u{201c}abc\u{201d} for attribute \u{201c}value\u{201d} on element \u{201c}li\u{201d}." })
+    #expect(result.messages.contains { $0.message == "Element \u{201c}li\u{201d} not allowed as child of \u{201c}div\u{201d} in this context." })
+    #expect(result.messages.contains { $0.message == "The element \u{201c}input\u{201d} must not appear as a descendant of an element with the attribute \u{201c}role=button\u{201d}." })
+    #expect(result.messages.contains { $0.message == "Element \u{201c}div\u{201d} is missing one or more of the following attributes: \u{201c}aria-checked\u{201d}, \u{201c}aria-expanded\u{201d}, \u{201c}aria-valuenow\u{201d}, \u{201c}role\u{201d}." })
+}
+
 @Test func generalAttributeCheckerCoversResponsiveImageDependencies() {
     let result = checkHTML("<!doctype html><html lang=en><meta charset=utf-8><title>T</title><img src=x alt sizes=100vw><img src=x alt srcset=\"x 100w, y 200w\"><link rel=preload as=image imagesizes=100vw><link rel=preload as=image imagesrcset=\"x 100w\">")
     #expect(result.messages.contains { $0.message == "The \u{201c}sizes\u{201d} attribute must only be specified if the \u{201c}srcset\u{201d} attribute is also specified." })
@@ -494,6 +554,17 @@ import Testing
         options: CheckerOptions(parameters: ["out": ["json"]])
     )
     #expect(result.messages.contains { $0.message == "A \u{201c}link\u{201d} element must have an \u{201c}href\u{201d} or \u{201c}imagesrcset\u{201d} attribute, or both." })
+}
+
+@Test func xmlValidatorCoversXHTMLGlobalAttributeValues() {
+    let result = NuValidator().check(
+        input: DocumentInput(data: Data("<html xmlns=\"http://www.w3.org/1999/xhtml\"><head><base/><title>T</title></head><body><a href=\"x\" accesskey=\"a b a\">x</a><p spellcheck=\"badvalue\" data-zZ=\"\"></p></body></html>".utf8), contentType: "application/xhtml+xml; charset=utf-8"),
+        options: CheckerOptions(parameters: ["out": ["json"]])
+    )
+    #expect(result.messages.contains { $0.message == "Element \u{201c}base\u{201d} is missing one or more of the following attributes: \u{201c}href\u{201d}, \u{201c}target\u{201d}." })
+    #expect(result.messages.contains { $0.message == "Bad value \u{201c}a b a\u{201d} for attribute \u{201c}accesskey\u{201d} on element \u{201c}a\u{201d}." })
+    #expect(result.messages.contains { $0.message == "Bad value \u{201c}badvalue\u{201d} for attribute \u{201c}spellcheck\u{201d} on element \u{201c}p\u{201d}." })
+    #expect(result.messages.contains { $0.message == "\u{201c}data-*\u{201d} attributes must not have characters from the range \u{201c}A\u{201d}\u{2026}\u{201c}Z\u{201d} in the name." })
 }
 
 @Test func xmlValidatorCoversXHTMLScriptLanguageWarning() {

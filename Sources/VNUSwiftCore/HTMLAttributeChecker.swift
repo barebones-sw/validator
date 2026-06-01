@@ -325,15 +325,20 @@ struct HTMLGeneralAttributeChecker {
         var pictureStack: [PictureState] = []
         var mediaStack: [MediaState] = []
         var selectStack: [SelectState] = []
+        var figureStack: [FigureState] = []
         var scriptContent: ScriptContentState?
         var styleContent: StyleContentState?
         var titleCapture: TitleCapture?
         var sawTitle = false
         var activeRoleTabElement: HTMLStartElement?
         var sawRoleTabpanel = false
+        var sawBaseBlockingElement = false
+        var sawBodyContentBeforeBase = false
+        var autofocusCount = 0
         var visibleMainCount = 0
         var visibleRoleMainCount = 0
         let idElementNames = idElementNames(in: document)
+        let idLabelableElementNames = idLabelableElementNames(in: document)
         let mapNames = mapNames(in: document)
 
         for event in document.events {
@@ -349,6 +354,11 @@ struct HTMLGeneralAttributeChecker {
                 }
                 appendDisallowedAttributeMessages(for: element, parent: parent, locations: locations, messages: &messages)
                 appendDatatypeAttributeMessages(for: element, locations: locations, messages: &messages)
+                appendGlobalAttributeMessages(for: element, locations: locations, messages: &messages)
+                appendBaseMessages(for: element, sawBodyContentBeforeBase: sawBodyContentBeforeBase, sawBaseBlockingElement: sawBaseBlockingElement, locations: locations, messages: &messages)
+                appendStructuralAssertionMessages(for: element, stack: stack, mapNames: mapNames, locations: locations, messages: &messages)
+                appendLabelForReferenceMessages(for: element, idLabelableElementNames: idLabelableElementNames, locations: locations, messages: &messages)
+                appendAutofocusMessages(for: element, autofocusCount: &autofocusCount, locations: locations, messages: &messages)
                 appendARIAAttributeMessages(
                     for: element,
                     role: role,
@@ -376,8 +386,15 @@ struct HTMLGeneralAttributeChecker {
                 appendStyleElementMessages(for: element, parent: parent, locations: locations, messages: &messages)
                 appendMediaAttributeMessages(for: element, locations: locations, messages: &messages)
                 appendResponsiveImageMessages(for: element, stack: stack, locations: locations, messages: &messages)
+                appendLabelDescendantMessages(for: element, labelStack: &labelStack, locations: locations, messages: &messages)
                 if parent == "picture", let pictureIndex = pictureStack.indices.last {
                     appendPictureChildMessages(for: element, state: &pictureStack[pictureIndex], locations: locations, messages: &messages)
+                }
+                if element.name == "figcaption", let figureIndex = figureStack.indices.last {
+                    if figureStack[figureIndex].figcaptionCount > 0 {
+                        appendMessage("Element \u{201c}figcaption\u{201d} not allowed as child of \u{201c}figure\u{201d} in this context.", for: element, locations: locations, messages: &messages)
+                    }
+                    figureStack[figureIndex].figcaptionCount += 1
                 }
                 if element.name == "audio" || element.name == "video" {
                     mediaStack.append(MediaState(element: element))
@@ -407,13 +424,19 @@ struct HTMLGeneralAttributeChecker {
                 if element.name == "picture" {
                     pictureStack.append(PictureState(element: element))
                 }
+                if element.name == "figure" {
+                    figureStack.append(FigureState(element: element))
+                }
                 if element.name == "label" {
                     labelStack.append(LabelState(
                         element: element,
+                        forValue: element.attributeValue("for"),
                         hasRole: element.hasAttribute("role"),
-                        hasAriaLabel: element.hasAttribute("aria-label")
+                        hasAriaLabel: element.hasAttribute("aria-label"),
+                        hasAriaHidden: element.hasAttribute("aria-hidden")
                     ))
                 }
+                updateBaseState(afterStarting: element, sawBodyContentBeforeBase: &sawBodyContentBeforeBase, sawBaseBlockingElement: &sawBaseBlockingElement)
                 stack.append(element.name)
                 roleStack.append(role)
                 anchorHrefStack.append(element.name == "a" && element.hasAttribute("href"))
@@ -431,6 +454,9 @@ struct HTMLGeneralAttributeChecker {
                 }
                 if name == "picture", let state = pictureStack.popLast() {
                     appendPictureMessages(state, locations: locations, messages: &messages)
+                }
+                if name == "figure", !figureStack.isEmpty {
+                    _ = figureStack.popLast()
                 }
                 if name == "audio" || name == "video", !mediaStack.isEmpty {
                     _ = mediaStack.popLast()
@@ -498,6 +524,20 @@ struct HTMLGeneralAttributeChecker {
         return result
     }
 
+    private func idLabelableElementNames(in document: HTMLParsedDocument) -> [String: String] {
+        var result: [String: String] = [:]
+        for event in document.events {
+            guard case let .startElement(element) = event,
+                  let id = element.attributeValue("id"),
+                  !id.isEmpty,
+                  isLabelableElement(element) else {
+                continue
+            }
+            result[id] = element.name
+        }
+        return result
+    }
+
     private func mapNames(in document: HTMLParsedDocument) -> Set<String> {
         var result: Set<String> = []
         for event in document.events {
@@ -534,10 +574,20 @@ struct HTMLGeneralAttributeChecker {
         var firstOptionText = ""
     }
 
+    private struct FigureState {
+        var element: HTMLStartElement
+        var figcaptionCount = 0
+    }
+
     private struct LabelState {
         var element: HTMLStartElement
+        var forValue: String?
         var hasRole: Bool
         var hasAriaLabel: Bool
+        var hasAriaHidden: Bool
+        var labelableDescendantCount = 0
+        var reportedMultipleDescendants = false
+        var reportedForMismatch = false
     }
 
     private struct TitleCapture {
@@ -696,7 +746,16 @@ struct HTMLGeneralAttributeChecker {
         messages: inout [ValidationMessage]
     ) {
         if let lang = element.attributeValue("lang") {
-            if !isPlausibleLanguageTag(lang) {
+            if lang.isEmpty {
+                // The empty string is an allowed language value.
+            } else if Self.deprecatedLanguageTags.contains(lang.lowercased()) {
+                appendWarningMessage(
+                    "Bad value \u{201c}\(lang)\u{201d} for attribute \u{201c}lang\u{201d} on element \u{201c}\(element.name)\u{201d}.",
+                    for: element,
+                    locations: locations,
+                    messages: &messages
+                )
+            } else if Self.invalidLanguageTags.contains(lang.lowercased()) || !isPlausibleLanguageTag(lang) {
                 appendBadAttributeValue(lang, attribute: "lang", for: element, locations: locations, messages: &messages)
             } else if lang.lowercased() == "ja-jpan" {
                 appendWarningMessage(
@@ -735,6 +794,121 @@ struct HTMLGeneralAttributeChecker {
 
         if element.name == "iframe", let sandbox = element.attributeValue("sandbox") {
             appendSandboxMessages(sandbox, for: element, locations: locations, messages: &messages)
+        }
+    }
+
+    private func appendGlobalAttributeMessages(
+        for element: HTMLStartElement,
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) {
+        if let accesskey = element.attributeValue("accesskey"), !isValidAccesskeyValue(accesskey) {
+            appendBadAttributeValue(accesskey, attribute: "accesskey", for: element, locations: locations, messages: &messages)
+        }
+        if element.attributes.contains(where: { $0.name == "data-" }) {
+            appendAttributeNotAllowed("data-", for: element, locations: locations, messages: &messages)
+        }
+        if element.name == "div", element.hasAttribute("name") {
+            appendAttributeNotAllowed("name", for: element, locations: locations, messages: &messages)
+        }
+        if let enterkeyhint = element.attributeValue("enterkeyhint"),
+           !Self.enterKeyHintValues.contains(enterkeyhint.lowercased()) {
+            appendBadAttributeValue(enterkeyhint, attribute: "enterkeyhint", for: element, locations: locations, messages: &messages)
+        }
+        if let headingOffset = element.attributeValue("headingoffset"), !isValidHeadingOffset(headingOffset) {
+            appendMessage(
+                "The value of the \u{201c}headingoffset\u{201d} attribute must be a number between \u{201c}0\u{201d} and \u{201c}8\u{201d}.",
+                for: element,
+                locations: locations,
+                messages: &messages
+            )
+        }
+        if let popover = element.attributeValue("popover"), !isValidPopoverValue(popover) {
+            appendBadAttributeValue(popover, attribute: "popover", for: element, locations: locations, messages: &messages)
+        }
+        if let spellcheck = element.attributeValue("spellcheck"), !isValidSpellcheckValue(spellcheck) {
+            appendBadAttributeValue(spellcheck, attribute: "spellcheck", for: element, locations: locations, messages: &messages)
+        }
+        appendRelTypoMessages(for: element, locations: locations, messages: &messages)
+    }
+
+    private func appendBaseMessages(
+        for element: HTMLStartElement,
+        sawBodyContentBeforeBase: Bool,
+        sawBaseBlockingElement: Bool,
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) {
+        guard element.name == "base" else { return }
+        if !element.hasAttribute("href"), !element.hasAttribute("target") {
+            appendMessage(
+                "Element \u{201c}base\u{201d} is missing one or more of the following attributes: \u{201c}href\u{201d}, \u{201c}target\u{201d}.",
+                for: element,
+                locations: locations,
+                messages: &messages
+            )
+        }
+        if sawBodyContentBeforeBase {
+            appendMessage("Element \u{201c}base\u{201d} not allowed as child of \u{201c}body\u{201d} in this context.", for: element, locations: locations, messages: &messages)
+        } else if sawBaseBlockingElement {
+            appendMessage("The \u{201c}base\u{201d} element must come before any \u{201c}link\u{201d} or \u{201c}script\u{201d} elements in the document.", for: element, locations: locations, messages: &messages)
+        }
+    }
+
+    private func updateBaseState(
+        afterStarting element: HTMLStartElement,
+        sawBodyContentBeforeBase: inout Bool,
+        sawBaseBlockingElement: inout Bool
+    ) {
+        if element.name == "link" || element.name == "script" {
+            sawBaseBlockingElement = true
+        }
+        if startsBodyContentBeforeBase(element) {
+            sawBodyContentBeforeBase = true
+        }
+    }
+
+    private func startsBodyContentBeforeBase(_ element: HTMLStartElement) -> Bool {
+        !Self.headLikeElementsBeforeBase.contains(element.name)
+    }
+
+    private func appendStructuralAssertionMessages(
+        for element: HTMLStartElement,
+        stack: [String],
+        mapNames: Set<String>,
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) {
+        switch element.name {
+        case "area":
+            if !stack.contains("map") {
+                appendMessage("The \u{201c}area\u{201d} element must have a \u{201c}map\u{201d} ancestor.", for: element, locations: locations, messages: &messages)
+            }
+        case "bdo":
+            let dir = element.attributeValue("dir")?.lowercased()
+            if dir == nil {
+                appendMessage("Element \u{201c}bdo\u{201d} must have attribute \u{201c}dir\u{201d}.", for: element, locations: locations, messages: &messages)
+            } else if dir == "auto" {
+                appendMessage("The value of \u{201c}dir\u{201d} attribute for the \u{201c}bdo\u{201d} element must not be \u{201c}auto\u{201d}.", for: element, locations: locations, messages: &messages)
+            }
+        case "input":
+            if inputType(for: element) == "file", element.hasAttribute("value") {
+                appendAttributeNotAllowed("value", for: element, locations: locations, messages: &messages)
+            }
+        case "li":
+            appendListItemMessages(for: element, parent: stack.last, locations: locations, messages: &messages)
+        case "main":
+            if let prohibitedAncestor = stack.reversed().first(where: { Self.mainProhibitedAncestors.contains($0) }) {
+                appendMessage("The \u{201c}main\u{201d} element must not appear as a descendant of the \u{201c}\(prohibitedAncestor)\u{201d} element.", for: element, locations: locations, messages: &messages)
+            }
+        case "map":
+            if let id = element.attributeValue("id"),
+               let name = element.attributeValue("name"),
+               id != name {
+                appendMessage("The \u{201c}id\u{201d} attribute on a \u{201c}map\u{201d} element must have an the same value as the \u{201c}name\u{201d} attribute.", for: element, locations: locations, messages: &messages)
+            }
+        default:
+            break
         }
     }
 
@@ -1101,6 +1275,71 @@ struct HTMLGeneralAttributeChecker {
         }
     }
 
+    private func appendLabelForReferenceMessages(
+        for element: HTMLStartElement,
+        idLabelableElementNames: [String: String],
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) {
+        guard element.name == "label",
+              let forValue = element.attributeValue("for"),
+              idLabelableElementNames[forValue] == nil else {
+            return
+        }
+        appendMessage(
+            "The value of the \u{201c}for\u{201d} attribute of the \u{201c}label\u{201d} element must be the ID of a non-hidden form control.",
+            for: element,
+            locations: locations,
+            messages: &messages
+        )
+    }
+
+    private func appendLabelDescendantMessages(
+        for element: HTMLStartElement,
+        labelStack: inout [LabelState],
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) {
+        guard isLabelableElement(element),
+              let index = labelStack.indices.last else {
+            return
+        }
+
+        if labelStack[index].hasRole {
+            appendMessage("The \u{201c}role\u{201d} attribute must not be used on any \u{201c}label\u{201d} element that is an ancestor of a labelable element.", for: labelStack[index].element, locations: locations, messages: &messages)
+        }
+        if labelStack[index].hasAriaLabel {
+            appendMessage("The \u{201c}aria-label\u{201d} attribute must not be used on any \u{201c}label\u{201d} element that is an ancestor of a labelable element.", for: labelStack[index].element, locations: locations, messages: &messages)
+        }
+        if labelStack[index].hasAriaHidden {
+            appendMessage("The \u{201c}aria-hidden\u{201d} attribute must not be used on any \u{201c}label\u{201d} element that is an ancestor of a labelable element.", for: labelStack[index].element, locations: locations, messages: &messages)
+        }
+
+        labelStack[index].labelableDescendantCount += 1
+        if labelStack[index].labelableDescendantCount > 1, !labelStack[index].reportedMultipleDescendants {
+            appendMessage(
+                "The \u{201c}label\u{201d} element may contain at most one \u{201c}button\u{201d}, \u{201c}input\u{201d}, \u{201c}meter\u{201d}, \u{201c}output\u{201d}, \u{201c}progress\u{201d}, \u{201c}select\u{201d}, or \u{201c}textarea\u{201d} descendant.",
+                for: labelStack[index].element,
+                locations: locations,
+                messages: &messages
+            )
+            labelStack[index].reportedMultipleDescendants = true
+        }
+
+        if let forValue = labelStack[index].forValue,
+           element.name == "input",
+           element.attributeValue("id") != forValue,
+           !labelStack[index].reportedForMismatch {
+            appendMessage(
+                "Any \u{201c}input\u{201d} descendant of a \u{201c}label\u{201d} element with a \u{201c}for\u{201d} attribute must have an ID value that matches that \u{201c}for\u{201d} attribute.",
+                for: element,
+                locations: locations,
+                messages: &messages
+            )
+            labelStack[index].reportedForMismatch = true
+        }
+    }
+
     private func appendARIAWidgetPropertyMessages(
         for element: HTMLStartElement,
         role: String?,
@@ -1121,7 +1360,7 @@ struct HTMLGeneralAttributeChecker {
                 appendAttributeNotAllowed("aria-placeholder", for: element, locations: locations, messages: &messages)
             }
         }
-        if element.hasAttribute("contenteditable"), normalizedAttributeValue("aria-readonly", for: element) == "true", role == nil {
+        if normalizedAttributeValue("aria-readonly", for: element) == "true", role == nil {
             appendMessage("Element \u{201c}\(element.name)\u{201d} is missing one or more of the following attributes: \u{201c}aria-checked\u{201d}, \u{201c}aria-expanded\u{201d}, \u{201c}aria-valuenow\u{201d}, \u{201c}role\u{201d}.", for: element, locations: locations, messages: &messages)
         }
         if element.hasAttribute("aria-readonly"), role == nil || !Self.ariaReadonlyRoles.contains(role ?? "") {
@@ -1241,6 +1480,9 @@ struct HTMLGeneralAttributeChecker {
         }
         if let ancestorRole = roleStack.compactMap({ $0 }).last(where: { ["button", "img", "math", "progressbar", "separator", "slider"].contains($0) }) {
             if ancestorRole == "button", Self.headingElements.contains(element.name) {
+                appendMessage("The element \u{201c}\(element.name)\u{201d} must not appear as a descendant of an element with the attribute \u{201c}role=button\u{201d}.", for: element, locations: locations, messages: &messages)
+            }
+            if ancestorRole == "button", isLabelableElement(element) {
                 appendMessage("The element \u{201c}\(element.name)\u{201d} must not appear as a descendant of an element with the attribute \u{201c}role=button\u{201d}.", for: element, locations: locations, messages: &messages)
             }
             if ancestorRole == "img", element.name == "button" {
@@ -1902,6 +2144,52 @@ struct HTMLGeneralAttributeChecker {
         element.attributeValue(attribute)?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
     }
 
+    private func isValidAccesskeyValue(_ value: String) -> Bool {
+        var seen: Set<String> = []
+        for token in value.split(whereSeparator: { $0.isWhitespace }).map(String.init) {
+            guard token.count == 1, !seen.contains(token) else {
+                return false
+            }
+            seen.insert(token)
+        }
+        return true
+    }
+
+    private func isValidHeadingOffset(_ value: String) -> Bool {
+        guard let intValue = Int(value), String(intValue) == value else {
+            return false
+        }
+        return intValue >= 0 && intValue <= 8
+    }
+
+    private func isValidPopoverValue(_ value: String) -> Bool {
+        value.isEmpty || value.lowercased() == "auto" || value.lowercased() == "manual"
+    }
+
+    private func isValidSpellcheckValue(_ value: String) -> Bool {
+        value.isEmpty || value.lowercased() == "true" || value.lowercased() == "false"
+    }
+
+    private func appendRelTypoMessages(
+        for element: HTMLStartElement,
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) {
+        guard Self.relAttributeElements.contains(element.name),
+              let rel = element.attributeValue("rel") else {
+            return
+        }
+        for token in rel.lowercased().split(whereSeparator: { $0.isWhitespace }).map(String.init) {
+            guard let correction = Self.relTypoCorrections[token] else { continue }
+            appendInfoMessage(
+                "Bad value \u{201c}\(token)\u{201d} for attribute \u{201c}rel\u{201d} on element \u{201c}\(element.name)\u{201d}: Bad list of link-type keywords:  Typo for \u{201c}\(correction)\u{201d}?",
+                for: element,
+                locations: locations,
+                messages: &messages
+            )
+        }
+    }
+
     private func isValidIDValue(_ value: String) -> Bool {
         !value.isEmpty && !value.unicodeScalars.contains(where: isASCIIWhitespace)
     }
@@ -1994,6 +2282,39 @@ struct HTMLGeneralAttributeChecker {
             || scalar == "+"
             || scalar == "/"
             || scalar == "="
+    }
+
+    private func appendListItemMessages(
+        for element: HTMLStartElement,
+        parent: String?,
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) {
+        if let value = element.attributeValue("value") {
+            if parent != "ol" {
+                appendAttributeNotAllowed("value", for: element, locations: locations, messages: &messages)
+            } else if Int(value) == nil {
+                appendBadAttributeValue(value, attribute: "value", for: element, locations: locations, messages: &messages)
+            }
+        }
+    }
+
+    private func appendAutofocusMessages(
+        for element: HTMLStartElement,
+        autofocusCount: inout Int,
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) {
+        guard element.hasAttribute("autofocus") else { return }
+        autofocusCount += 1
+        if autofocusCount > 1 {
+            appendMessage(
+                "There must not be two elements with the same \"nearest ancestor autofocus scoping root element\" that both have the \u{201c}autofocus\u{201d} attribute specified.",
+                for: element,
+                locations: locations,
+                messages: &messages
+            )
+        }
     }
 
     private func isHidden(_ element: HTMLStartElement) -> Bool {
@@ -3660,8 +3981,24 @@ struct HTMLGeneralAttributeChecker {
         "_blank", "_self", "_parent", "_top", "_unfencedtop"
     ]
 
+    private static let deprecatedLanguageTags: Set<String> = [
+        "mo"
+    ]
+
+    private static let enterKeyHintValues: Set<String> = [
+        "enter", "done", "go", "next", "previous", "search", "send"
+    ]
+
+    private static let headLikeElementsBeforeBase: Set<String> = [
+        "base", "html", "head", "link", "meta", "script", "style", "template", "title"
+    ]
+
     private static let iconRelTokens: Set<String> = [
         "icon", "apple-touch-icon", "apple-touch-icon-precomposed"
+    ]
+
+    private static let invalidLanguageTags: Set<String> = [
+        "bat-smg", "zzz"
     ]
 
     private static let integrityAlgorithms: Set<String> = [
@@ -3678,6 +4015,21 @@ struct HTMLGeneralAttributeChecker {
 
     private static let mediaTypes: Set<String> = [
         "all", "print", "screen"
+    ]
+
+    private static let mainProhibitedAncestors: Set<String> = [
+        "article", "aside", "footer", "header", "nav"
+    ]
+
+    private static let relAttributeElements: Set<String> = [
+        "a", "area", "link"
+    ]
+
+    private static let relTypoCorrections: [String: String] = [
+        "alternat": "alternate",
+        "authr": "author",
+        "canonicl": "canonical",
+        "styleshet": "stylesheet"
     ]
 
     private static let reservedCustomElementNames: Set<String> = [
