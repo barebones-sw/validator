@@ -317,6 +317,90 @@ import Testing
     #expect(result.messages.contains { $0.message == "The \u{201c}href_matches\u{201d} property in a document rule must be a non-empty string." })
 }
 
+@Test func generalAttributeCheckerCoversARIAImageLabelAndSelectRules() {
+    let result = checkHTML("""
+        <!doctype html><html lang=en><meta charset=utf-8><title>T</title>
+        <label role=article><input></label>
+        <label for=x aria-label=Name>Caption</label><input id=x>
+        <img src=x alt="" role=button>
+        <img src=x role=none aria-label=Description>
+        <select role=combobox><option>One</option></select>
+        <select><button aria-label=Pick>Pick</button><option>One</option></select>
+        """)
+    #expect(result.messages.contains { $0.message == "The \u{201c}role\u{201d} attribute must not be used on any \u{201c}label\u{201d} element that is an ancestor of a labelable element." })
+    #expect(result.messages.contains { $0.message == "The \u{201c}aria-label\u{201d} attribute must not be used on any \u{201c}label\u{201d} element that is associated with a labelable element." })
+    #expect(result.messages.contains { $0.message == "An \u{201c}img\u{201d} element with a \u{201c}role\u{201d} attribute must not have an \u{201c}alt\u{201d} attribute whose value is the empty string." })
+    #expect(result.messages.contains { $0.message == "Bad value \u{201c}none\u{201d} for attribute \u{201c}role\u{201d} on element \u{201c}img\u{201d}." })
+    #expect(result.messages.contains { $0.message == "Element \u{201c}select\u{201d} is missing required attribute \u{201c}aria-expanded\u{201d}." })
+    #expect(result.messages.contains { $0.message == "The \u{201c}aria-label\u{201d} attribute must not be used on a \u{201c}button\u{201d} element that is a child of a \u{201c}select\u{201d} element." })
+}
+
+@Test func generalAttributeCheckerCoversARIAMiscRoleRules() {
+    let result = checkHTML("""
+        <!doctype html><html lang=en><meta charset=utf-8><title>T</title>
+        <dialog role=dialog>Dialog</dialog>
+        <dl><div role=group><dt>Term</dt><dd>Definition</dd></div></dl>
+        <ul role=listbox><li role=button>Item</li></ul>
+        <main>Main</main><div role=main>Main role</div>
+        <div role=tablist><button role=tab aria-selected=true>Tab</button></div>
+        <select multiple role=button><option>One</option></select>
+        <select role=listbox><option>One</option></select>
+        <details><summary role=button aria-selected=true>Summary</summary></details>
+        <div contenteditable aria-readonly=true>Editable</div>
+        <div role=menu><div role=group><span role=button>Bad</span></div></div>
+        <div role=grid><div role=rowgroup><span role=button>Bad</span></div></div>
+        <div role=button><h1>Heading</h1></div>
+        <div role=img aria-label=Image><button>Button</button></div>
+        <div role=separator><label>Name <input></label></div>
+        <div role=listbox aria-expanded=false>Listbox</div>
+        """)
+    #expect(result.messages.contains { $0.message == "The \u{201c}dialog\u{201d} role is unnecessary for element \u{201c}dialog\u{201d}." && $0.subType == "warning" })
+    #expect(result.messages.contains { $0.message == "A \u{201c}div\u{201d} child of a \u{201c}dl\u{201d} element must not have any \u{201c}role\u{201d} value other than \u{201c}presentation\u{201d} or \u{201c}none\u{201d}." })
+    #expect(result.messages.contains { $0.message == "An \u{201c}li\u{201d} element that is a descendant of a \u{201c}role=listbox\u{201d} element or \u{201c}role=list\u{201d} element must not have any \u{201c}role\u{201d} value other than \u{201c}group\u{201d} or \u{201c}option\u{201d}." })
+    #expect(result.messages.contains { $0.message == "A document should not include more than one visible element with \u{201c}role=main\u{201d}." && $0.subType == "warning" })
+    #expect(result.messages.contains { $0.message == "Every active \u{201c}role=tab\u{201d} element must have a corresponding \u{201c}role=tabpanel\u{201d} element." })
+    #expect(result.messages.contains { $0.message == "Bad value \u{201c}button\u{201d} for attribute \u{201c}role\u{201d} on element \u{201c}select\u{201d}." })
+    #expect(result.messages.contains { $0.message == "The \u{201c}listbox\u{201d} role is not allowed for element \u{201c}select\u{201d} without a \u{201c}multiple\u{201d} attribute and without a \u{201c}size\u{201d} attribute whose value is greater than 1." })
+    #expect(result.messages.contains { $0.message == "The \u{201c}role\u{201d} attribute must not be used on any \u{201c}summary\u{201d} element that is a summary for its parent \u{201c}details\u{201d} element." })
+    #expect(result.messages.contains { $0.message == "Element \u{201c}summary\u{201d} is missing one or more of the following attributes: \u{201c}aria-checked\u{201d}, \u{201c}role\u{201d}." })
+    #expect(result.messages.contains { $0.message == "Element \u{201c}div\u{201d} is missing one or more of the following attributes: \u{201c}aria-checked\u{201d}, \u{201c}aria-expanded\u{201d}, \u{201c}aria-valuenow\u{201d}, \u{201c}role\u{201d}." })
+    #expect(result.messages.contains { $0.message == "An element with \u{201c}role=group\u{201d} that is a descendant of an element with \u{201c}role=menu\u{201d} or \u{201c}role=menubar\u{201d} must contain only elements with \u{201c}role=menuitem\u{201d}, \u{201c}role=menuitemcheckbox\u{201d}, or \u{201c}role=menuitemradio\u{201d}." })
+    #expect(result.messages.contains { $0.message == "An element that is a child of an element with \u{201c}role=rowgroup\u{201d} must have \u{201c}role=row\u{201d}." })
+    #expect(result.messages.contains { $0.message == "The element \u{201c}h1\u{201d} must not appear as a descendant of an element with the attribute \u{201c}role=button\u{201d}." })
+    #expect(result.messages.contains { $0.message == "The element \u{201c}button\u{201d} must not appear as a descendant of an element with the attribute \u{201c}role=img\u{201d}." })
+    #expect(result.messages.contains { $0.message == "The element \u{201c}label\u{201d} must not appear as a descendant of an element with the attribute \u{201c}role=separator\u{201d}." })
+    #expect(result.messages.contains { $0.message == "Attribute \u{201c}aria-expanded\u{201d} not allowed on element \u{201c}div\u{201d} at this point." })
+}
+
+@Test func generalAttributeCheckerCoversImageAndSelectEdgeRules() {
+    let result = checkHTML("""
+        <!doctype html><html lang=en><meta charset=utf-8><title>T</title>
+        <img src=x alt=x border=0 controls=invalid width=-1 height=-1 usemap=#missing>
+        <img src=x alt="" controls>
+        <img src=x alt=x ismap>
+        <a href=#x><img src=x alt=x usemap=#missing></a>
+        <select autocomplete="country webauthn" size=0 multiple><button>Pick</button><option>One</option></select>
+        <select><option selected>One</option><option selected>Two</option></select>
+        <select required><option value=notempty>One</option></select>
+        <select required></select>
+        <select><button><selectedcontent aria-hidden=true role=status></selectedcontent></button></select>
+        """)
+    #expect(result.messages.contains { $0.message == "The \u{201c}border\u{201d} attribute on the \u{201c}img\u{201d} element is obsolete. Consider specifying \u{201c}img { border: 0; }\u{201d} in CSS instead." && $0.subType == "warning" })
+    #expect(result.messages.contains { $0.message == "Bad value \u{201c}invalid\u{201d} for attribute \u{201c}controls\u{201d} on element \u{201c}img\u{201d}." })
+    #expect(result.messages.contains { $0.message == "Bad value \u{201c}-1\u{201d} for attribute \u{201c}width\u{201d} on element \u{201c}img\u{201d}." })
+    #expect(result.messages.contains { $0.message == "The \u{201c}controls\u{201d} attribute must not be specified on an \u{201c}img\u{201d} element that does not have an \u{201c}alt\u{201d} attribute, or whose \u{201c}alt\u{201d} attribute\u{2019}s value is the empty string." })
+    #expect(result.messages.contains { $0.message == "The \u{201c}img\u{201d} element with the \u{201c}ismap\u{201d} attribute set must have an \u{201c}a\u{201d} ancestor with the \u{201c}href\u{201d} attribute." })
+    #expect(result.messages.contains { $0.message == "The hash-name reference in attribute \u{201c}usemap\u{201d} referred to \u{201c}missing\u{201d}, but there is no \u{201c}map\u{201d} element with a \u{201c}name\u{201d} attribute with that value." })
+    #expect(result.messages.contains { $0.message == "The element \u{201c}img\u{201d} with the attribute \u{201c}usemap\u{201d} must not appear as a descendant of the \u{201c}a\u{201d} element." })
+    #expect(result.messages.contains { $0.message == "The value of the \u{201c}autocomplete\u{201d} attribute for the \u{201c}select\u{201d} element must not contain \u{201c}webauthn\u{201d}." })
+    #expect(result.messages.contains { $0.message == "Bad value \u{201c}0\u{201d} for attribute \u{201c}size\u{201d} on element \u{201c}select\u{201d}." })
+    #expect(result.messages.contains { $0.message == "A \u{201c}button\u{201d} element is only allowed as a child of a \u{201c}select\u{201d} element that is a drop-down box (one without a \u{201c}size\u{201d} attribute greater than 1 and without a \u{201c}multiple\u{201d} attribute)." })
+    #expect(result.messages.contains { $0.message == "The \u{201c}select\u{201d} element cannot have more than one selected \u{201c}option\u{201d} descendant unless the \u{201c}multiple\u{201d} attribute is specified." })
+    #expect(result.messages.contains { $0.message == "The first child \u{201c}option\u{201d} element of a \u{201c}select\u{201d} element with a \u{201c}required\u{201d} attribute, and without a \u{201c}multiple\u{201d} attribute, and without a \u{201c}size\u{201d} attribute whose value is greater than \u{201c}1\u{201d}, must have either an empty \u{201c}value\u{201d} attribute, or must have no text content. Consider either adding a placeholder option label, or adding a \u{201c}size\u{201d} attribute with a value equal to the number of \u{201c}option\u{201d} elements." })
+    #expect(result.messages.contains { $0.message == "A \u{201c}select\u{201d} element with a \u{201c}required\u{201d} attribute, and without a \u{201c}multiple\u{201d} attribute, and without a \u{201c}size\u{201d} attribute whose value is greater than \u{201c}1\u{201d}, must have a child \u{201c}option\u{201d} element." })
+    #expect(result.messages.contains { $0.message == "The \u{201c}aria-hidden\u{201d} attribute must not be used on a \u{201c}selectedcontent\u{201d} element inside the \u{201c}button\u{201d} part of a customizable \u{201c}select\u{201d} element." })
+}
+
 @Test func xmlValidatorCoversXHTMLLinkHrefRequirement() {
     let result = NuValidator().check(
         input: DocumentInput(data: Data("<html xmlns=\"http://www.w3.org/1999/xhtml\"><head><title>T</title><link rel=\"stylesheet\"/></head><body/></html>".utf8), contentType: "application/xhtml+xml; charset=utf-8"),

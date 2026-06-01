@@ -20,6 +20,7 @@ public final class XMLValidator: NSObject, XMLParserDelegate, @unchecked Sendabl
     private var idElementNames: [String: String] = [:]
     private var pendingInputListReferences: [PendingInputListReference] = []
     private var elementStack: [String] = []
+    private var anchorHrefStack: [Bool] = []
     private var definitionListContexts: [DefinitionListContext] = []
     private var dtCaptures: [DTCapture] = []
 
@@ -28,6 +29,7 @@ public final class XMLValidator: NSObject, XMLParserDelegate, @unchecked Sendabl
         idElementNames = [:]
         pendingInputListReferences = []
         elementStack = []
+        anchorHrefStack = []
         definitionListContexts = []
         dtCaptures = []
         let parser = XMLParser(data: data)
@@ -86,6 +88,9 @@ public final class XMLValidator: NSObject, XMLParserDelegate, @unchecked Sendabl
         if name == "embed" {
             appendEmbedMessages(attributes: attributeDict, location: location)
         }
+        if name == "img" {
+            appendImageMessages(attributes: attributeDict, location: location)
+        }
         if name == "meter" {
             appendMeterMessages(attributes: attributeDict, location: location)
         }
@@ -109,6 +114,7 @@ public final class XMLValidator: NSObject, XMLParserDelegate, @unchecked Sendabl
             dtCaptures.append(DTCapture(dlIndex: dlIndex, location: location))
         }
         elementStack.append(name)
+        anchorHrefStack.append(name == "a" && attributeDict["href"] != nil)
     }
 
     public func parser(
@@ -130,6 +136,7 @@ public final class XMLValidator: NSObject, XMLParserDelegate, @unchecked Sendabl
         }
         if let index = elementStack.lastIndex(of: name) {
             elementStack.removeSubrange(index...)
+            anchorHrefStack.removeSubrange(index...)
         }
     }
 
@@ -156,6 +163,26 @@ public final class XMLValidator: NSObject, XMLParserDelegate, @unchecked Sendabl
         }
         if let type = attributes["type"], !isValidMIMEType(type) {
             appendBadAttributeValue(type, attribute: "type", element: "embed", location: location)
+        }
+    }
+
+    private func appendImageMessages(attributes: [String: String], location: SourceLocation) {
+        for attribute in ["height", "width"] {
+            if let value = attributes[attribute], !isValidNonNegativeInteger(value) {
+                appendBadAttributeValue(value, attribute: attribute, element: "img", location: location)
+            }
+        }
+        if attributes["ismap"] != nil, !anchorHrefStack.contains(true) {
+            messages.append(.error(
+                "The \u{201c}img\u{201d} element with the \u{201c}ismap\u{201d} attribute set must have an \u{201c}a\u{201d} ancestor with the \u{201c}href\u{201d} attribute.",
+                location: location
+            ))
+        }
+        if attributes["usemap"] != nil, elementStack.contains("a") {
+            messages.append(.error(
+                "The element \u{201c}img\u{201d} with the attribute \u{201c}usemap\u{201d} must not appear as a descendant of the \u{201c}a\u{201d} element.",
+                location: location
+            ))
         }
     }
 

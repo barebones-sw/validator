@@ -319,25 +319,56 @@ struct HTMLGeneralAttributeChecker {
     func validate(document: HTMLParsedDocument, locations: SourceLocationMap) -> [ValidationMessage] {
         var messages: [ValidationMessage] = []
         var stack: [String] = []
+        var roleStack: [String?] = []
+        var anchorHrefStack: [Bool] = []
+        var labelStack: [LabelState] = []
         var pictureStack: [PictureState] = []
         var mediaStack: [MediaState] = []
+        var selectStack: [SelectState] = []
         var scriptContent: ScriptContentState?
         var titleCapture: TitleCapture?
         var sawTitle = false
+        var activeRoleTabElement: HTMLStartElement?
+        var sawRoleTabpanel = false
+        var visibleMainCount = 0
+        var visibleRoleMainCount = 0
         let idElementNames = idElementNames(in: document)
+        let mapNames = mapNames(in: document)
 
         for event in document.events {
             switch event {
             case let .startElement(element):
                 let parent = stack.last
+                let role = firstRoleToken(for: element)
+                if role == "tab", normalizedAttributeValue("aria-selected", for: element) == "true" {
+                    activeRoleTabElement = element
+                }
+                if role == "tabpanel" {
+                    sawRoleTabpanel = true
+                }
                 appendDisallowedAttributeMessages(for: element, parent: parent, locations: locations, messages: &messages)
+                appendARIAAttributeMessages(
+                    for: element,
+                    role: role,
+                    idElementNames: idElementNames,
+                    stack: stack,
+                    roleStack: roleStack,
+                    labelStack: labelStack,
+                    visibleMainCount: &visibleMainCount,
+                    visibleRoleMainCount: &visibleRoleMainCount,
+                    locations: locations,
+                    messages: &messages
+                )
                 appendLanguageAttributeMessages(for: element, locations: locations, messages: &messages)
                 appendDateTimeAttributeMessages(for: element, locations: locations, messages: &messages)
                 appendInputAttributeMessages(for: element, idElementNames: idElementNames, locations: locations, messages: &messages)
+                appendImageMessages(for: element, stack: stack, anchorHrefStack: anchorHrefStack, mapNames: mapNames, locations: locations, messages: &messages)
                 appendEmbeddedContentMessages(for: element, locations: locations, messages: &messages)
                 appendMeterMessages(for: element, locations: locations, messages: &messages)
                 appendProgressMessages(for: element, locations: locations, messages: &messages)
                 appendTextareaMessages(for: element, locations: locations, messages: &messages)
+                appendSelectAttributeMessages(for: element, locations: locations, messages: &messages)
+                appendSelectChildMessages(for: element, parent: parent, selectStack: selectStack, locations: locations, messages: &messages)
                 appendTrackMessages(for: element, mediaStack: &mediaStack, locations: locations, messages: &messages)
                 appendScriptAttributeMessages(for: element, locations: locations, messages: &messages)
                 appendResponsiveImageMessages(for: element, stack: stack, locations: locations, messages: &messages)
@@ -346,6 +377,18 @@ struct HTMLGeneralAttributeChecker {
                 }
                 if element.name == "audio" || element.name == "video" {
                     mediaStack.append(MediaState(element: element))
+                }
+                if element.name == "select" {
+                    selectStack.append(SelectState(element: element))
+                }
+                if element.name == "option", let selectIndex = selectStack.indices.last {
+                    selectStack[selectIndex].optionCount += 1
+                    if element.hasAttribute("selected") {
+                        selectStack[selectIndex].selectedOptionCount += 1
+                    }
+                    if selectStack[selectIndex].optionCount == 1 {
+                        selectStack[selectIndex].firstOptionValue = element.attributeValue("value")
+                    }
                 }
                 if element.name == "script" {
                     scriptContent = scriptContentState(for: element)
@@ -357,11 +400,23 @@ struct HTMLGeneralAttributeChecker {
                 if element.name == "picture" {
                     pictureStack.append(PictureState(element: element))
                 }
+                if element.name == "label" {
+                    labelStack.append(LabelState(
+                        element: element,
+                        hasRole: element.hasAttribute("role"),
+                        hasAriaLabel: element.hasAttribute("aria-label")
+                    ))
+                }
                 stack.append(element.name)
+                roleStack.append(role)
+                anchorHrefStack.append(element.name == "a" && element.hasAttribute("href"))
             case let .endElement(name, _, _):
                 if name == "script", let content = scriptContent {
                     appendScriptContentMessages(content, locations: locations, messages: &messages)
                     scriptContent = nil
+                }
+                if name == "select", let state = selectStack.popLast() {
+                    appendSelectMessages(state, locations: locations, messages: &messages)
                 }
                 if name == "picture", let state = pictureStack.popLast() {
                     appendPictureMessages(state, locations: locations, messages: &messages)
@@ -373,12 +428,22 @@ struct HTMLGeneralAttributeChecker {
                     appendTitleMessages(capture, locations: locations, messages: &messages)
                     titleCapture = nil
                 }
+                if name == "label", !labelStack.isEmpty {
+                    _ = labelStack.popLast()
+                }
                 if let index = stack.lastIndex(of: name) {
                     stack.removeSubrange(index...)
+                    roleStack.removeSubrange(index...)
+                    anchorHrefStack.removeSubrange(index...)
                 }
             case let .characters(content, range):
                 if scriptContent != nil {
                     scriptContent?.content += content
+                }
+                if let selectIndex = selectStack.indices.last,
+                   selectStack[selectIndex].optionCount == 1,
+                   stack.contains("option") {
+                    selectStack[selectIndex].firstOptionText += content
                 }
                 if stack.last == "picture", pictureStack.indices.last != nil, !content.unicodeScalars.allSatisfy(isASCIIWhitespace) {
                     appendMessage(
@@ -399,6 +464,9 @@ struct HTMLGeneralAttributeChecker {
         if !sawTitle {
             messages.append(.error("Element \u{201c}head\u{201d} is missing a required instance of child element \u{201c}title\u{201d}."))
         }
+        if let activeRoleTabElement, !sawRoleTabpanel {
+            appendMessage("Every active \u{201c}role=tab\u{201d} element must have a corresponding \u{201c}role=tabpanel\u{201d} element.", for: activeRoleTabElement, locations: locations, messages: &messages)
+        }
         return messages
     }
 
@@ -416,6 +484,20 @@ struct HTMLGeneralAttributeChecker {
         return result
     }
 
+    private func mapNames(in document: HTMLParsedDocument) -> Set<String> {
+        var result: Set<String> = []
+        for event in document.events {
+            guard case let .startElement(element) = event,
+                  element.name == "map",
+                  let name = element.attributeValue("name"),
+                  !name.isEmpty else {
+                continue
+            }
+            result.insert(name)
+        }
+        return result
+    }
+
     private struct PictureState {
         var element: HTMLStartElement
         var sourcesMissingSizes: [HTMLStartElement] = []
@@ -428,6 +510,20 @@ struct HTMLGeneralAttributeChecker {
     private struct MediaState {
         var element: HTMLStartElement
         var sawDefaultTrack = false
+    }
+
+    private struct SelectState {
+        var element: HTMLStartElement
+        var optionCount = 0
+        var selectedOptionCount = 0
+        var firstOptionValue: String?
+        var firstOptionText = ""
+    }
+
+    private struct LabelState {
+        var element: HTMLStartElement
+        var hasRole: Bool
+        var hasAriaLabel: Bool
     }
 
     private struct TitleCapture {
@@ -624,6 +720,507 @@ struct HTMLGeneralAttributeChecker {
             locations: locations,
             messages: &messages
         )
+    }
+
+    private func appendARIAAttributeMessages(
+        for element: HTMLStartElement,
+        role: String?,
+        idElementNames: [String: String],
+        stack: [String],
+        roleStack: [String?],
+        labelStack: [LabelState],
+        visibleMainCount: inout Int,
+        visibleRoleMainCount: inout Int,
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) {
+        appendRoleTokenMessages(for: element, locations: locations, messages: &messages)
+        appendRoleEffectMessages(for: element, role: role, locations: locations, messages: &messages)
+        appendUnnecessaryRoleMessages(for: element, role: role, locations: locations, messages: &messages)
+        appendARIANamingMessages(for: element, role: role, locations: locations, messages: &messages)
+        appendSelectRoleMessages(for: element, role: role, locations: locations, messages: &messages)
+        appendSummaryARIAMessages(for: element, stack: stack, locations: locations, messages: &messages)
+        appendARIAPropertyMessages(for: element, role: role, idElementNames: idElementNames, locations: locations, messages: &messages)
+        appendImageARIAMessages(for: element, role: role, locations: locations, messages: &messages)
+        appendLabelARIAAssociationMessages(for: element, idElementNames: idElementNames, labelStack: labelStack, locations: locations, messages: &messages)
+        appendARIAStructureMessages(for: element, role: role, stack: stack, roleStack: roleStack, locations: locations, messages: &messages)
+
+        if element.name == "main", !isHidden(element) {
+            visibleMainCount += 1
+            if visibleMainCount > 1 {
+                appendMessage("A document must not include more than one visible \u{201c}main\u{201d} element.", for: element, locations: locations, messages: &messages)
+            }
+            if visibleRoleMainCount > 0 {
+                appendWarningMessage("A document should not include more than one visible element with \u{201c}role=main\u{201d}.", for: element, locations: locations, messages: &messages)
+            }
+        }
+        if role == "main", !isHidden(element) {
+            visibleRoleMainCount += 1
+            if visibleRoleMainCount > 1 || element.name == "main" || visibleMainCount > 0 {
+                appendWarningMessage("A document should not include more than one visible element with \u{201c}role=main\u{201d}.", for: element, locations: locations, messages: &messages)
+            }
+        }
+    }
+
+    private func appendRoleTokenMessages(
+        for element: HTMLStartElement,
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) {
+        let tokens = roleTokens(for: element)
+        guard !tokens.isEmpty else { return }
+        var sawRecognized = false
+        for token in tokens {
+            if !Self.nonAbstractARIARoles.contains(token) {
+                appendMessage(
+                    "Discarding unrecognized token \u{201c}\(token)\u{201d} from value of attribute \u{201c}role\u{201d}. Browsers ignore any token that is not a defined ARIA non-abstract role.",
+                    for: element,
+                    locations: locations,
+                    messages: &messages
+                )
+            } else if sawRecognized {
+                appendInfoMessage(
+                    "Discarding superfluous token \u{201c}\(token)\u{201d} from value of attribute \u{201c}role\u{201d}. Browsers only process the first token found that is a defined ARIA non-abstract role.",
+                    for: element,
+                    locations: locations,
+                    messages: &messages
+                )
+            } else {
+                sawRecognized = true
+            }
+        }
+        if tokens.first == "directory" {
+            appendWarningMessage("Bad value \u{201c}directory\u{201d} for attribute \u{201c}role\u{201d} on element \u{201c}\(element.name)\u{201d}.", for: element, locations: locations, messages: &messages)
+        }
+    }
+
+    private func appendRoleEffectMessages(
+        for element: HTMLStartElement,
+        role: String?,
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) {
+        guard role == "none" || role == "presentation" else { return }
+        let hasTabindex = element.hasAttribute("tabindex")
+        let hasGlobalARIA = element.attributes.contains { attribute in
+            attribute.name.hasPrefix("aria-") && attribute.name != "aria-hidden"
+        }
+        guard hasTabindex || hasGlobalARIA else { return }
+
+        if hasTabindex, hasGlobalARIA {
+            appendWarningMessage("The \u{201c}\(role ?? "")\u{201d} role does not affect elements that have a \u{201c}tabindex\u{201d} attribute and global ARIA attributes.", for: element, locations: locations, messages: &messages)
+        } else if hasTabindex {
+            appendWarningMessage("The \u{201c}\(role ?? "")\u{201d} role does not affect elements that have a \u{201c}tabindex\u{201d} attribute.", for: element, locations: locations, messages: &messages)
+        } else {
+            appendWarningMessage("The \u{201c}\(role ?? "")\u{201d} role does not affect elements that have global ARIA attributes.", for: element, locations: locations, messages: &messages)
+        }
+    }
+
+    private func appendUnnecessaryRoleMessages(
+        for element: HTMLStartElement,
+        role: String?,
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) {
+        guard let role else { return }
+        if element.name == "math", role == "math" {
+            appendWarningMessage("Element \u{201c}math\u{201d} does not need a \u{201c}role\u{201d} attribute.", for: element, locations: locations, messages: &messages)
+            return
+        }
+        if let expected = unnecessaryRole(for: element), expected == role {
+            if element.name == "a", role == "link" {
+                appendWarningMessage("The \u{201c}link\u{201d} role is unnecessary for element \u{201c}a\u{201d} with attribute \u{201c}href\u{201d}.", for: element, locations: locations, messages: &messages)
+            } else if element.name == "select", role == "listbox" {
+                appendWarningMessage("The \u{201c}listbox\u{201d} role is unnecessary for element \u{201c}select\u{201d} with a \u{201c}multiple\u{201d} attribute or with a \u{201c}size\u{201d} attribute whose value is greater than 1.", for: element, locations: locations, messages: &messages)
+            } else if element.name == "select", role == "combobox" {
+                appendWarningMessage("The \u{201c}combobox\u{201d} role is unnecessary for element \u{201c}select\u{201d} without a \u{201c}multiple\u{201d} attribute and without a \u{201c}size\u{201d} attribute whose value is greater than 1.", for: element, locations: locations, messages: &messages)
+            } else if element.name == "input", role == "textbox" || role == "searchbox" {
+                appendWarningMessage("The \u{201c}\(role)\u{201d} role is unnecessary for an \u{201c}input\u{201d} element that has no \u{201c}list\u{201d} attribute and whose type is \u{201c}\(inputType(for: element))\u{201d}.", for: element, locations: locations, messages: &messages)
+            } else if element.name == "input", role == "spinbutton" {
+                appendWarningMessage("The \u{201c}spinbutton\u{201d} role is unnecessary for element \u{201c}input\u{201d} whose type is \u{201c}number\u{201d}.", for: element, locations: locations, messages: &messages)
+            } else {
+                appendWarningMessage("The \u{201c}\(role)\u{201d} role is unnecessary for element \u{201c}\(element.name)\u{201d}.", for: element, locations: locations, messages: &messages)
+            }
+        }
+    }
+
+    private func appendARIANamingMessages(
+        for element: HTMLStartElement,
+        role: String?,
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) {
+        let isNameProhibitedElement = Self.ariaNamingProhibitedElements.contains(element.name) || element.name.contains("-")
+        guard isNameProhibitedElement else { return }
+        if let role, !Self.ariaNamingProhibitedRoles.contains(role) {
+            return
+        }
+        for attribute in ["aria-label", "aria-labelledby", "aria-braillelabel"] where element.hasAttribute(attribute) {
+            appendMessage(
+                "The \u{201c}\(attribute)\u{201d} attribute must not be specified on any \u{201c}\(element.name)\u{201d} element unless the element has a \u{201c}role\u{201d} value other than \u{201c}caption\u{201d}, \u{201c}code\u{201d}, \u{201c}deletion\u{201d}, \u{201c}emphasis\u{201d}, \u{201c}generic\u{201d}, \u{201c}insertion\u{201d}, \u{201c}paragraph\u{201d}, \u{201c}presentation\u{201d}, \u{201c}strong\u{201d}, \u{201c}subscript\u{201d}, or \u{201c}superscript\u{201d}.",
+                for: element,
+                locations: locations,
+                messages: &messages
+            )
+        }
+    }
+
+    private func appendSelectRoleMessages(
+        for element: HTMLStartElement,
+        role: String?,
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) {
+        guard element.name == "select", let role else { return }
+        if allowsMultipleSelection(element), role != "listbox" {
+            appendBadAttributeValue(role, attribute: "role", for: element, locations: locations, messages: &messages)
+        } else if isDropDownSelect(element), role == "listbox" {
+            appendMessage("The \u{201c}listbox\u{201d} role is not allowed for element \u{201c}select\u{201d} without a \u{201c}multiple\u{201d} attribute and without a \u{201c}size\u{201d} attribute whose value is greater than 1.", for: element, locations: locations, messages: &messages)
+        }
+    }
+
+    private func appendSummaryARIAMessages(
+        for element: HTMLStartElement,
+        stack: [String],
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) {
+        guard element.name == "summary", stack.last == "details" else { return }
+        if element.hasAttribute("role") {
+            appendMessage("The \u{201c}role\u{201d} attribute must not be used on any \u{201c}summary\u{201d} element that is a summary for its parent \u{201c}details\u{201d} element.", for: element, locations: locations, messages: &messages)
+        }
+        if element.hasAttribute("aria-expanded") {
+            appendMessage("Element \u{201c}summary\u{201d} is missing one or more of the following attributes: \u{201c}aria-checked\u{201d}, \u{201c}aria-level\u{201d}, \u{201c}role\u{201d}.", for: element, locations: locations, messages: &messages)
+        }
+        if element.hasAttribute("aria-pressed") {
+            appendMessage("Element \u{201c}summary\u{201d} is missing required attribute \u{201c}role\u{201d}.", for: element, locations: locations, messages: &messages)
+        }
+        if element.hasAttribute("aria-selected") {
+            appendMessage("Element \u{201c}summary\u{201d} is missing one or more of the following attributes: \u{201c}aria-checked\u{201d}, \u{201c}role\u{201d}.", for: element, locations: locations, messages: &messages)
+        }
+    }
+
+    private func appendARIAPropertyMessages(
+        for element: HTMLStartElement,
+        role: String?,
+        idElementNames: [String: String],
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) {
+        if element.name == "meta", element.hasAttribute("aria-hidden") {
+            appendAttributeNotAllowed("aria-hidden", for: element, locations: locations, messages: &messages)
+        }
+        if (element.name == "br" || element.name == "wbr"), element.hasAttribute("aria-atomic") {
+            appendAttributeNotAllowed("aria-atomic", for: element, locations: locations, messages: &messages)
+        }
+        if (element.name == "br" || element.name == "wbr"), role == "separator" {
+            appendBadAttributeValue("separator", attribute: "role", for: element, locations: locations, messages: &messages)
+        }
+        if element.name == "body", normalizedAttributeValue("aria-hidden", for: element) == "true" {
+            appendMessage("\u{201c}aria-hidden=true\u{201d} must not be used on the \u{201c}body\u{201d} element.", for: element, locations: locations, messages: &messages)
+        }
+        if normalizedAttributeValue("aria-hidden", for: element) == "true",
+           normalizedAttributeValue("hidden", for: element) == "until-found" {
+            appendMessage("Attribute \u{201c}aria-hidden\u{201d} with value \u{201c}true\u{201d} must not be specified on elements with \u{201c}hidden\u{201d} attribute value \u{201c}until-found\u{201d}. This combination prevents content from being accessible to assistive technology when revealed through search.", for: element, locations: locations, messages: &messages)
+        }
+        if element.name == "input", inputType(for: element) == "hidden", element.hasAttribute("aria-hidden") {
+            appendMessage("The \u{201c}aria-hidden\u{201d} attribute must not be specified on an \u{201c}input\u{201d} element whose \u{201c}type\u{201d} attribute has the value \u{201c}hidden\u{201d}.", for: element, locations: locations, messages: &messages)
+        }
+        if element.hasAttribute("aria-expanded"), element.hasAttribute("command") {
+            appendMessage("The \u{201c}aria-expanded\u{201d} attribute must not be used on any element which has a \u{201c}command\u{201d} attribute.", for: element, locations: locations, messages: &messages)
+        }
+        if element.hasAttribute("aria-expanded"), element.hasAttribute("popovertarget") {
+            appendMessage("The \u{201c}aria-expanded\u{201d} attribute must not be used on any element which has a \u{201c}popovertarget\u{201d} attribute.", for: element, locations: locations, messages: &messages)
+        }
+        if normalizedAttributeValue("aria-disabled", for: element) == "true", element.hasAttribute("disabled") {
+            appendWarningMessage("Attribute \u{201c}aria-disabled\u{201d} is unnecessary for elements that have attribute \u{201c}disabled\u{201d}.", for: element, locations: locations, messages: &messages)
+        }
+        if element.name == "a", element.hasAttribute("href"), normalizedAttributeValue("aria-disabled", for: element) == "true" {
+            appendWarningMessage("An \u{201c}aria-disabled\u{201d} attribute whose value is \u{201c}true\u{201d} should not be specified on an \u{201c}a\u{201d} element that has an \u{201c}href\u{201d} attribute.", for: element, locations: locations, messages: &messages)
+        }
+        if element.hasAttribute("aria-dropeffect") {
+            appendWarningMessage("The \u{201c}aria-dropeffect\u{201d} attribute is deprecated and should not be used. Support for it is poor and is unlikely to improve.", for: element, locations: locations, messages: &messages)
+        }
+        if element.hasAttribute("aria-grabbed") {
+            appendWarningMessage("The \u{201c}aria-grabbed\u{201d} attribute is deprecated and should not be used. Support for it is poor and is unlikely to improve.", for: element, locations: locations, messages: &messages)
+        }
+        if let active = element.attributeValue("aria-activedescendant"), idElementNames[active] == nil {
+            appendMessage("The \u{201c}aria-activedescendant\u{201d} attribute references \u{201c}\(active)\u{201d}, which is not the ID of any element in this document.", for: element, locations: locations, messages: &messages)
+        }
+        appendARIAWidgetPropertyMessages(for: element, role: role, locations: locations, messages: &messages)
+    }
+
+    private func appendImageMessages(
+        for element: HTMLStartElement,
+        stack: [String],
+        anchorHrefStack: [Bool],
+        mapNames: Set<String>,
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) {
+        guard element.name == "img" else { return }
+
+        for attribute in ["height", "width"] {
+            if let value = element.attributeValue(attribute), !isValidNonNegativeInteger(value) {
+                appendBadAttributeValue(value, attribute: attribute, for: element, locations: locations, messages: &messages)
+            }
+        }
+
+        if element.hasAttribute("border") {
+            appendWarningMessage("The \u{201c}border\u{201d} attribute on the \u{201c}img\u{201d} element is obsolete. Consider specifying \u{201c}img { border: 0; }\u{201d} in CSS instead.", for: element, locations: locations, messages: &messages)
+        }
+
+        if element.hasAttribute("controls") {
+            let controls = element.attributeValue("controls") ?? ""
+            if !controls.isEmpty && controls.lowercased() != "controls" {
+                appendBadAttributeValue(controls, attribute: "controls", for: element, locations: locations, messages: &messages)
+            }
+            if element.attributeValue("alt")?.isEmpty != false {
+                appendMessage("The \u{201c}controls\u{201d} attribute must not be specified on an \u{201c}img\u{201d} element that does not have an \u{201c}alt\u{201d} attribute, or whose \u{201c}alt\u{201d} attribute\u{2019}s value is the empty string.", for: element, locations: locations, messages: &messages)
+            }
+        }
+
+        if element.hasAttribute("ismap"), !anchorHrefStack.contains(true) {
+            appendMessage("The \u{201c}img\u{201d} element with the \u{201c}ismap\u{201d} attribute set must have an \u{201c}a\u{201d} ancestor with the \u{201c}href\u{201d} attribute.", for: element, locations: locations, messages: &messages)
+        }
+
+        if let usemap = element.attributeValue("usemap") {
+            if stack.contains("a") {
+                appendMessage("The element \u{201c}img\u{201d} with the attribute \u{201c}usemap\u{201d} must not appear as a descendant of the \u{201c}a\u{201d} element.", for: element, locations: locations, messages: &messages)
+            }
+            if !usemap.hasPrefix("#") || usemap == "#" {
+                appendBadAttributeValue(usemap, attribute: "usemap", for: element, locations: locations, messages: &messages)
+            } else {
+                let name = String(usemap.dropFirst())
+                if !mapNames.contains(name) {
+                    appendMessage("The hash-name reference in attribute \u{201c}usemap\u{201d} referred to \u{201c}\(name)\u{201d}, but there is no \u{201c}map\u{201d} element with a \u{201c}name\u{201d} attribute with that value.", for: element, locations: locations, messages: &messages)
+                }
+            }
+        }
+    }
+
+    private func appendImageARIAMessages(
+        for element: HTMLStartElement,
+        role: String?,
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) {
+        guard element.name == "img" else { return }
+
+        if element.hasAttribute("role"), element.attributeValue("alt") == "" {
+            appendMessage("An \u{201c}img\u{201d} element with a \u{201c}role\u{201d} attribute must not have an \u{201c}alt\u{201d} attribute whose value is the empty string.", for: element, locations: locations, messages: &messages)
+        }
+
+        if let role, !Self.imgAllowedRoles.contains(role) {
+            appendBadAttributeValue(role, attribute: "role", for: element, locations: locations, messages: &messages)
+        }
+
+        if element.hasAttribute("role"), !hasAccessibleName(element) {
+            appendMessage("An \u{201c}img\u{201d} element with a \u{201c}role\u{201d} attribute must also have an accessible name (e.g., an \u{201c}alt\u{201d} attribute).", for: element, locations: locations, messages: &messages)
+        }
+
+        let hasRelevantARIA = element.attributes.contains { attribute in
+            attribute.name.hasPrefix("aria-") && attribute.name != "aria-hidden"
+        }
+        if hasRelevantARIA, !hasAccessibleName(element) {
+            appendMessage("An \u{201c}img\u{201d} element with any \u{201c}aria-*\u{201d} attributes other than \u{201c}aria-hidden\u{201d} must also have an accessible name. (e.g., an \u{201c}alt\u{201d} attribute).", for: element, locations: locations, messages: &messages)
+        }
+    }
+
+    private func appendLabelARIAAssociationMessages(
+        for element: HTMLStartElement,
+        idElementNames: [String: String],
+        labelStack: [LabelState],
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) {
+        if isLabelableElement(element), let label = labelStack.last {
+            if label.hasRole {
+                appendMessage("The \u{201c}role\u{201d} attribute must not be used on any \u{201c}label\u{201d} element that is an ancestor of a labelable element.", for: label.element, locations: locations, messages: &messages)
+            }
+            if label.hasAriaLabel {
+                appendMessage("The \u{201c}aria-label\u{201d} attribute must not be used on any \u{201c}label\u{201d} element that is an ancestor of a labelable element.", for: label.element, locations: locations, messages: &messages)
+            }
+        }
+
+        if element.name == "label",
+           let id = element.attributeValue("for"),
+           let referencedElementName = idElementNames[id],
+           isLabelableElement(name: referencedElementName) {
+            if element.hasAttribute("role") {
+                appendMessage("The \u{201c}role\u{201d} attribute must not be used on any \u{201c}label\u{201d} element that is associated with a labelable element.", for: element, locations: locations, messages: &messages)
+            }
+            if element.hasAttribute("aria-label") {
+                appendMessage("The \u{201c}aria-label\u{201d} attribute must not be used on any \u{201c}label\u{201d} element that is associated with a labelable element.", for: element, locations: locations, messages: &messages)
+            }
+        }
+    }
+
+    private func appendARIAWidgetPropertyMessages(
+        for element: HTMLStartElement,
+        role: String?,
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) {
+        if element.hasAttribute("aria-checked") {
+            if element.name == "input", inputType(for: element) == "checkbox" || inputType(for: element) == "radio" {
+                appendMessage("The \u{201c}aria-checked\u{201d} attribute must not be used on an \u{201c}input\u{201d} element which has a \u{201c}type\u{201d} attribute whose value is \u{201c}\(inputType(for: element))\u{201d}.", for: element, locations: locations, messages: &messages)
+            } else if role == nil || !Self.ariaCheckedRoles.contains(role ?? "") {
+                appendAttributeNotAllowed("aria-checked", for: element, locations: locations, messages: &messages)
+            }
+        }
+        if element.hasAttribute("aria-placeholder") {
+            if element.hasAttribute("placeholder") {
+                appendMessage("The \u{201c}aria-placeholder\u{201d} attribute must not be specified on elements that have a \u{201c}placeholder\u{201d} attribute.", for: element, locations: locations, messages: &messages)
+            } else if role != "textbox" && role != "searchbox" {
+                appendAttributeNotAllowed("aria-placeholder", for: element, locations: locations, messages: &messages)
+            }
+        }
+        if element.hasAttribute("contenteditable"), normalizedAttributeValue("aria-readonly", for: element) == "true", role == nil {
+            appendMessage("Element \u{201c}\(element.name)\u{201d} is missing one or more of the following attributes: \u{201c}aria-checked\u{201d}, \u{201c}aria-expanded\u{201d}, \u{201c}aria-valuenow\u{201d}, \u{201c}role\u{201d}.", for: element, locations: locations, messages: &messages)
+        }
+        if element.hasAttribute("aria-readonly"), role == nil || !Self.ariaReadonlyRoles.contains(role ?? "") {
+            appendAttributeNotAllowed("aria-readonly", for: element, locations: locations, messages: &messages)
+        }
+        if element.hasAttribute("aria-selected"), role == nil || !Self.ariaSelectedRoles.contains(role ?? "") {
+            appendAttributeNotAllowed("aria-selected", for: element, locations: locations, messages: &messages)
+        }
+        if element.hasAttribute("aria-multiselectable") {
+            if element.name == "select" {
+                appendWarningMessage("The \u{201c}aria-multiselectable\u{201d} attribute should not be used with the \u{201c}select \u{201d} element.", for: element, locations: locations, messages: &messages)
+            } else if role == nil || !Self.ariaMultiselectableRoles.contains(role ?? "") {
+                appendAttributeNotAllowed("aria-multiselectable", for: element, locations: locations, messages: &messages)
+            }
+        }
+        if element.hasAttribute("aria-valuemin"), element.hasAttribute("min") {
+            appendMessage("The \u{201c}aria-valuemin\u{201d} attribute must not be used on an element which has a \u{201c}min\u{201d} attribute.", for: element, locations: locations, messages: &messages)
+        } else if element.hasAttribute("aria-valuemin") {
+            if element.name == "meter" {
+                appendWarningMessage("The \u{201c}aria-valuemin\u{201d} attribute should not be used on a \u{201c}meter\u{201d} element.", for: element, locations: locations, messages: &messages)
+            } else if element.name == "input", inputType(for: element) == "number" {
+                appendWarningMessage("The \u{201c}aria-valuemin\u{201d} attribute should not be used on an \u{201c}input\u{201d} element which has a \u{201c}type\u{201d} attribute whose value is \u{201c}number\u{201d}.", for: element, locations: locations, messages: &messages)
+            } else if role == nil || !Self.ariaRangeRoles.contains(role ?? "") {
+                appendAttributeNotAllowed("aria-valuemin", for: element, locations: locations, messages: &messages)
+            }
+        }
+        if element.hasAttribute("aria-valuemax"), element.hasAttribute("max") {
+            appendMessage("The \u{201c}aria-valuemax\u{201d} attribute must not be used on an element which has a \u{201c}max\u{201d} attribute.", for: element, locations: locations, messages: &messages)
+        } else if element.hasAttribute("aria-valuemax") {
+            if element.name == "input", inputType(for: element) == "number" {
+                appendWarningMessage("The \u{201c}aria-valuemax\u{201d} attribute should not be used on an \u{201c}input\u{201d} element which has a \u{201c}type\u{201d} attribute whose value is \u{201c}number\u{201d}.", for: element, locations: locations, messages: &messages)
+            } else if role == nil || !Self.ariaRangeRoles.contains(role ?? "") {
+                appendAttributeNotAllowed("aria-valuemax", for: element, locations: locations, messages: &messages)
+            }
+        }
+        if role == "main" {
+            for attribute in ["aria-disabled", "aria-haspopup", "aria-invalid"] where element.hasAttribute(attribute) {
+                appendWarningMessage("The \u{201c}\(attribute)\u{201d} attribute should not be used on any element which has \u{201c}role=main\u{201d}.", for: element, locations: locations, messages: &messages)
+            }
+        }
+        if role == "listbox", element.hasAttribute("aria-expanded") {
+            appendAttributeNotAllowed("aria-expanded", for: element, locations: locations, messages: &messages)
+        }
+        if role == "listitem", element.hasAttribute("aria-level") {
+            appendWarningMessage("The \u{201c}aria-level\u{201d} attribute should not be used on any element which has \u{201c}role=listitem\u{201d}.", for: element, locations: locations, messages: &messages)
+        }
+        if element.name == "input",
+           inputType(for: element) == "text",
+           element.hasAttribute("list"),
+           element.hasAttribute("aria-haspopup") {
+            appendWarningMessage("The \u{201c}aria-haspopup\u{201d} attribute should not be used on an \u{201c}input\u{201d} element that has a \u{201c}list\u{201d} attribute and whose type is \u{201c}text\u{201d}.", for: element, locations: locations, messages: &messages)
+        }
+        if element.name == "select", role == "combobox", !element.hasAttribute("aria-expanded") {
+            appendMessage("Element \u{201c}select\u{201d} is missing required attribute \u{201c}aria-expanded\u{201d}.", for: element, locations: locations, messages: &messages)
+        }
+    }
+
+    private func appendARIAStructureMessages(
+        for element: HTMLStartElement,
+        role: String?,
+        stack: [String],
+        roleStack: [String?],
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) {
+        if element.name == "a", element.hasAttribute("href"),
+           let ancestorRole = roleStack.compactMap({ $0 }).last(where: { Self.prohibitedInteractiveAncestorRoles.contains($0) }) {
+            appendMessage("The element \u{201c}a\u{201d} with the attribute \u{201c}href\u{201d} must not appear as a descendant of an element with the attribute \u{201c}role=\(ancestorRole)\u{201d}.", for: element, locations: locations, messages: &messages)
+        }
+        if element.hasAttribute("tabindex"),
+           let ancestorRole = roleStack.compactMap({ $0 }).last(where: { $0 == "option" || $0 == "tab" }) {
+            appendMessage("An element with the attribute \u{201c}tabindex\u{201d} must not appear as a descendant of an element with the attribute \u{201c}role=\(ancestorRole)\u{201d}.", for: element, locations: locations, messages: &messages)
+        }
+        if let role, Self.headingProhibitedRoles.contains(role), stack.contains(where: { Self.headingElements.contains($0) }) {
+            appendMessage("An element with the attribute \u{201c}role=\(role)\u{201d} must not appear as a descendant of an \u{201c}h1\u{201d}, \u{201c}h2\u{201d}, \u{201c}h3\u{201d}, \u{201c}h4\u{201d}, \u{201c}h5\u{201d}, or \u{201c}h6\u{201d} element.", for: element, locations: locations, messages: &messages)
+        }
+        if role == "option", !roleStack.contains(where: { $0 == "listbox" }) {
+            appendMessage("An element with \u{201c}role=option\u{201d} must be contained in, or owned by, an element with the \u{201c}role\u{201d} value \u{201c}listbox\u{201d}.", for: element, locations: locations, messages: &messages)
+        }
+        if role == "cell", !roleStack.contains(where: { $0 == "row" }) {
+            appendMessage("An element with \u{201c}role=cell\u{201d} must be contained in, or owned by, an element with the \u{201c}role\u{201d} value \u{201c}row\u{201d}.", for: element, locations: locations, messages: &messages)
+        }
+        if role == "row", !roleStack.contains(where: { $0 == "treegrid" || $0 == "grid" || $0 == "rowgroup" || $0 == "table" }) {
+            appendMessage("An element with \u{201c}role=row\u{201d} must be contained in, or owned by, an element with the \u{201c}role\u{201d} value \u{201c}treegrid\u{201d}, \u{201c}grid\u{201d}, \u{201c}rowgroup\u{201d}, or \u{201c}table\u{201d}.", for: element, locations: locations, messages: &messages)
+        }
+        if role == "group", roleStack.last == "list" {
+            appendMessage("An element with \u{201c}role=group\u{201d} must not be a child of an element with \u{201c}role=list\u{201d}.", for: element, locations: locations, messages: &messages)
+        }
+        if element.name == "div", stack.last == "dl", let role, role != "presentation", role != "none" {
+            appendMessage("A \u{201c}div\u{201d} child of a \u{201c}dl\u{201d} element must not have any \u{201c}role\u{201d} value other than \u{201c}presentation\u{201d} or \u{201c}none\u{201d}.", for: element, locations: locations, messages: &messages)
+        }
+        if element.name == "li", let role {
+            if roleStack.contains(where: { $0 == "listbox" || $0 == "list" }), role != "group", role != "option" {
+                appendMessage("An \u{201c}li\u{201d} element that is a descendant of a \u{201c}role=listbox\u{201d} element or \u{201c}role=list\u{201d} element must not have any \u{201c}role\u{201d} value other than \u{201c}group\u{201d} or \u{201c}option\u{201d}.", for: element, locations: locations, messages: &messages)
+            }
+            if roleStack.contains(where: { $0 == "menu" || $0 == "menubar" }), !["group", "menuitem", "menuitemcheckbox", "menuitemradio", "separator"].contains(role) {
+                appendMessage("An \u{201c}li\u{201d} element that is a descendant of a \u{201c}role=menu\u{201d} element or \u{201c}role=menubar\u{201d} element must not have any \u{201c}role\u{201d} value other than \u{201c}group\u{201d}, \u{201c}menuitem\u{201d}, \u{201c}menuitemcheckbox\u{201d}, \u{201c}menuitemradio\u{201d}, or \u{201c}separator\u{201d}.", for: element, locations: locations, messages: &messages)
+            }
+            if roleStack.contains(where: { $0 == "tablist" }), role != "tab" {
+                appendMessage("An \u{201c}li\u{201d} element that is a descendant of a \u{201c}role=tablist\u{201d} element must not have any \u{201c}role\u{201d} value other than \u{201c}tab\u{201d}.", for: element, locations: locations, messages: &messages)
+            }
+            if roleStack.contains(where: { $0 == "tree" }), role != "treeitem" {
+                appendMessage("An \u{201c}li\u{201d} element that is a descendant of a \u{201c}role=tree\u{201d} element must not have any \u{201c}role\u{201d} value other than \u{201c}treeitem\u{201d}.", for: element, locations: locations, messages: &messages)
+            }
+        }
+        if roleStack.last == "group", let role {
+            if roleStack.contains(where: { $0 == "menu" || $0 == "menubar" }),
+               !["menuitem", "menuitemcheckbox", "menuitemradio"].contains(role) {
+                appendMessage("An element with \u{201c}role=group\u{201d} that is a descendant of an element with \u{201c}role=menu\u{201d} or \u{201c}role=menubar\u{201d} must contain only elements with \u{201c}role=menuitem\u{201d}, \u{201c}role=menuitemcheckbox\u{201d}, or \u{201c}role=menuitemradio\u{201d}.", for: element, locations: locations, messages: &messages)
+            }
+            if roleStack.contains(where: { $0 == "tree" }), role != "treeitem" {
+                appendMessage("An element with \u{201c}role=group\u{201d} that is a descendant of an element with \u{201c}role=tree\u{201d} must contain only elements with \u{201c}role=treeitem\u{201d}.", for: element, locations: locations, messages: &messages)
+            }
+        }
+        if roleStack.last == "rowgroup", role != "row" {
+            appendMessage("An element that is a child of an element with \u{201c}role=rowgroup\u{201d} must have \u{201c}role=row\u{201d}.", for: element, locations: locations, messages: &messages)
+        }
+        if let ancestorRole = roleStack.compactMap({ $0 }).last(where: { ["button", "img", "math", "progressbar", "separator", "slider"].contains($0) }) {
+            if ancestorRole == "button", Self.headingElements.contains(element.name) {
+                appendMessage("The element \u{201c}\(element.name)\u{201d} must not appear as a descendant of an element with the attribute \u{201c}role=button\u{201d}.", for: element, locations: locations, messages: &messages)
+            }
+            if ancestorRole == "img", element.name == "button" {
+                appendMessage("The element \u{201c}button\u{201d} must not appear as a descendant of an element with the attribute \u{201c}role=img\u{201d}.", for: element, locations: locations, messages: &messages)
+            }
+            if ["img", "math", "progressbar", "separator", "slider"].contains(ancestorRole), element.name == "label" {
+                appendMessage("The element \u{201c}label\u{201d} must not appear as a descendant of an element with the attribute \u{201c}role=\(ancestorRole)\u{201d}.", for: element, locations: locations, messages: &messages)
+            }
+        }
+        if element.name == "button", stack.last == "select" {
+            if element.hasAttribute("role") {
+                appendMessage("The \u{201c}role\u{201d} attribute must not be used on a \u{201c}button\u{201d} element that is a child of a \u{201c}select\u{201d} element.", for: element, locations: locations, messages: &messages)
+            }
+            if element.hasAttribute("aria-label") {
+                appendMessage("The \u{201c}aria-label\u{201d} attribute must not be used on a \u{201c}button\u{201d} element that is a child of a \u{201c}select\u{201d} element.", for: element, locations: locations, messages: &messages)
+            }
+        }
+        if element.name == "selectedcontent", stack.last == "button", stack.contains("select") {
+            if element.hasAttribute("aria-hidden") {
+                appendMessage("The \u{201c}aria-hidden\u{201d} attribute must not be used on a \u{201c}selectedcontent\u{201d} element inside the \u{201c}button\u{201d} part of a customizable \u{201c}select\u{201d} element.", for: element, locations: locations, messages: &messages)
+            }
+            if element.hasAttribute("role") {
+                appendMessage("The \u{201c}role\u{201d} attribute must not be used on a \u{201c}selectedcontent\u{201d} element inside the \u{201c}button\u{201d} part of a customizable \u{201c}select\u{201d} element.", for: element, locations: locations, messages: &messages)
+            }
+        }
     }
 
     private func appendDateTimeAttributeMessages(
@@ -1006,6 +1603,63 @@ struct HTMLGeneralAttributeChecker {
         }
     }
 
+    private func appendSelectAttributeMessages(
+        for element: HTMLStartElement,
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) {
+        guard element.name == "select" else { return }
+
+        if let autocomplete = element.attributeValue("autocomplete") {
+            let tokens = autocomplete.lowercased().split(whereSeparator: { $0.isWhitespace }).map(String.init)
+            if tokens.contains("webauthn") {
+                appendMessage("The value of the \u{201c}autocomplete\u{201d} attribute for the \u{201c}select\u{201d} element must not contain \u{201c}webauthn\u{201d}.", for: element, locations: locations, messages: &messages)
+            } else if !isValidAutocompleteValue(autocomplete) {
+                appendBadAttributeValue(autocomplete, attribute: "autocomplete", for: element, locations: locations, messages: &messages)
+            }
+        }
+
+        if let size = element.attributeValue("size"), !isValidPositiveInteger(size) {
+            appendBadAttributeValue(size, attribute: "size", for: element, locations: locations, messages: &messages)
+        }
+    }
+
+    private func appendSelectChildMessages(
+        for element: HTMLStartElement,
+        parent: String?,
+        selectStack: [SelectState],
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) {
+        guard element.name == "button",
+              parent == "select",
+              let select = selectStack.last,
+              !isDropDownSelect(select.element) else {
+            return
+        }
+        appendMessage("A \u{201c}button\u{201d} element is only allowed as a child of a \u{201c}select\u{201d} element that is a drop-down box (one without a \u{201c}size\u{201d} attribute greater than 1 and without a \u{201c}multiple\u{201d} attribute).", for: element, locations: locations, messages: &messages)
+    }
+
+    private func appendSelectMessages(
+        _ state: SelectState,
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) {
+        if !allowsMultipleSelection(state.element), state.selectedOptionCount > 1 {
+            appendMessage("The \u{201c}select\u{201d} element cannot have more than one selected \u{201c}option\u{201d} descendant unless the \u{201c}multiple\u{201d} attribute is specified.", for: state.element, locations: locations, messages: &messages)
+        }
+
+        guard state.element.hasAttribute("required"),
+              isDropDownSelect(state.element) else {
+            return
+        }
+        if state.optionCount == 0 {
+            appendMessage("A \u{201c}select\u{201d} element with a \u{201c}required\u{201d} attribute, and without a \u{201c}multiple\u{201d} attribute, and without a \u{201c}size\u{201d} attribute whose value is greater than \u{201c}1\u{201d}, must have a child \u{201c}option\u{201d} element.", for: state.element, locations: locations, messages: &messages)
+        } else if state.firstOptionValue != "" && !state.firstOptionText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            appendMessage("The first child \u{201c}option\u{201d} element of a \u{201c}select\u{201d} element with a \u{201c}required\u{201d} attribute, and without a \u{201c}multiple\u{201d} attribute, and without a \u{201c}size\u{201d} attribute whose value is greater than \u{201c}1\u{201d}, must have either an empty \u{201c}value\u{201d} attribute, or must have no text content. Consider either adding a placeholder option label, or adding a \u{201c}size\u{201d} attribute with a value equal to the number of \u{201c}option\u{201d} elements.", for: state.element, locations: locations, messages: &messages)
+        }
+    }
+
     private func appendTrackMessages(
         for element: HTMLStartElement,
         mediaStack: inout [MediaState],
@@ -1142,6 +1796,132 @@ struct HTMLGeneralAttributeChecker {
             default:
                 return scalar.value > 0x20 && scalar.value < 0x7f
             }
+        }
+    }
+
+    private func roleTokens(for element: HTMLStartElement) -> [String] {
+        element.attributeValue("role")?
+            .lowercased()
+            .split(whereSeparator: { $0.isWhitespace })
+            .map(String.init) ?? []
+    }
+
+    private func firstRoleToken(for element: HTMLStartElement) -> String? {
+        roleTokens(for: element).first
+    }
+
+    private func normalizedAttributeValue(_ attribute: String, for element: HTMLStartElement) -> String? {
+        element.attributeValue(attribute)?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
+    private func isHidden(_ element: HTMLStartElement) -> Bool {
+        element.hasAttribute("hidden")
+    }
+
+    private func isDropDownSelect(_ element: HTMLStartElement) -> Bool {
+        !allowsMultipleSelection(element)
+    }
+
+    private func allowsMultipleSelection(_ element: HTMLStartElement) -> Bool {
+        if element.hasAttribute("multiple") {
+            return true
+        }
+        if let size = element.attributeValue("size"), let value = Int(size), value > 1 {
+            return true
+        }
+        return false
+    }
+
+    private func hasAccessibleName(_ element: HTMLStartElement) -> Bool {
+        if let alt = element.attributeValue("alt"), !alt.isEmpty {
+            return true
+        }
+        return ["aria-label", "aria-labelledby", "title"].contains { element.hasAttribute($0) }
+    }
+
+    private func isLabelableElement(_ element: HTMLStartElement) -> Bool {
+        if element.name == "input", inputType(for: element) == "hidden" {
+            return false
+        }
+        return isLabelableElement(name: element.name)
+    }
+
+    private func isLabelableElement(name: String) -> Bool {
+        Self.labelableElements.contains(name)
+    }
+
+    private func unnecessaryRole(for element: HTMLStartElement) -> String? {
+        switch element.name {
+        case "a":
+            return element.hasAttribute("href") ? "link" : nil
+        case "article":
+            return "article"
+        case "aside":
+            return "complementary"
+        case "button":
+            return "button"
+        case "dd":
+            return "definition"
+        case "details":
+            return "group"
+        case "dialog":
+            return "dialog"
+        case "dt":
+            return "term"
+        case "figure":
+            return "figure"
+        case "footer":
+            return "contentinfo"
+        case "form":
+            return "form"
+        case "header":
+            return "banner"
+        case "hr":
+            return "separator"
+        case "img":
+            return "img"
+        case "input":
+            let type = inputType(for: element)
+            if type == "number" {
+                return "spinbutton"
+            }
+            if type == "search", !element.hasAttribute("list") {
+                return "searchbox"
+            }
+            if type == "text", !element.hasAttribute("list") {
+                return "textbox"
+            }
+            return nil
+        case "li":
+            return "listitem"
+        case "main":
+            return "main"
+        case "nav":
+            return "navigation"
+        case "output":
+            return "status"
+        case "progress":
+            return "progressbar"
+        case "s":
+            return "deletion"
+        case "section":
+            return element.hasAttribute("aria-label") || element.hasAttribute("aria-labelledby") ? "region" : nil
+        case "select":
+            if element.hasAttribute("multiple") {
+                return "listbox"
+            }
+            if let size = element.attributeValue("size"), let value = Int(size), value > 1 {
+                return "listbox"
+            }
+            return "combobox"
+        case "table":
+            return "table"
+        case "tbody":
+            return "rowgroup"
+        case "ul", "ol":
+            return "list"
+        default:
+            return nil
         }
     }
 
@@ -2622,6 +3402,75 @@ struct HTMLGeneralAttributeChecker {
         "and", "or", "not", "href_matches", "selector_matches"
     ]
 
+    private static let nonAbstractARIARoles: Set<String> = [
+        "alert", "alertdialog", "application", "article", "banner", "button", "caption",
+        "cell", "checkbox", "code", "combobox", "complementary", "contentinfo", "definition",
+        "deletion", "dialog", "directory", "document", "emphasis", "feed", "figure", "form",
+        "generic", "grid", "gridcell", "group", "img", "insertion", "link", "list", "listbox",
+        "listitem", "log", "main", "marquee", "math", "menu", "menubar", "menuitem",
+        "menuitemcheckbox", "menuitemradio", "navigation", "none", "note", "option",
+        "paragraph", "presentation", "progressbar", "radio", "radiogroup", "region", "row", "rowgroup",
+        "scrollbar", "search", "searchbox", "separator", "slider", "spinbutton", "status",
+        "strong", "subscript", "superscript", "switch", "tab", "table", "tablist", "tabpanel",
+        "term", "textbox", "timer", "toolbar", "tree", "treegrid", "treeitem"
+    ]
+
+    private static let ariaNamingProhibitedElements: Set<String> = [
+        "a", "abbr", "area", "b", "bdi", "bdo", "caption", "cite", "code", "data", "del",
+        "div", "em", "figcaption", "i", "ins", "kbd", "legend", "mark", "p", "pre", "q",
+        "rp", "s", "samp", "small", "span", "strong", "sub", "sup", "time", "u", "var"
+    ]
+
+    private static let ariaNamingProhibitedRoles: Set<String> = [
+        "caption", "code", "deletion", "emphasis", "generic", "insertion", "paragraph",
+        "presentation", "strong", "subscript", "superscript"
+    ]
+
+    private static let ariaCheckedRoles: Set<String> = [
+        "checkbox", "menuitemcheckbox", "menuitemradio", "option", "radio", "switch"
+    ]
+
+    private static let ariaReadonlyRoles: Set<String> = [
+        "checkbox", "combobox", "grid", "gridcell", "listbox", "radiogroup", "slider",
+        "spinbutton", "textbox"
+    ]
+
+    private static let ariaSelectedRoles: Set<String> = [
+        "gridcell", "option", "row", "tab"
+    ]
+
+    private static let ariaMultiselectableRoles: Set<String> = [
+        "grid", "listbox", "tablist", "tree"
+    ]
+
+    private static let ariaRangeRoles: Set<String> = [
+        "meter", "scrollbar", "separator", "slider", "spinbutton"
+    ]
+
+    private static let imgAllowedRoles: Set<String> = [
+        "button", "checkbox", "img", "link", "menuitem", "menuitemcheckbox", "menuitemradio",
+        "option", "progressbar", "scrollbar", "separator", "slider", "switch", "tab",
+        "treeitem"
+    ]
+
+    private static let labelableElements: Set<String> = [
+        "button", "input", "meter", "output", "progress", "select", "textarea"
+    ]
+
+    private static let prohibitedInteractiveAncestorRoles: Set<String> = [
+        "checkbox", "menuitem", "menuitemcheckbox", "menuitemradio", "option", "radio",
+        "switch", "tab"
+    ]
+
+    private static let headingElements: Set<String> = [
+        "h1", "h2", "h3", "h4", "h5", "h6"
+    ]
+
+    private static let headingProhibitedRoles: Set<String> = [
+        "alert", "alertdialog", "application", "dialog", "document", "feed", "listbox", "log",
+        "marquee", "math", "note", "status", "tabpanel", "timer", "toolbar"
+    ]
+
     private static let zero = UInt8(ascii: "0")
     private static let plus = UInt8(ascii: "+")
     private static let colon = UInt8(ascii: ":")
@@ -2660,6 +3509,19 @@ struct HTMLGeneralAttributeChecker {
         messages: inout [ValidationMessage]
     ) {
         messages.append(.warning(
+            message,
+            location: locations.location(offset: element.range.offset, length: element.range.length),
+            extract: locations.extract(offset: element.range.offset, length: element.range.length)
+        ))
+    }
+
+    private func appendInfoMessage(
+        _ message: String,
+        for element: HTMLStartElement,
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) {
+        messages.append(.info(
             message,
             location: locations.location(offset: element.range.offset, length: element.range.length),
             extract: locations.extract(offset: element.range.offset, length: element.range.length)
