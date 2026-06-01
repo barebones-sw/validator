@@ -23,6 +23,7 @@ public final class XMLValidator: NSObject, XMLParserDelegate, @unchecked Sendabl
     private var anchorHrefStack: [Bool] = []
     private var definitionListContexts: [DefinitionListContext] = []
     private var dtCaptures: [DTCapture] = []
+    private var tableChecker = HTMLTableModelChecker(mode: .xhtml)
 
     public func validate(data: Data, source: String) -> [ValidationMessage] {
         messages = []
@@ -32,6 +33,7 @@ public final class XMLValidator: NSObject, XMLParserDelegate, @unchecked Sendabl
         anchorHrefStack = []
         definitionListContexts = []
         dtCaptures = []
+        tableChecker = HTMLTableModelChecker(mode: .xhtml)
         let parser = XMLParser(data: data)
         parser.delegate = self
         parser.shouldProcessNamespaces = true
@@ -73,6 +75,12 @@ public final class XMLValidator: NSObject, XMLParserDelegate, @unchecked Sendabl
         if let id = attributeDict["id"], idElementNames[id] == nil {
             idElementNames[id] = name
         }
+        tableChecker.startElement(HTMLTableElementInfo(
+            name: name,
+            attributes: normalizedAttributes(attributeDict),
+            location: location,
+            extract: nil
+        ))
         appendGlobalAttributeMessages(element: name, attributes: attributeDict, location: location)
         if name == "base",
            attributeDict["href"] == nil,
@@ -143,6 +151,7 @@ public final class XMLValidator: NSObject, XMLParserDelegate, @unchecked Sendabl
         if name == "dl", !definitionListContexts.isEmpty {
             _ = definitionListContexts.popLast()
         }
+        tableChecker.endElement(name)
         if let index = elementStack.lastIndex(of: name) {
             elementStack.removeSubrange(index...)
             anchorHrefStack.removeSubrange(index...)
@@ -171,6 +180,13 @@ public final class XMLValidator: NSObject, XMLParserDelegate, @unchecked Sendabl
     }
 
     public func parserDidEndDocument(_ parser: XMLParser) {
+        for diagnostic in tableChecker.finish() {
+            if diagnostic.warning {
+                messages.append(.warning(diagnostic.message, location: diagnostic.location, extract: diagnostic.extract))
+            } else {
+                messages.append(.error(diagnostic.message, location: diagnostic.location, extract: diagnostic.extract))
+            }
+        }
         for reference in pendingInputListReferences where idElementNames[reference.value] != "datalist" {
             messages.append(.error(
                 "The \u{201c}list\u{201d} attribute of the \u{201c}input\u{201d} element must refer to a \u{201c}datalist\u{201d} element.",
@@ -360,6 +376,10 @@ public final class XMLValidator: NSObject, XMLParserDelegate, @unchecked Sendabl
             "Bad value \u{201c}\(value)\u{201d} for attribute \u{201c}\(attribute)\u{201d} on element \u{201c}\(element)\u{201d}.",
             location: location
         ))
+    }
+
+    private func normalizedAttributes(_ attributes: [String: String]) -> [String: String] {
+        Dictionary(attributes.map { ($0.key.lowercased(), $0.value) }, uniquingKeysWith: { _, new in new })
     }
 
     private func finishDTCapture(_ capture: DTCapture) {

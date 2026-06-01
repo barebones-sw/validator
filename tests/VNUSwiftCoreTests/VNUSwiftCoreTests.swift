@@ -309,6 +309,46 @@ import Testing
     #expect(result.messages.contains { $0.message == "The \u{201c}keygen\u{201d} element is obsolete." })
 }
 
+@Test func htmlValidatorCoversObsoleteElementWordingAndProfile() {
+    let result = checkHTML("<!doctype html><html lang=en><head profile=\"http://example.test\"><title>T</title></head><body><center>x</center><dir><li>x</li></dir></body></html>")
+    #expect(result.messages.contains { $0.message == "The \u{201c}center\u{201d} element is obsolete. Use CSS instead." })
+    #expect(result.messages.contains { $0.message == "The \u{201c}dir\u{201d} element is obsolete. Use the \u{201c}ul\u{201d} element instead." })
+    #expect(result.messages.contains { $0.message == "The \u{201c}profile\u{201d} attribute on the \u{201c}head\u{201d} element is obsolete. To declare which \u{201c}meta\u{201d} terms are used in the document, instead register the names as meta extensions. To trigger specific UA behaviors, use a \u{201c}link\u{201d} element instead." && $0.subType == "warning" })
+}
+
+@Test func tableCheckerCoversCellSpansHeadersAndRoles() {
+    let result = checkHTML("""
+        <!doctype html><html lang=en><meta charset=utf-8><title>T</title>
+        <table>
+          <colgroup><col span=1001></colgroup>
+          <tr><td rowspan=2>A</td><td>B</td></tr>
+          <tr><td colspan=2 headers=missing role=button>C</td></tr>
+        </table>
+        <table><tr><td colspan=0>zero</td><td rowspan=65535>tall</td></tr></table>
+        """)
+    #expect(result.messages.contains { $0.message == "The value of the \u{201c}span\u{201d} attribute must be less than or equal to 1000." })
+    #expect(result.messages.contains { $0.message == "Table column 3 established by element \u{201c}td\u{201d} has no cells beginning in it." })
+    #expect(result.messages.contains { $0.message == "The \u{201c}headers\u{201d} attribute on the element \u{201c}td\u{201d} refers to the ID \u{201c}missing\u{201d}, but there is no \u{201c}th\u{201d} element with that ID in the same table." })
+    #expect(result.messages.contains { $0.message == "The \u{201c}role\u{201d} attribute must not be used on a \u{201c}td\u{201d} element which has a \u{201c}table\u{201d} ancestor with no \u{201c}role\u{201d} attribute, or with a \u{201c}role\u{201d} attribute whose value is \u{201c}table\u{201d}, \u{201c}grid\u{201d}, or \u{201c}treegrid\u{201d}." })
+    #expect(result.messages.contains { $0.message == "Bad value \u{201c}0\u{201d} for attribute \u{201c}colspan\u{201d} on element \u{201c}td\u{201d}." })
+    #expect(result.messages.contains { $0.message == "The value of the \u{201c}rowspan\u{201d} attribute must be less than or equal to 65534." })
+}
+
+@Test func tableCheckerCoversRowGroupsWidthsAndTableInsertionMode() {
+    let result = checkHTML("""
+        <!doctype html><html lang=en><meta charset=utf-8><title>T</title>
+        <table><tr><td>1</td><td>2</td><td>3</td></tr><tr><td>1</td><td>2</td></tr><tr><td>1</td><td>2</td><td>3</td><td>4</td></tr></table>
+        <table><tbody><tr><td rowspan=3>x</td></tr><tr><td>y</td></tr></tbody></table>
+        <table><tr><td>x</td></tr><tr></tr></table>
+        <table><input></table>
+        """)
+    #expect(result.messages.contains { $0.message == "A table row was 2 columns wide, which is less than the column count established by the first row (3)." && $0.subType == "warning" })
+    #expect(result.messages.contains { $0.message == "A table row was 4 columns wide and exceeded the column count established by the first row (3)." && $0.subType == "warning" })
+    #expect(result.messages.contains { $0.message == "Table cell spans past the end of its row group established by a \u{201c}tbody\u{201d} element; clipped to the end of the row group." })
+    #expect(result.messages.contains { $0.message == "Row 2 of a row group established by a \u{201c}tbody\u{201d} element has no cells beginning on it." })
+    #expect(result.messages.contains { $0.message == "Start tag \u{201c}input\u{201d} seen in \u{201c}table\u{201d}." })
+}
+
 @Test func metaCheckerCoversDocumentAndContentRules() {
     let result = checkHTML("""
         <!doctype html><html lang=en><meta charset=iso-8859-1 content="text/html">
@@ -554,6 +594,26 @@ import Testing
         options: CheckerOptions(parameters: ["out": ["json"]])
     )
     #expect(result.messages.contains { $0.message == "A \u{201c}link\u{201d} element must have an \u{201c}href\u{201d} or \u{201c}imagesrcset\u{201d} attribute, or both." })
+}
+
+@Test func xmlValidatorCoversXHTMLTableModelRules() {
+    let result = NuValidator().check(
+        input: DocumentInput(data: Data("""
+            <html xmlns="http://www.w3.org/1999/xhtml"><head><title>T</title></head><body>
+            <table><tr><td rowspan="3">1</td><td>2</td></tr><tr><td rowspan="3">3</td></tr><tr></tr><tr><td>4</td></tr></table>
+            <table><col/><tr><td>1</td></tr></table>
+            </body></html>
+            """.utf8), contentType: "application/xhtml+xml; charset=utf-8"),
+        options: CheckerOptions(parameters: ["out": ["json"]])
+    )
+    #expect(result.messages.contains { $0.message == "Row 3 of an implicit row group has no cells beginning on it." })
+    #expect(result.messages.contains { $0.message == "Element \u{201c}col\u{201d} not allowed as child of \u{201c}table\u{201d} in this context." })
+
+    let rootResult = NuValidator().check(
+        input: DocumentInput(data: Data("<table xmlns=\"http://www.w3.org/1999/xhtml\"><caption>T</caption><tr><td>Cell</td></tr></table>".utf8), contentType: "application/xhtml+xml; charset=utf-8"),
+        options: CheckerOptions(parameters: ["out": ["json"]])
+    )
+    #expect(rootResult.messages.contains { $0.message == "Element \u{201c}table\u{201d} not allowed in this context." })
 }
 
 @Test func xmlValidatorCoversXHTMLGlobalAttributeValues() {

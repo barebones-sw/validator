@@ -3998,7 +3998,7 @@ struct HTMLGeneralAttributeChecker {
     ]
 
     private static let invalidLanguageTags: Set<String> = [
-        "bat-smg", "zzz"
+        "bat-smg", "chu", "zzz"
     ]
 
     private static let integrityAlgorithms: Set<String> = [

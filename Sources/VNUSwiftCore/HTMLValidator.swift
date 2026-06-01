@@ -96,6 +96,7 @@ public final class HTMLValidator: Sendable {
         messages.append(contentsOf: HTMLMicrodataAttributeChecker().validate(document: document, locations: locations))
         messages.append(contentsOf: HTMLMetaChecker().validate(document: document, locations: locations))
         messages.append(contentsOf: HTMLDefinitionListChecker().validate(document: document, locations: locations))
+        messages.append(contentsOf: HTMLTableChecker().validate(document: document, locations: locations))
         messages.append(contentsOf: HTMLGeneralAttributeChecker().validate(document: document, locations: locations))
 
         if sawStartTag, !sawHTMLLang {
@@ -163,6 +164,10 @@ public final class HTMLValidator: Sendable {
             appendError("Element \u{201c}basefont\u{201d} not allowed as child of \u{201c}head\u{201d} in this context.", offset: offset, length: length, locations: locations, messages: &messages)
         }
 
+        if name == "head", attr["profile"] != nil {
+            appendWarning("The \u{201c}profile\u{201d} attribute on the \u{201c}head\u{201d} element is obsolete. To declare which \u{201c}meta\u{201d} terms are used in the document, instead register the names as meta extensions. To trigger specific UA behaviors, use a \u{201c}link\u{201d} element instead.", offset: offset, length: length, locations: locations, messages: &messages)
+        }
+
         if HTMLVocabulary.headingElements.contains(name), stack.contains(where: { HTMLVocabulary.headingElements.contains($0.name) }) {
             appendError("Heading cannot be a child of another heading.", offset: offset, length: length, locations: locations, messages: &messages)
         }
@@ -171,17 +176,17 @@ public final class HTMLValidator: Sendable {
             appendError("Start tag for \u{201c}table\u{201d} seen but the previous \u{201c}table\u{201d} is still open.", offset: offset, length: length, locations: locations, messages: &messages)
         }
 
-        if name == "select", stack.contains(where: { $0.name == "table" }) {
-            appendError("Start tag \u{201c}select\u{201d} seen in \u{201c}table\u{201d}.", offset: offset, length: length, locations: locations, messages: &messages)
+        if (name == "input" || name == "select"), stack.last?.name == "table" {
+            appendError("Start tag \u{201c}\(name)\u{201d} seen in \u{201c}table\u{201d}.", offset: offset, length: length, locations: locations, messages: &messages)
         }
 
         if HTMLVocabulary.obsoleteElements.contains(name) {
-            if name == "frameset" {
-                appendError("The \u{201c}frameset\u{201d} element is obsolete. Use the \u{201c}iframe\u{201d} element and CSS instead, or use server-side includes.", offset: offset, length: length, locations: locations, messages: &messages)
+            if let obsoleteMessage = obsoleteElementMessage(for: name) {
+                appendError(obsoleteMessage, offset: offset, length: length, locations: locations, messages: &messages)
             } else if name == "keygen" {
                 appendError("The \u{201c}keygen\u{201d} element is obsolete.", offset: offset, length: length, locations: locations, messages: &messages)
             } else {
-                appendError("Element \u{201c}\(name)\u{201d} is obsolete. Use CSS instead.", offset: offset, length: length, locations: locations, messages: &messages)
+                appendError("The \u{201c}\(name)\u{201d} element is obsolete. Use CSS instead.", offset: offset, length: length, locations: locations, messages: &messages)
             }
         } else if !HTMLVocabulary.elements.contains(name), !name.contains("-") {
             let parent = stack.last?.name ?? "body"
@@ -313,6 +318,23 @@ public final class HTMLValidator: Sendable {
     private func isPlausibleLanguageTag(_ value: String) -> Bool {
         let pattern = #"^[A-Za-z]{2,8}(-[A-Za-z0-9]{1,8})*$"#
         return value.range(of: pattern, options: .regularExpression) != nil && !value.contains("--") && !value.hasSuffix("-") && !value.hasPrefix("-")
+    }
+
+    private func obsoleteElementMessage(for name: String) -> String? {
+        switch name {
+        case "acronym":
+            return "The \u{201c}acronym\u{201d} element is obsolete. Use the \u{201c}abbr\u{201d} element instead."
+        case "applet":
+            return "The \u{201c}applet\u{201d} element is obsolete. Use \u{201c}embed\u{201d} or \u{201c}object\u{201d} element instead."
+        case "dir":
+            return "The \u{201c}dir\u{201d} element is obsolete. Use the \u{201c}ul\u{201d} element instead."
+        case "frameset", "noframes":
+            return "The \u{201c}\(name)\u{201d} element is obsolete. Use the \u{201c}iframe\u{201d} element and CSS instead, or use server-side includes."
+        case "strike":
+            return "The \u{201c}strike\u{201d} element is obsolete. Use \u{201c}del\u{201d} or \u{201c}s\u{201d} element instead."
+        default:
+            return nil
+        }
     }
 
     private static let invalidPictureParents: Set<String> = [
@@ -880,6 +902,520 @@ struct HTMLDefinitionListChecker {
     ]
 }
 
+struct HTMLTableElementInfo {
+    var name: String
+    var attributes: [String: String]
+    var location: SourceLocation
+    var extract: SourceExtract?
+}
+
+struct HTMLTableDiagnostic {
+    var message: String
+    var location: SourceLocation
+    var extract: SourceExtract?
+    var warning = false
+}
+
+struct HTMLTableChecker {
+    func validate(document: HTMLParsedDocument, locations: SourceLocationMap) -> [ValidationMessage] {
+        var checker = HTMLTableModelChecker(mode: .html)
+
+        for event in document.events {
+            switch event {
+            case let .startElement(element):
+                checker.startElement(info(for: element, locations: locations))
+            case let .endElement(name, _, _):
+                checker.endElement(name)
+            default:
+                continue
+            }
+        }
+
+        return checker.finish().map { diagnostic in
+            if diagnostic.warning {
+                return .warning(diagnostic.message, location: diagnostic.location, extract: diagnostic.extract)
+            }
+            return .error(diagnostic.message, location: diagnostic.location, extract: diagnostic.extract)
+        }
+    }
+
+    private func info(for element: HTMLStartElement, locations: SourceLocationMap) -> HTMLTableElementInfo {
+        var attributes: [String: String] = [:]
+        for attribute in element.attributes {
+            attributes[attribute.name] = attribute.value ?? ""
+        }
+        return HTMLTableElementInfo(
+            name: element.name,
+            attributes: attributes,
+            location: locations.location(offset: element.range.offset, length: element.range.length),
+            extract: locations.extract(offset: element.range.offset, length: element.range.length)
+        )
+    }
+}
+
+struct HTMLTableModelChecker {
+    enum Mode {
+        case html
+        case xhtml
+    }
+
+    private struct TableState {
+        var element: HTMLTableElementInfo
+        var role: String?
+        var columnMarkupCount = 0
+        var globalRowCount = 0
+        var rows: [TableRow] = []
+        var cellEstablishedColumns: Set<Int> = []
+        var cellStartColumns: Set<Int> = []
+        var thIDs: Set<String> = []
+        var pendingHeaderReferences: [HeaderReference] = []
+        var rowGroup: RowGroupState?
+        var row: ActiveRow?
+        var colgroupCountsChildren = false
+    }
+
+    private struct RowGroupState {
+        var name: String?
+        var rows: [TableRow] = []
+        var openSpans: [OpenSpan] = []
+    }
+
+    private struct ActiveRow {
+        var globalNumber: Int
+        var numberInGroup: Int
+        var occupiedColumns: Set<Int>
+        var startColumns: Set<Int> = []
+        var sourceCellCount = 0
+        var width: Int
+        var element: HTMLTableElementInfo
+    }
+
+    private struct TableRow {
+        var width: Int
+        var startCellCount: Int
+        var numberInGroup: Int
+        var groupName: String?
+        var element: HTMLTableElementInfo
+    }
+
+    private struct OpenSpan {
+        var columns: Range<Int>
+        var endRow: Int?
+        var groupName: String?
+        var cell: HTMLTableElementInfo
+    }
+
+    private struct HeaderReference {
+        var cellName: String
+        var id: String
+        var cell: HTMLTableElementInfo
+    }
+
+    private let mode: Mode
+    private var elementStack: [String] = []
+    private var tableStack: [TableState] = []
+    private var diagnostics: [HTMLTableDiagnostic] = []
+    private var sawRootElement = false
+
+    init(mode: Mode) {
+        self.mode = mode
+    }
+
+    mutating func startElement(_ element: HTMLTableElementInfo) {
+        if mode == .xhtml, !sawRootElement {
+            sawRootElement = true
+            if element.name == "table" {
+                append("Element \u{201c}table\u{201d} not allowed in this context.", at: element)
+            }
+        }
+
+        if element.name == "table" {
+            let role = normalizedRole(element.attributes["role"])
+            tableStack.append(TableState(element: element, role: role))
+            elementStack.append(element.name)
+            return
+        }
+
+        if !tableStack.isEmpty {
+            processTableElement(element)
+        }
+        elementStack.append(element.name)
+    }
+
+    mutating func endElement(_ name: String) {
+        if name == "tr" {
+            finishCurrentRow()
+        } else if Self.rowGroupElements.contains(name) {
+            finishCurrentRow()
+            finishCurrentRowGroup()
+        } else if name == "colgroup", !tableStack.isEmpty {
+            tableStack[tableStack.index(before: tableStack.endIndex)].colgroupCountsChildren = false
+        } else if name == "table", !tableStack.isEmpty {
+            finishCurrentRow()
+            finishCurrentRowGroup()
+            finishCurrentTable()
+        }
+
+        if let index = elementStack.lastIndex(of: name) {
+            elementStack.removeSubrange(index...)
+        }
+    }
+
+    mutating func finish() -> [HTMLTableDiagnostic] {
+        while !tableStack.isEmpty {
+            finishCurrentRow()
+            finishCurrentRowGroup()
+            finishCurrentTable()
+        }
+        return diagnostics
+    }
+
+    private mutating func processTableElement(_ element: HTMLTableElementInfo) {
+        switch element.name {
+        case "input", "select":
+            if mode == .html, elementStack.last == "table" {
+                append("Start tag \u{201c}\(element.name)\u{201d} seen in \u{201c}table\u{201d}.", at: element)
+            }
+        case "colgroup":
+            finishCurrentRowGroup()
+            processColgroup(element)
+        case "col":
+            processCol(element)
+        case "tbody", "thead", "tfoot":
+            finishCurrentRow()
+            finishCurrentRowGroup()
+            currentTable.rowGroup = RowGroupState(name: element.name)
+        case "tr":
+            startRow(element)
+        case "td", "th":
+            startCell(element)
+        default:
+            break
+        }
+    }
+
+    private mutating func processColgroup(_ element: HTMLTableElementInfo) {
+        if let spanValue = element.attributes["span"] {
+            let span = tableSpan(spanValue, attribute: "span", element: element)
+            currentTable.columnMarkupCount += span
+            currentTable.colgroupCountsChildren = false
+        } else {
+            currentTable.colgroupCountsChildren = true
+        }
+    }
+
+    private mutating func processCol(_ element: HTMLTableElementInfo) {
+        if mode == .xhtml, elementStack.last == "table" {
+            append("Element \u{201c}col\u{201d} not allowed as child of \u{201c}table\u{201d} in this context.", at: element)
+        }
+
+        if mode == .html || currentTable.colgroupCountsChildren || elementStack.last == "table" {
+            currentTable.columnMarkupCount += tableSpan(element.attributes["span"], attribute: "span", element: element)
+        }
+    }
+
+    private mutating func startRow(_ element: HTMLTableElementInfo) {
+        if currentTable.row != nil {
+            finishCurrentRow()
+        }
+        if currentTable.rowGroup == nil {
+            currentTable.rowGroup = RowGroupState(name: nil)
+        }
+
+        currentTable.globalRowCount += 1
+        let globalNumber = currentTable.globalRowCount
+        var occupied: Set<Int> = []
+        if let group = currentTable.rowGroup {
+            for span in group.openSpans {
+                if span.endRow == nil || globalNumber < span.endRow! {
+                    for column in span.columns {
+                        occupied.insert(column)
+                    }
+                }
+            }
+        }
+        let initialWidth = (occupied.max() ?? -1) + 1
+        let numberInGroup = (currentTable.rowGroup?.rows.count ?? 0) + 1
+        currentTable.row = ActiveRow(
+            globalNumber: globalNumber,
+            numberInGroup: numberInGroup,
+            occupiedColumns: occupied,
+            width: max(0, initialWidth),
+            element: element
+        )
+    }
+
+    private mutating func startCell(_ element: HTMLTableElementInfo) {
+        if currentTable.row == nil {
+            startRow(element)
+        }
+
+        if element.name == "th", let id = element.attributes["id"], !id.isEmpty {
+            currentTable.thIDs.insert(id)
+        }
+        if let headers = element.attributes["headers"] {
+            for id in headers.split(whereSeparator: { $0.isWhitespace }).map(String.init) where !id.isEmpty {
+                currentTable.pendingHeaderReferences.append(HeaderReference(cellName: element.name, id: id, cell: element))
+            }
+        }
+        if element.name == "td",
+           element.attributes["role"] != nil,
+           currentTable.role == nil || Self.tableCellRoleBlockingTableRoles.contains(currentTable.role ?? "") {
+            append("The \u{201c}role\u{201d} attribute must not be used on a \u{201c}td\u{201d} element which has a \u{201c}table\u{201d} ancestor with no \u{201c}role\u{201d} attribute, or with a \u{201c}role\u{201d} attribute whose value is \u{201c}table\u{201d}, \u{201c}grid\u{201d}, or \u{201c}treegrid\u{201d}.", at: element)
+        }
+
+        let colspan = cellColspan(for: element)
+        let rowspan = cellRowspan(for: element)
+        guard colspan > 0 else { return }
+
+        var row = currentTable.row!
+        var startColumn = 0
+        while row.occupiedColumns.contains(startColumn) {
+            startColumn += 1
+        }
+        let columns = startColumn..<(startColumn + colspan)
+        if columns.contains(where: { row.occupiedColumns.contains($0) }) {
+            append("Table cell is overlapped by later table cell.", at: element)
+        }
+
+        for column in columns {
+            row.occupiedColumns.insert(column)
+            currentTable.cellEstablishedColumns.insert(column)
+        }
+        row.startColumns.insert(startColumn)
+        row.sourceCellCount += 1
+        row.width = max(row.width, columns.upperBound)
+        currentTable.cellStartColumns.insert(startColumn)
+
+        if rowspan > 1 || rowspan == 0 {
+            let groupName = currentTable.rowGroup?.name
+            currentTable.rowGroup?.openSpans.append(OpenSpan(
+                columns: columns,
+                endRow: rowspan == 0 ? nil : row.globalNumber + rowspan,
+                groupName: groupName,
+                cell: element
+            ))
+        }
+
+        currentTable.row = row
+    }
+
+    private mutating func finishCurrentRow() {
+        guard var row = currentTable.row else { return }
+        if let group = currentTable.rowGroup {
+            let activeSpans = group.openSpans.filter { span in
+                span.endRow == nil || row.globalNumber < span.endRow!
+            }
+            for span in activeSpans {
+                row.width = max(row.width, span.columns.upperBound)
+            }
+        }
+
+        if row.sourceCellCount == 0 {
+            append(
+                rowNoCellsMessage(row.numberInGroup, groupName: currentTable.rowGroup?.name),
+                at: row.element
+            )
+        }
+
+        let tableRow = TableRow(
+            width: row.width,
+            startCellCount: row.sourceCellCount,
+            numberInGroup: row.numberInGroup,
+            groupName: currentTable.rowGroup?.name,
+            element: row.element
+        )
+        currentTable.rows.append(tableRow)
+        currentTable.rowGroup?.rows.append(tableRow)
+        currentTable.row = nil
+    }
+
+    private mutating func finishCurrentRowGroup() {
+        guard let group = currentTable.rowGroup else { return }
+        let rowCount = currentTable.globalRowCount
+        for span in group.openSpans {
+            if let endRow = span.endRow, endRow > rowCount {
+                append(
+                    "Table cell spans past the end of its row group established by \(rowGroupDescription(span.groupName)); clipped to the end of the row group.",
+                    at: span.cell
+                )
+            }
+        }
+        currentTable.rowGroup = nil
+    }
+
+    private mutating func finishCurrentTable() {
+        var table = tableStack.removeLast()
+
+        for reference in table.pendingHeaderReferences where !table.thIDs.contains(reference.id) {
+            append(
+                "The \u{201c}headers\u{201d} attribute on the element \u{201c}\(reference.cellName)\u{201d} refers to the ID \u{201c}\(reference.id)\u{201d}, but there is no \u{201c}th\u{201d} element with that ID in the same table.",
+                at: reference.cell
+            )
+        }
+
+        appendRowWidthMessages(for: table)
+        appendColumnStartMessages(for: table)
+        table.rows.removeAll()
+    }
+
+    private mutating func appendRowWidthMessages(for table: TableState) {
+        if table.columnMarkupCount > 0 {
+            for row in table.rows where row.startCellCount > 0 {
+                if row.width > table.columnMarkupCount {
+                    append(
+                        "A table row was \(row.width) columns wide and exceeded the column count established using column markup (\(table.columnMarkupCount)).",
+                        at: row.element
+                    )
+                } else if row.width < table.columnMarkupCount {
+                    append(
+                        "A table row was \(row.width) columns wide, which is less than the column count established using column markup (\(table.columnMarkupCount)).",
+                        at: row.element
+                    )
+                }
+            }
+            return
+        }
+
+        guard let firstWidth = table.rows.first(where: { $0.width > 0 })?.width else { return }
+        for row in table.rows.dropFirst() where row.startCellCount > 0 {
+            if row.width > firstWidth {
+                append(
+                    "A table row was \(row.width) columns wide and exceeded the column count established by the first row (\(firstWidth)).",
+                    at: row.element,
+                    warning: true
+                )
+            } else if row.width < firstWidth {
+                append(
+                    "A table row was \(row.width) columns wide, which is less than the column count established by the first row (\(firstWidth)).",
+                    at: row.element,
+                    warning: true
+                )
+            }
+        }
+    }
+
+    private mutating func appendColumnStartMessages(for table: TableState) {
+        let missing = table.cellEstablishedColumns
+            .filter { !table.cellStartColumns.contains($0) }
+            .sorted()
+        guard !missing.isEmpty else { return }
+
+        for range in consecutiveRanges(missing) {
+            if range.count == 1, let column = range.first {
+                append(
+                    "Table column \(column + 1) established by element \u{201c}td\u{201d} has no cells beginning in it.",
+                    at: table.element
+                )
+            } else if let first = range.first, let last = range.last {
+                append(
+                    "Table columns in range \(first + 1)\u{2026}\(last + 1) established by element \u{201c}td\u{201d} have no cells beginning in them.",
+                    at: table.element
+                )
+            }
+        }
+    }
+
+    private func consecutiveRanges(_ values: [Int]) -> [[Int]] {
+        var ranges: [[Int]] = []
+        for value in values {
+            if let last = ranges.indices.last, ranges[last].last == value - 1 {
+                ranges[last].append(value)
+            } else {
+                ranges.append([value])
+            }
+        }
+        return ranges
+    }
+
+    private mutating func cellColspan(for element: HTMLTableElementInfo) -> Int {
+        guard let value = element.attributes["colspan"] else { return 1 }
+        guard let colspan = validInteger(value) else {
+            appendBadValue(value, attribute: "colspan", element: element)
+            return 1
+        }
+        if colspan == 0 {
+            appendBadValue(value, attribute: "colspan", element: element)
+            return 1
+        }
+        if colspan > 1000 {
+            append("The value of the \u{201c}colspan\u{201d} attribute must be less than or equal to 1000.", at: element)
+        }
+        return max(1, min(colspan, 1000))
+    }
+
+    private mutating func cellRowspan(for element: HTMLTableElementInfo) -> Int {
+        guard let value = element.attributes["rowspan"] else { return 1 }
+        guard let rowspan = validInteger(value) else {
+            appendBadValue(value, attribute: "rowspan", element: element)
+            return 1
+        }
+        if rowspan > 65534 {
+            append("The value of the \u{201c}rowspan\u{201d} attribute must be less than or equal to 65534.", at: element)
+        }
+        return max(0, min(rowspan, 65534))
+    }
+
+    private mutating func tableSpan(_ value: String?, attribute: String, element: HTMLTableElementInfo) -> Int {
+        guard let value else { return 1 }
+        guard let span = validInteger(value), span > 0 else {
+            appendBadValue(value, attribute: attribute, element: element)
+            return 1
+        }
+        if span > 1000 {
+            append("The value of the \u{201c}\(attribute)\u{201d} attribute must be less than or equal to 1000.", at: element)
+        }
+        return max(1, min(span, 1000))
+    }
+
+    private func validInteger(_ value: String) -> Int? {
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty, trimmed.allSatisfy({ $0 >= "0" && $0 <= "9" }) else {
+            return nil
+        }
+        return Int(trimmed)
+    }
+
+    private func normalizedRole(_ value: String?) -> String? {
+        value?.split(whereSeparator: { $0.isWhitespace }).first.map { String($0).lowercased() }
+    }
+
+    private func rowGroupDescription(_ name: String?) -> String {
+        if let name {
+            return "a \u{201c}\(name)\u{201d} element"
+        }
+        return mode == .html ? "a \u{201c}tbody\u{201d} element" : "an implicit row group"
+    }
+
+    private func rowNoCellsMessage(_ rowNumber: Int, groupName: String?) -> String {
+        if mode == .xhtml, groupName == nil {
+            return "Row \(rowNumber) of an implicit row group has no cells beginning on it."
+        }
+        return "Row \(rowNumber) of a row group established by \(rowGroupDescription(groupName)) has no cells beginning on it."
+    }
+
+    private mutating func appendBadValue(_ value: String, attribute: String, element: HTMLTableElementInfo) {
+        append("Bad value \u{201c}\(value)\u{201d} for attribute \u{201c}\(attribute)\u{201d} on element \u{201c}\(element.name)\u{201d}.", at: element)
+    }
+
+    private mutating func append(_ message: String, at element: HTMLTableElementInfo, warning: Bool = false) {
+        diagnostics.append(HTMLTableDiagnostic(
+            message: message,
+            location: element.location,
+            extract: element.extract,
+            warning: warning
+        ))
+    }
+
+    private var currentTable: TableState {
+        get { tableStack[tableStack.index(before: tableStack.endIndex)] }
+        set { tableStack[tableStack.index(before: tableStack.endIndex)] = newValue }
+    }
+
+    private static let rowGroupElements: Set<String> = ["tbody", "thead", "tfoot"]
+    private static let tableCellRoleBlockingTableRoles: Set<String> = ["table", "grid", "treegrid"]
+}
+
 enum HTMLVocabulary {
     static let voidElements: Set<String> = [
         "area", "base", "br", "col", "embed", "hr", "img", "input", "link",
@@ -887,7 +1423,7 @@ enum HTMLVocabulary {
     ]
 
     static let obsoleteElements: Set<String> = [
-        "acronym", "applet", "basefont", "bgsound", "big", "blink", "center",
+        "acronym", "applet", "basefont", "bgsound", "big", "blink", "center", "dir",
         "font", "frame", "frameset", "keygen", "marquee", "nobr", "noembed",
         "noframes", "plaintext", "rb", "rtc", "strike", "tt", "xmp"
     ]
