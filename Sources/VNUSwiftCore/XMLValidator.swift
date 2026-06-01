@@ -33,10 +33,7 @@ public final class XMLValidator: NSObject, XMLParserDelegate, @unchecked Sendabl
         attributes attributeDict: [String: String] = [:]
     ) {
         let name = elementName.lowercased()
-        guard name == "link",
-              namespaceURI == "http://www.w3.org/1999/xhtml" || namespaceURI == nil,
-              attributeDict["href"] == nil,
-              attributeDict["imagesrcset"] == nil else {
+        guard isXHTMLElement(namespaceURI) else {
             return
         }
 
@@ -46,10 +43,24 @@ public final class XMLValidator: NSObject, XMLParserDelegate, @unchecked Sendabl
             lastLine: parser.lineNumber,
             lastColumn: parser.columnNumber
         )
-        messages.append(.error(
-            "A \u{201c}link\u{201d} element must have an \u{201c}href\u{201d} or \u{201c}imagesrcset\u{201d} attribute, or both.",
-            location: location
-        ))
+        if name == "script", attributeDict["language"] != nil {
+            messages.append(.warning(
+                "The \u{201c}language\u{201d} attribute on the \u{201c}script\u{201d} element is obsolete. Use the \u{201c}type\u{201d} attribute instead.",
+                location: location
+            ))
+        }
+        if name == "link",
+           attributeDict["href"] == nil,
+           attributeDict["imagesrcset"] == nil {
+            messages.append(.error(
+                "A \u{201c}link\u{201d} element must have an \u{201c}href\u{201d} or \u{201c}imagesrcset\u{201d} attribute, or both.",
+                location: location
+            ))
+        }
+    }
+
+    private func isXHTMLElement(_ namespaceURI: String?) -> Bool {
+        namespaceURI == "http://www.w3.org/1999/xhtml" || namespaceURI == nil
     }
 }
 

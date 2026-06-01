@@ -320,13 +320,18 @@ struct HTMLGeneralAttributeChecker {
         var messages: [ValidationMessage] = []
         var stack: [String] = []
         var pictureStack: [PictureState] = []
+        var scriptContent: ScriptContentState?
 
         for event in document.events {
             switch event {
             case let .startElement(element):
                 appendLanguageAttributeMessages(for: element, locations: locations, messages: &messages)
                 appendDateTimeAttributeMessages(for: element, locations: locations, messages: &messages)
+                appendScriptAttributeMessages(for: element, locations: locations, messages: &messages)
                 appendResponsiveImageMessages(for: element, stack: stack, locations: locations, messages: &messages)
+                if element.name == "script" {
+                    scriptContent = scriptContentState(for: element)
+                }
                 if element.name == "picture" {
                     pictureStack.append(PictureState())
                 } else if stack.last == "picture", let pictureIndex = pictureStack.indices.last {
@@ -334,11 +339,19 @@ struct HTMLGeneralAttributeChecker {
                 }
                 stack.append(element.name)
             case let .endElement(name, _, _):
+                if name == "script", let content = scriptContent {
+                    appendScriptContentMessages(content, locations: locations, messages: &messages)
+                    scriptContent = nil
+                }
                 if name == "picture", let state = pictureStack.popLast() {
                     appendPictureMessages(state, locations: locations, messages: &messages)
                 }
                 if let index = stack.lastIndex(of: name) {
                     stack.removeSubrange(index...)
+                }
+            case let .characters(content, _):
+                if scriptContent != nil {
+                    scriptContent?.content += content
                 }
             default:
                 continue
@@ -422,6 +435,289 @@ struct HTMLGeneralAttributeChecker {
                 locations: locations,
                 messages: &messages
             )
+        }
+    }
+
+    private enum ScriptKind {
+        case classic
+        case module
+        case importmap
+        case speculationRules
+        case dataBlock
+    }
+
+    private struct ScriptContentState {
+        var element: HTMLStartElement
+        var kind: ScriptKind
+        var content = ""
+    }
+
+    private func scriptContentState(for element: HTMLStartElement) -> ScriptContentState? {
+        guard !element.hasAttribute("src") else { return nil }
+        let kind = scriptKind(for: element)
+        guard kind == .importmap || kind == .speculationRules else { return nil }
+        return ScriptContentState(element: element, kind: kind)
+    }
+
+    private func appendScriptContentMessages(
+        _ state: ScriptContentState,
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) {
+        switch state.kind {
+        case .importmap:
+            appendImportMapMessages(content: state.content, element: state.element, locations: locations, messages: &messages)
+        case .speculationRules:
+            appendSpeculationRulesMessages(content: state.content, element: state.element, locations: locations, messages: &messages)
+        default:
+            break
+        }
+    }
+
+    private func appendScriptAttributeMessages(
+        for element: HTMLStartElement,
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) {
+        guard element.name == "script" else { return }
+
+        let kind = scriptKind(for: element)
+        let inline = !element.hasAttribute("src")
+
+        if let language = element.attributeValue("language") {
+            appendWarningMessage(
+                "The \u{201c}language\u{201d} attribute on the \u{201c}script\u{201d} element is obsolete. Use the \u{201c}type\u{201d} attribute instead.",
+                for: element,
+                locations: locations,
+                messages: &messages
+            )
+
+            if language.lowercased() == "javascript",
+               let type = element.attributeValue("type"),
+               type.lowercased() != "text/javascript" {
+                appendMessage(
+                    "A \u{201c}script\u{201d} element with the \u{201c}language=\"JavaScript\"\u{201d} attribute set must not have a \u{201c}type\u{201d} attribute whose value is not \u{201c}text/javascript\u{201d}.",
+                    for: element,
+                    locations: locations,
+                    messages: &messages
+                )
+            }
+        }
+
+        if element.attributeValue("type")?.lowercased() == "text/javascript" {
+            appendWarningMessage(
+                "The \u{201c}type\u{201d} attribute is unnecessary for JavaScript resources.",
+                for: element,
+                locations: locations,
+                messages: &messages
+            )
+        }
+
+        if element.hasAttribute("charset") {
+            if inline {
+                appendMessage(
+                    "Element \u{201c}script\u{201d} must not have attribute \u{201c}charset\u{201d} unless attribute \u{201c}src\u{201d} is also specified.",
+                    for: element,
+                    locations: locations,
+                    messages: &messages
+                )
+            } else if element.attributeValue("charset")?.lowercased() != "utf-8" {
+                appendMessage(
+                    "The only allowed value for the \u{201c}charset\u{201d} attribute for the \u{201c}script\u{201d} element is \u{201c}utf-8\u{201d}. (But the attribute is not needed and should be omitted altogether.)",
+                    for: element,
+                    locations: locations,
+                    messages: &messages
+                )
+            }
+        }
+
+        switch kind {
+        case .classic:
+            appendInlineClassicScriptMessages(for: element, inline: inline, locations: locations, messages: &messages)
+        case .module:
+            appendModuleScriptMessages(for: element, inline: inline, locations: locations, messages: &messages)
+        case .importmap:
+            appendTypedScriptMessages(
+                for: element,
+                typeName: "importmap",
+                invalidAttributes: Self.importMapInvalidAttributes,
+                srcMessage: "A \u{201c}script\u{201d} element with a \u{201c}type\u{201d} attribute whose value is \u{201c}importmap\u{201d} must not have a \u{201c}src\u{201d} attribute.",
+                locations: locations,
+                messages: &messages
+            )
+        case .speculationRules:
+            appendTypedScriptMessages(
+                for: element,
+                typeName: "speculationrules",
+                invalidAttributes: Self.speculationRulesInvalidAttributes,
+                srcMessage: "A \u{201c}script\u{201d} element with a \u{201c}type\u{201d} attribute whose value is \u{201c}speculationrules\u{201d} must not have a \u{201c}src\u{201d} attribute.",
+                locations: locations,
+                messages: &messages
+            )
+        case .dataBlock:
+            appendDataBlockScriptMessages(for: element, locations: locations, messages: &messages)
+        }
+    }
+
+    private func scriptKind(for element: HTMLStartElement) -> ScriptKind {
+        guard let rawType = element.attributeValue("type") else { return .classic }
+        let type = rawType.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if type.isEmpty || Self.javaScriptMIMETypes.contains(type) {
+            return .classic
+        }
+        if type == "module" {
+            return .module
+        }
+        if type == "importmap" {
+            return .importmap
+        }
+        if type == "speculationrules" {
+            return .speculationRules
+        }
+        return .dataBlock
+    }
+
+    private func appendInlineClassicScriptMessages(
+        for element: HTMLStartElement,
+        inline: Bool,
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) {
+        guard inline else { return }
+
+        if element.hasAttribute("async") {
+            appendMessage(
+                "An inline classic \u{201c}script\u{201d} element (i.e., a \u{201c}script\u{201d} element without a \u{201c}src\u{201d} attribute and with a \u{201c}type\u{201d} attribute that is either unspecified, empty, or a JavaScript MIME type) must not have an \u{201c}async\u{201d} attribute.",
+                for: element,
+                locations: locations,
+                messages: &messages
+            )
+        }
+        if element.hasAttribute("blocking") {
+            appendMessage(
+                "An inline classic \u{201c}script\u{201d} element (i.e., a \u{201c}script\u{201d} element without a \u{201c}src\u{201d} attribute and with a \u{201c}type\u{201d} attribute that is either unspecified, empty, or a JavaScript MIME type) must not have a \u{201c}blocking\u{201d} attribute.",
+                for: element,
+                locations: locations,
+                messages: &messages
+            )
+        }
+        if element.hasAttribute("defer") {
+            appendMessage(
+                "An inline \u{201c}script\u{201d} element (i.e., a \u{201c}script\u{201d} element without a \u{201c}src\u{201d} attribute and with a \u{201c}type\u{201d} attribute that is either unspecified, empty, or a JavaScript MIME type) must not have a \u{201c}defer\u{201d} attribute.",
+                for: element,
+                locations: locations,
+                messages: &messages
+            )
+        }
+        if element.hasAttribute("fetchpriority") {
+            appendMessage(
+                "An inline classic \u{201c}script\u{201d} element (i.e., a \u{201c}script\u{201d} element without a \u{201c}src\u{201d} attribute and with a \u{201c}type\u{201d} attribute that is either unspecified, empty, or a JavaScript MIME type) must not have a \u{201c}fetchpriority\u{201d} attribute.",
+                for: element,
+                locations: locations,
+                messages: &messages
+            )
+        }
+        if element.hasAttribute("integrity") {
+            appendMessage(
+                "An inline classic \u{201c}script\u{201d} element (i.e., a \u{201c}script\u{201d} element without a \u{201c}src\u{201d} attribute and with a \u{201c}type\u{201d} attribute that is either unspecified, empty, or a JavaScript MIME type) must not have an \u{201c}integrity\u{201d} attribute.",
+                for: element,
+                locations: locations,
+                messages: &messages
+            )
+        }
+    }
+
+    private func appendModuleScriptMessages(
+        for element: HTMLStartElement,
+        inline: Bool,
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) {
+        if element.hasAttribute("defer") {
+            appendMessage(
+                "A \u{201c}script\u{201d} element with \u{201c}type=module\u{201d} must not have a \u{201c}defer\u{201d} attribute.",
+                for: element,
+                locations: locations,
+                messages: &messages
+            )
+        }
+        if element.hasAttribute("nomodule") {
+            appendMessage(
+                "A \u{201c}script\u{201d} element with a \u{201c}nomodule\u{201d} attribute must not have a \u{201c}type\u{201d} attribute with the value \u{201c}module\u{201d}.",
+                for: element,
+                locations: locations,
+                messages: &messages
+            )
+        }
+        guard inline else { return }
+        if element.hasAttribute("blocking") {
+            appendMessage(
+                "An inline \u{201c}script\u{201d} element with \u{201c}type=module\u{201d} must not have a \u{201c}blocking\u{201d} attribute.",
+                for: element,
+                locations: locations,
+                messages: &messages
+            )
+        }
+        if element.hasAttribute("fetchpriority") {
+            appendMessage(
+                "An inline \u{201c}script\u{201d} element with \u{201c}type=module\u{201d} must not have a \u{201c}fetchpriority\u{201d} attribute.",
+                for: element,
+                locations: locations,
+                messages: &messages
+            )
+        }
+        if element.hasAttribute("integrity") {
+            appendMessage(
+                "An inline \u{201c}script\u{201d} element with \u{201c}type=module\u{201d} must not have an \u{201c}integrity\u{201d} attribute.",
+                for: element,
+                locations: locations,
+                messages: &messages
+            )
+        }
+    }
+
+    private func appendTypedScriptMessages(
+        for element: HTMLStartElement,
+        typeName: String,
+        invalidAttributes: Set<String>,
+        srcMessage: String,
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) {
+        for attribute in element.attributes where invalidAttributes.contains(attribute.name) {
+            appendMessage(
+                "A \u{201c}script\u{201d} element with \u{201c}type=\(typeName)\u{201d} must not have \(indefiniteArticle(for: attribute.name)) \u{201c}\(attribute.name)\u{201d} attribute.",
+                for: element,
+                locations: locations,
+                messages: &messages
+            )
+        }
+        if element.hasAttribute("src") {
+            appendMessage(srcMessage, for: element, locations: locations, messages: &messages)
+        }
+    }
+
+    private func appendDataBlockScriptMessages(
+        for element: HTMLStartElement,
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) {
+        for attribute in element.attributes where Self.dataBlockInvalidAttributes.contains(attribute.name) {
+            appendMessage(
+                "A \u{201c}script\u{201d} element with a \u{201c}type\u{201d} attribute whose value is neither a JavaScript MIME type, \u{201c}module\u{201d}, \u{201c}importmap\u{201d}, nor \u{201c}speculationrules\u{201d} (i.e., a data block) must not have \(indefiniteArticle(for: attribute.name)) \u{201c}\(attribute.name)\u{201d} attribute.",
+                for: element,
+                locations: locations,
+                messages: &messages
+            )
+        }
+    }
+
+    private func indefiniteArticle(for attribute: String) -> String {
+        switch attribute.first {
+        case "a", "e", "i", "o", "u":
+            return "an"
+        default:
+            return "a"
         }
     }
 
@@ -672,6 +968,427 @@ struct HTMLGeneralAttributeChecker {
                 )
             }
         }
+    }
+
+    private func appendImportMapMessages(
+        content: String,
+        element: HTMLStartElement,
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) {
+        guard let object = parseJSONObject(
+            content,
+            invalidMessage: "A script \u{201c}script\u{201d} with a \u{201c}type\u{201d} attribute whose value is \u{201c}importmap\u{201d} must have valid JSON content.",
+            element: element,
+            locations: locations,
+            messages: &messages
+        ) else { return }
+
+        if object.keys.contains(where: { !Self.importMapTopLevelKeys.contains($0) }) {
+            appendMessage(
+                "A \u{201c}script\u{201d} element with a \u{201c}type\u{201d} attribute whose value is \u{201c}importmap\u{201d} must contain a JSON object with no properties other than \u{201c}imports\u{201d}, \u{201c}scopes\u{201d}, and \u{201c}integrity\u{201d}.",
+                for: element,
+                locations: locations,
+                messages: &messages
+            )
+            return
+        }
+
+        if let imports = object["imports"] {
+            guard let map = imports as? [String: Any] else {
+                appendMessage(
+                    "The value of the \u{201c}imports\u{201d} property within the content of a \u{201c}script\u{201d} element with a \u{201c}type\u{201d} attribute whose value is \u{201c}importmap\u{201d} must be a JSON object.",
+                    for: element,
+                    locations: locations,
+                    messages: &messages
+                )
+                return
+            }
+            if appendSpecifierMapMessages(map, owner: "imports", element: element, locations: locations, messages: &messages) {
+                return
+            }
+        }
+
+        guard let scopes = object["scopes"] else { return }
+        guard let scopeMap = scopes as? [String: Any] else {
+            appendMessage(
+                "The value of the \u{201c}scopes\u{201d} property within the content of a \u{201c}script\u{201d} element with a \u{201c}type\u{201d} attribute whose value is \u{201c}importmap\u{201d} must be a JSON object whose values are also JSON objects.",
+                for: element,
+                locations: locations,
+                messages: &messages
+            )
+            return
+        }
+
+        for (scope, value) in scopeMap {
+            guard isImportMapURL(scope) else {
+                appendMessage(
+                    "The value of the \u{201c}scopes\u{201d} property within the content of a \u{201c}script\u{201d} element with a \u{201c}type\u{201d} attribute whose value is \u{201c}importmap\u{201d} must be a JSON object whose keys are valid URL strings.",
+                    for: element,
+                    locations: locations,
+                    messages: &messages
+                )
+                return
+            }
+            guard let map = value as? [String: Any] else {
+                appendMessage(
+                    "The value of the \u{201c}scopes\u{201d} property within the content of a \u{201c}script\u{201d} element with a \u{201c}type\u{201d} attribute whose value is \u{201c}importmap\u{201d} must be a JSON object whose values are also JSON objects.",
+                    for: element,
+                    locations: locations,
+                    messages: &messages
+                )
+                return
+            }
+            if appendSpecifierMapMessages(map, owner: "scopes", element: element, locations: locations, messages: &messages) {
+                return
+            }
+        }
+    }
+
+    @discardableResult
+    private func appendSpecifierMapMessages(
+        _ map: [String: Any],
+        owner: String,
+        element: HTMLStartElement,
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) -> Bool {
+        for (key, value) in map {
+            guard !key.isEmpty else {
+                appendMessage(
+                    "A specifier map defined in a \u{201c}\(owner)\u{201d} property within the content of a \u{201c}script\u{201d} element with a \u{201c}type\u{201d} attribute whose value is \u{201c}importmap\u{201d} must only contain non-empty keys.",
+                    for: element,
+                    locations: locations,
+                    messages: &messages
+                )
+                return true
+            }
+            guard let stringValue = value as? String else {
+                appendMessage(
+                    "A specifier map defined in a \u{201c}\(owner)\u{201d} property within the content of a \u{201c}script\u{201d} element with a \u{201c}type\u{201d} attribute whose value is \u{201c}importmap\u{201d} must only contain string values.",
+                    for: element,
+                    locations: locations,
+                    messages: &messages
+                )
+                return true
+            }
+            if key.hasSuffix("/"), !stringValue.hasSuffix("/") {
+                appendMessage(
+                    "A specifier map defined in a \u{201c}\(owner)\u{201d} property within the content of a \u{201c}script\u{201d} element with a \u{201c}type\u{201d} attribute whose value is \u{201c}importmap\u{201d} must have values that end with \u{201c}/\u{201d} when its corresponding key ends with \u{201c}/\u{201d}.",
+                    for: element,
+                    locations: locations,
+                    messages: &messages
+                )
+                return true
+            }
+            if owner == "scopes", !isImportMapURL(stringValue) {
+                appendMessage(
+                    "A specifier map defined in a \u{201c}scopes\u{201d} property within the content of a \u{201c}script\u{201d} element with a \u{201c}type\u{201d} attribute whose value is \u{201c}importmap\u{201d} must only contain valid URL values.",
+                    for: element,
+                    locations: locations,
+                    messages: &messages
+                )
+                return true
+            }
+        }
+        return false
+    }
+
+    private func appendSpeculationRulesMessages(
+        content: String,
+        element: HTMLStartElement,
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) {
+        guard let object = parseJSONObject(
+            content,
+            invalidMessage: "A \u{201c}script\u{201d} element with a \u{201c}type\u{201d} attribute whose value is \u{201c}speculationrules\u{201d} must have valid JSON content.",
+            nonObjectMessage: "A \u{201c}script\u{201d} element with a \u{201c}type\u{201d} attribute whose value is \u{201c}speculationrules\u{201d} must contain a JSON object.",
+            element: element,
+            locations: locations,
+            messages: &messages
+        ) else { return }
+
+        let ruleKeys = object.keys.filter { Self.speculationRuleTopLevelKeys.contains($0) }
+        guard !ruleKeys.isEmpty else {
+            appendMessage(
+                "A \u{201c}script\u{201d} element with a \u{201c}type\u{201d} attribute whose value is \u{201c}speculationrules\u{201d} must contain a JSON object with at least one of the properties \u{201c}prefetch\u{201d} or \u{201c}prerender\u{201d}.",
+                for: element,
+                locations: locations,
+                messages: &messages
+            )
+            return
+        }
+
+        if object.keys.contains(where: { !Self.speculationRuleTopLevelKeys.contains($0) }) {
+            appendMessage(
+                "A \u{201c}script\u{201d} element with a \u{201c}type\u{201d} attribute whose value is \u{201c}speculationrules\u{201d} must contain a JSON object with only \u{201c}prefetch\u{201d} and/or \u{201c}prerender\u{201d} as properties.",
+                for: element,
+                locations: locations,
+                messages: &messages
+            )
+            return
+        }
+
+        for key in ["prefetch", "prerender"] where object[key] != nil {
+            guard let rules = object[key] as? [Any] else {
+                appendMessage(
+                    "The \u{201c}\(key)\u{201d} property within the content of a \u{201c}script\u{201d} element with a \u{201c}type\u{201d} attribute whose value is \u{201c}speculationrules\u{201d} must be a JSON array.",
+                    for: element,
+                    locations: locations,
+                    messages: &messages
+                )
+                return
+            }
+            if appendSpeculationRuleArrayMessages(rules, key: key, element: element, locations: locations, messages: &messages) {
+                return
+            }
+        }
+    }
+
+    @discardableResult
+    private func appendSpeculationRuleArrayMessages(
+        _ rules: [Any],
+        key: String,
+        element: HTMLStartElement,
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) -> Bool {
+        for ruleValue in rules {
+            guard let rule = ruleValue as? [String: Any] else {
+                appendMessage(
+                    "Each item in the \u{201c}\(key)\u{201d} array within the content of a \u{201c}script\u{201d} element with a \u{201c}type\u{201d} attribute whose value is \u{201c}speculationrules\u{201d} must be a JSON object.",
+                    for: element,
+                    locations: locations,
+                    messages: &messages
+                )
+                return true
+            }
+            if appendSpeculationRuleMessages(rule, key: key, element: element, locations: locations, messages: &messages) {
+                return true
+            }
+        }
+        return false
+    }
+
+    @discardableResult
+    private func appendSpeculationRuleMessages(
+        _ rule: [String: Any],
+        key: String,
+        element: HTMLStartElement,
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) -> Bool {
+        if rule.keys.contains(where: { !Self.speculationRuleKeys.contains($0) }) {
+            appendMessage(
+                "Each rule in the \u{201c}\(key)\u{201d} array must only contain the properties \u{201c}source\u{201d}, \u{201c}urls\u{201d}, \u{201c}where\u{201d}, and \u{201c}eagerness\u{201d}.",
+                for: element,
+                locations: locations,
+                messages: &messages
+            )
+            return true
+        }
+
+        if let eagerness = rule["eagerness"] {
+            guard let value = eagerness as? String else {
+                appendMessage("The \u{201c}eagerness\u{201d} property in a speculation rule must be a string.", for: element, locations: locations, messages: &messages)
+                return true
+            }
+            guard Self.speculationRuleEagernessValues.contains(value) else {
+                appendMessage("The \u{201c}eagerness\u{201d} property in a speculation rule must be one of \u{201c}eager\u{201d}, \u{201c}moderate\u{201d}, or \u{201c}conservative\u{201d}.", for: element, locations: locations, messages: &messages)
+                return true
+            }
+        }
+
+        let source: String?
+        if let sourceValue = rule["source"] {
+            guard let string = sourceValue as? String else {
+                appendMessage("The \u{201c}source\u{201d} property in a speculation rule must be a string.", for: element, locations: locations, messages: &messages)
+                return true
+            }
+            guard string == "list" || string == "document" else {
+                appendMessage("The \u{201c}source\u{201d} property in a speculation rule must be either \u{201c}list\u{201d} or \u{201c}document\u{201d}.", for: element, locations: locations, messages: &messages)
+                return true
+            }
+            source = string
+        } else if rule["urls"] != nil {
+            source = "list"
+        } else if rule["where"] != nil {
+            source = "document"
+        } else {
+            source = nil
+        }
+
+        guard let source else {
+            appendMessage("A speculation rule must have a \u{201c}source\u{201d} property, or a \u{201c}urls\u{201d} property (for list rules), or a \u{201c}where\u{201d} property (for document rules).", for: element, locations: locations, messages: &messages)
+            return true
+        }
+
+        if source == "list" {
+            if rule["where"] != nil {
+                appendMessage("A speculation rule with \u{201c}source\u{201d} set to \u{201c}list\u{201d} must not have a \u{201c}where\u{201d} property.", for: element, locations: locations, messages: &messages)
+                return true
+            }
+            guard let urls = rule["urls"] else {
+                appendMessage("A speculation rule with \u{201c}source\u{201d} set to \u{201c}list\u{201d} must have a \u{201c}urls\u{201d} property.", for: element, locations: locations, messages: &messages)
+                return true
+            }
+            return appendURLArrayMessages(urls, element: element, locations: locations, messages: &messages)
+        }
+
+        if rule["urls"] != nil {
+            appendMessage("A speculation rule with \u{201c}source\u{201d} set to \u{201c}document\u{201d} must not have a \u{201c}urls\u{201d} property.", for: element, locations: locations, messages: &messages)
+            return true
+        }
+        guard let whereValue = rule["where"] else {
+            appendMessage("A speculation rule with \u{201c}source\u{201d} set to \u{201c}document\u{201d} must have a \u{201c}where\u{201d} property.", for: element, locations: locations, messages: &messages)
+            return true
+        }
+        guard let predicate = whereValue as? [String: Any] else {
+            appendMessage("The \u{201c}where\u{201d} property in a speculation rule must be a JSON object.", for: element, locations: locations, messages: &messages)
+            return true
+        }
+        return appendDocumentRulePredicateMessages(predicate, element: element, locations: locations, messages: &messages)
+    }
+
+    @discardableResult
+    private func appendURLArrayMessages(
+        _ value: Any,
+        element: HTMLStartElement,
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) -> Bool {
+        guard let urls = value as? [Any] else {
+            appendMessage("The \u{201c}urls\u{201d} property in a speculation rule must be a JSON array.", for: element, locations: locations, messages: &messages)
+            return true
+        }
+        guard !urls.isEmpty else {
+            appendMessage("The \u{201c}urls\u{201d} property in a speculation rule must contain at least one URL.", for: element, locations: locations, messages: &messages)
+            return true
+        }
+        for url in urls {
+            guard let string = url as? String else {
+                appendMessage("Each item in the \u{201c}urls\u{201d} array must be a string.", for: element, locations: locations, messages: &messages)
+                return true
+            }
+            guard !string.isEmpty else {
+                appendMessage("Each URL in the \u{201c}urls\u{201d} array must be a non-empty string.", for: element, locations: locations, messages: &messages)
+                return true
+            }
+        }
+        return false
+    }
+
+    @discardableResult
+    private func appendDocumentRulePredicateMessages(
+        _ predicate: [String: Any],
+        element: HTMLStartElement,
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) -> Bool {
+        let predicateKeys = predicate.keys.filter { Self.documentRulePredicateKeys.contains($0) }
+        guard !predicateKeys.isEmpty else {
+            appendMessage("A document rule predicate must have one of the properties \u{201c}and\u{201d}, \u{201c}or\u{201d}, \u{201c}not\u{201d}, \u{201c}href_matches\u{201d}, or \u{201c}selector_matches\u{201d}.", for: element, locations: locations, messages: &messages)
+            return true
+        }
+        guard predicateKeys.count == 1 else {
+            appendMessage("A document rule predicate must have only one of the properties \u{201c}and\u{201d}, \u{201c}or\u{201d}, \u{201c}not\u{201d}, \u{201c}href_matches\u{201d}, or \u{201c}selector_matches\u{201d}.", for: element, locations: locations, messages: &messages)
+            return true
+        }
+
+        let key = predicateKeys[0]
+        switch key {
+        case "and", "or":
+            guard let predicates = predicate[key] as? [Any] else {
+                appendMessage("The \u{201c}\(key)\u{201d} property in a document rule must be a JSON array.", for: element, locations: locations, messages: &messages)
+                return true
+            }
+            guard !predicates.isEmpty else {
+                appendMessage("The \u{201c}\(key)\u{201d} property in a document rule must contain at least one item.", for: element, locations: locations, messages: &messages)
+                return true
+            }
+            for item in predicates {
+                guard let nested = item as? [String: Any] else { continue }
+                if appendDocumentRulePredicateMessages(nested, element: element, locations: locations, messages: &messages) {
+                    return true
+                }
+            }
+        case "not":
+            if let nested = predicate[key] as? [String: Any] {
+                return appendDocumentRulePredicateMessages(nested, element: element, locations: locations, messages: &messages)
+            }
+        case "href_matches", "selector_matches":
+            return appendStringOrStringArrayPredicateMessage(predicate[key] as Any, key: key, element: element, locations: locations, messages: &messages)
+        default:
+            break
+        }
+        return false
+    }
+
+    @discardableResult
+    private func appendStringOrStringArrayPredicateMessage(
+        _ value: Any,
+        key: String,
+        element: HTMLStartElement,
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) -> Bool {
+        if let string = value as? String {
+            guard !string.isEmpty else {
+                appendMessage("The \u{201c}\(key)\u{201d} property in a document rule must be a non-empty string.", for: element, locations: locations, messages: &messages)
+                return true
+            }
+            return false
+        }
+
+        if let array = value as? [Any] {
+            guard !array.isEmpty else {
+                appendMessage("The \u{201c}\(key)\u{201d} property in a document rule must contain at least one pattern.", for: element, locations: locations, messages: &messages)
+                return true
+            }
+            for item in array where !(item is String) {
+                appendMessage("The \u{201c}\(key)\u{201d} property in a document rule must be a string or an array of strings.", for: element, locations: locations, messages: &messages)
+                return true
+            }
+            return false
+        }
+
+        appendMessage("The \u{201c}\(key)\u{201d} property in a document rule must be a string or an array of strings.", for: element, locations: locations, messages: &messages)
+        return true
+    }
+
+    private func parseJSONObject(
+        _ content: String,
+        invalidMessage: String,
+        nonObjectMessage: String? = nil,
+        element: HTMLStartElement,
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) -> [String: Any]? {
+        let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let data = trimmed.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) else {
+            appendMessage(invalidMessage, for: element, locations: locations, messages: &messages)
+            return nil
+        }
+        guard let object = json as? [String: Any] else {
+            appendMessage(nonObjectMessage ?? invalidMessage, for: element, locations: locations, messages: &messages)
+            return nil
+        }
+        return object
+    }
+
+    private func isImportMapURL(_ value: String) -> Bool {
+        guard !value.isEmpty,
+              !value.contains("..."),
+              !value.unicodeScalars.contains(where: { $0.value <= 0x20 }) else {
+            return false
+        }
+        if value.hasPrefix("/") || value.hasPrefix("./") || value.hasPrefix("../") {
+            return true
+        }
+        guard let colon = value.firstIndex(of: ":") else { return false }
+        return value[..<colon].unicodeScalars.first?.properties.isAlphabetic == true
     }
 
     private func relTokens(for element: HTMLStartElement) -> Set<String> {
@@ -1062,6 +1779,57 @@ struct HTMLGeneralAttributeChecker {
         "json", "script", "style", "worker"
     ]
 
+    private static let javaScriptMIMETypes: Set<String> = [
+        "application/ecmascript",
+        "application/javascript",
+        "application/x-ecmascript",
+        "application/x-javascript",
+        "text/ecmascript",
+        "text/javascript",
+        "text/javascript1.0",
+        "text/javascript1.1",
+        "text/javascript1.2",
+        "text/javascript1.3",
+        "text/javascript1.4",
+        "text/javascript1.5",
+        "text/jscript",
+        "text/livescript",
+        "text/x-ecmascript",
+        "text/x-javascript"
+    ]
+
+    private static let dataBlockInvalidAttributes: Set<String> = [
+        "async", "blocking", "crossorigin", "defer", "fetchpriority", "integrity", "nomodule", "referrerpolicy", "src"
+    ]
+
+    private static let importMapInvalidAttributes: Set<String> = [
+        "async", "blocking", "crossorigin", "defer", "fetchpriority", "integrity", "nomodule", "referrerpolicy"
+    ]
+
+    private static let speculationRulesInvalidAttributes: Set<String> = [
+        "async", "blocking", "crossorigin", "defer", "fetchpriority", "integrity", "nomodule", "referrerpolicy"
+    ]
+
+    private static let importMapTopLevelKeys: Set<String> = [
+        "imports", "scopes", "integrity"
+    ]
+
+    private static let speculationRuleTopLevelKeys: Set<String> = [
+        "prefetch", "prerender"
+    ]
+
+    private static let speculationRuleKeys: Set<String> = [
+        "source", "urls", "where", "eagerness"
+    ]
+
+    private static let speculationRuleEagernessValues: Set<String> = [
+        "eager", "moderate", "conservative"
+    ]
+
+    private static let documentRulePredicateKeys: Set<String> = [
+        "and", "or", "not", "href_matches", "selector_matches"
+    ]
+
     private static let zero = UInt8(ascii: "0")
     private static let plus = UInt8(ascii: "+")
     private static let colon = UInt8(ascii: ":")
@@ -1074,6 +1842,19 @@ struct HTMLGeneralAttributeChecker {
         messages: inout [ValidationMessage]
     ) {
         messages.append(.error(
+            message,
+            location: locations.location(offset: element.range.offset, length: element.range.length),
+            extract: locations.extract(offset: element.range.offset, length: element.range.length)
+        ))
+    }
+
+    private func appendWarningMessage(
+        _ message: String,
+        for element: HTMLStartElement,
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) {
+        messages.append(.warning(
             message,
             location: locations.location(offset: element.range.offset, length: element.range.length),
             extract: locations.extract(offset: element.range.offset, length: element.range.length)

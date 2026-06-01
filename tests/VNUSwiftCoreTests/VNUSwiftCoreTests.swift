@@ -175,12 +175,43 @@ import Testing
     #expect(valid.messages.filter { $0.type == "error" }.isEmpty)
 }
 
+@Test func generalAttributeCheckerCoversScriptAttributeConstraints() {
+    let result = checkHTML("<!doctype html><html lang=en><meta charset=utf-8><title>T</title><script async></script><script type=module defer></script><script type=importmap src=map.json></script><script type=application/json nomodule></script><script src=x charset=iso-8859-1></script><script language=javascript type=text/plain></script>")
+    #expect(result.messages.contains { $0.message == "An inline classic \u{201c}script\u{201d} element (i.e., a \u{201c}script\u{201d} element without a \u{201c}src\u{201d} attribute and with a \u{201c}type\u{201d} attribute that is either unspecified, empty, or a JavaScript MIME type) must not have an \u{201c}async\u{201d} attribute." })
+    #expect(result.messages.contains { $0.message == "A \u{201c}script\u{201d} element with \u{201c}type=module\u{201d} must not have a \u{201c}defer\u{201d} attribute." })
+    #expect(result.messages.contains { $0.message == "A \u{201c}script\u{201d} element with a \u{201c}type\u{201d} attribute whose value is \u{201c}importmap\u{201d} must not have a \u{201c}src\u{201d} attribute." })
+    #expect(result.messages.contains { $0.message == "A \u{201c}script\u{201d} element with a \u{201c}type\u{201d} attribute whose value is neither a JavaScript MIME type, \u{201c}module\u{201d}, \u{201c}importmap\u{201d}, nor \u{201c}speculationrules\u{201d} (i.e., a data block) must not have a \u{201c}nomodule\u{201d} attribute." })
+    #expect(result.messages.contains { $0.message == "The only allowed value for the \u{201c}charset\u{201d} attribute for the \u{201c}script\u{201d} element is \u{201c}utf-8\u{201d}. (But the attribute is not needed and should be omitted altogether.)" })
+    #expect(result.messages.contains { $0.message == "The \u{201c}language\u{201d} attribute on the \u{201c}script\u{201d} element is obsolete. Use the \u{201c}type\u{201d} attribute instead." })
+    #expect(result.messages.contains { $0.message == "A \u{201c}script\u{201d} element with the \u{201c}language=\"JavaScript\"\u{201d} attribute set must not have a \u{201c}type\u{201d} attribute whose value is not \u{201c}text/javascript\u{201d}." })
+}
+
+@Test func generalAttributeCheckerCoversScriptJSONBlocks() {
+    let result = checkHTML("""
+        <!doctype html><html lang=en><meta charset=utf-8><title>T</title>
+        <script type=importmap>{"imports":{"":"/app.js"}}</script>
+        <script type=speculationrules>{"prefetch":[{"source":"list","urls":[]}]}</script>
+        <script type=speculationrules>{"prefetch":[{"source":"document","where":{"href_matches":""}}]}</script>
+        """)
+    #expect(result.messages.contains { $0.message == "A specifier map defined in a \u{201c}imports\u{201d} property within the content of a \u{201c}script\u{201d} element with a \u{201c}type\u{201d} attribute whose value is \u{201c}importmap\u{201d} must only contain non-empty keys." })
+    #expect(result.messages.contains { $0.message == "The \u{201c}urls\u{201d} property in a speculation rule must contain at least one URL." })
+    #expect(result.messages.contains { $0.message == "The \u{201c}href_matches\u{201d} property in a document rule must be a non-empty string." })
+}
+
 @Test func xmlValidatorCoversXHTMLLinkHrefRequirement() {
     let result = NuValidator().check(
         input: DocumentInput(data: Data("<html xmlns=\"http://www.w3.org/1999/xhtml\"><head><title>T</title><link rel=\"stylesheet\"/></head><body/></html>".utf8), contentType: "application/xhtml+xml; charset=utf-8"),
         options: CheckerOptions(parameters: ["out": ["json"]])
     )
     #expect(result.messages.contains { $0.message == "A \u{201c}link\u{201d} element must have an \u{201c}href\u{201d} or \u{201c}imagesrcset\u{201d} attribute, or both." })
+}
+
+@Test func xmlValidatorCoversXHTMLScriptLanguageWarning() {
+    let result = NuValidator().check(
+        input: DocumentInput(data: Data("<html xmlns=\"http://www.w3.org/1999/xhtml\"><head><title>T</title></head><body><script language=\"vbscript\"/></body></html>".utf8), contentType: "application/xhtml+xml; charset=utf-8"),
+        options: CheckerOptions(parameters: ["out": ["json"]])
+    )
+    #expect(result.messages.contains { $0.message == "The \u{201c}language\u{201d} attribute on the \u{201c}script\u{201d} element is obsolete. Use the \u{201c}type\u{201d} attribute instead." && $0.subType == "warning" })
 }
 
 private func checkHTML(_ source: String) -> ValidationResult {
