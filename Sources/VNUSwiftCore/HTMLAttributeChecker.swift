@@ -321,6 +321,7 @@ struct HTMLGeneralAttributeChecker {
         var stack: [String] = []
         var pictureStack: [PictureState] = []
         var scriptContent: ScriptContentState?
+        let idElementNames = idElementNames(in: document)
 
         for event in document.events {
             switch event {
@@ -329,6 +330,7 @@ struct HTMLGeneralAttributeChecker {
                 appendDisallowedAttributeMessages(for: element, parent: parent, locations: locations, messages: &messages)
                 appendLanguageAttributeMessages(for: element, locations: locations, messages: &messages)
                 appendDateTimeAttributeMessages(for: element, locations: locations, messages: &messages)
+                appendInputAttributeMessages(for: element, idElementNames: idElementNames, locations: locations, messages: &messages)
                 appendScriptAttributeMessages(for: element, locations: locations, messages: &messages)
                 appendResponsiveImageMessages(for: element, stack: stack, locations: locations, messages: &messages)
                 if parent == "picture", let pictureIndex = pictureStack.indices.last {
@@ -370,6 +372,20 @@ struct HTMLGeneralAttributeChecker {
         }
 
         return messages
+    }
+
+    private func idElementNames(in document: HTMLParsedDocument) -> [String: String] {
+        var result: [String: String] = [:]
+        for event in document.events {
+            guard case let .startElement(element) = event,
+                  let id = element.attributeValue("id"),
+                  !id.isEmpty,
+                  result[id] == nil else {
+                continue
+            }
+            result[id] = element.name
+        }
+        return result
     }
 
     private struct PictureState {
@@ -543,6 +559,35 @@ struct HTMLGeneralAttributeChecker {
         ))
     }
 
+    private func appendAttributeNotAllowed(
+        _ attribute: String,
+        for element: HTMLStartElement,
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) {
+        appendMessage(
+            "Attribute \u{201c}\(attribute)\u{201d} not allowed on element \u{201c}\(element.name)\u{201d} at this point.",
+            for: element,
+            locations: locations,
+            messages: &messages
+        )
+    }
+
+    private func appendBadAttributeValue(
+        _ value: String,
+        attribute: String,
+        for element: HTMLStartElement,
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) {
+        appendMessage(
+            "Bad value \u{201c}\(value)\u{201d} for attribute \u{201c}\(attribute)\u{201d} on element \u{201c}\(element.name)\u{201d}.",
+            for: element,
+            locations: locations,
+            messages: &messages
+        )
+    }
+
     private func appendDateTimeAttributeMessages(
         for element: HTMLStartElement,
         locations: SourceLocationMap,
@@ -568,6 +613,282 @@ struct HTMLGeneralAttributeChecker {
                 messages: &messages
             )
         }
+    }
+
+    private func appendInputAttributeMessages(
+        for element: HTMLStartElement,
+        idElementNames: [String: String],
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) {
+        if element.name == "button" {
+            appendButtonReferenceMessages(for: element, idElementNames: idElementNames, locations: locations, messages: &messages)
+            return
+        }
+        guard element.name == "input" else { return }
+
+        let type = inputType(for: element)
+        appendInputAutocompleteMessages(for: element, type: type, locations: locations, messages: &messages)
+        appendInputTypeAttributeMessages(for: element, type: type, locations: locations, messages: &messages)
+        appendInputValueMessages(for: element, type: type, locations: locations, messages: &messages)
+        appendInputReferenceMessages(for: element, type: type, idElementNames: idElementNames, locations: locations, messages: &messages)
+
+        if element.attributeValue("name")?.lowercased() == "isindex" {
+            appendMessage(
+                "The value \u{201c}isindex\u{201d} for the \u{201c}name\u{201d} attribute of the \u{201c}input\u{201d} element is not allowed.",
+                for: element,
+                locations: locations,
+                messages: &messages
+            )
+        }
+        if type == "button", element.attributeValue("value")?.isEmpty != false {
+            appendMessage(
+                "Element \u{201c}input\u{201d} with attribute \u{201c}type\u{201d} whose value is \u{201c}button\u{201d} must have non-empty attribute \u{201c}value\u{201d}.",
+                for: element,
+                locations: locations,
+                messages: &messages
+            )
+        }
+        if type == "hidden", element.attributes.contains(where: { $0.name.hasPrefix("aria-") }) {
+            appendMessage(
+                "An \u{201c}input\u{201d} element with a \u{201c}type\u{201d} attribute whose value is \u{201c}hidden\u{201d} must not have any \u{201c}aria-*\u{201d} attributes.",
+                for: element,
+                locations: locations,
+                messages: &messages
+            )
+        }
+        if type == "checkbox",
+           element.attributeValue("role")?.lowercased() == "button",
+           !element.hasAttribute("aria-pressed") {
+            appendMessage(
+                "An \u{201c}input\u{201d} element with a \u{201c}type\u{201d} attribute whose value is \u{201c}checkbox\u{201d} and with a \u{201c}role\u{201d} attribute whose value is \u{201c}button\u{201d} must have an \u{201c}aria-pressed\u{201d} attribute.",
+                for: element,
+                locations: locations,
+                messages: &messages
+            )
+        }
+    }
+
+    private func appendInputAutocompleteMessages(
+        for element: HTMLStartElement,
+        type: String,
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) {
+        guard element.hasAttribute("autocomplete") else { return }
+        let value = element.attributeValue("autocomplete") ?? ""
+        let lowercased = value.lowercased()
+        if type == "hidden", lowercased == "on" || lowercased == "off" {
+            appendMessage(
+                "An \u{201c}input\u{201d} element with a \u{201c}type\u{201d} attribute whose value is \u{201c}hidden\u{201d} must not have an \u{201c}autocomplete\u{201d} attribute whose value is \u{201c}on\u{201d} or \u{201c}off\u{201d}.",
+                for: element,
+                locations: locations,
+                messages: &messages
+            )
+        } else if !isValidAutocompleteValue(value) {
+            appendBadAttributeValue(value, attribute: "autocomplete", for: element, locations: locations, messages: &messages)
+        }
+    }
+
+    private func appendInputTypeAttributeMessages(
+        for element: HTMLStartElement,
+        type: String,
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) {
+        if element.hasAttribute("readonly") {
+            if type == "hidden" {
+                appendAttributeNotAllowed("readonly", for: element, locations: locations, messages: &messages)
+            } else if !Self.inputReadonlyTypes.contains(type) {
+                appendMessage(
+                    "Attribute \u{201c}readonly\u{201d} is only allowed when the input type is \u{201c}date\u{201d}, \u{201c}datetime-local\u{201d}, \u{201c}email\u{201d}, \u{201c}month\u{201d}, \u{201c}number\u{201d}, \u{201c}password\u{201d}, \u{201c}search\u{201d}, \u{201c}tel\u{201d}, \u{201c}text\u{201d}, \u{201c}time\u{201d}, \u{201c}url\u{201d}, or \u{201c}week\u{201d}.",
+                    for: element,
+                    locations: locations,
+                    messages: &messages
+                )
+            }
+        }
+
+        if element.hasAttribute("required") {
+            if type == "hidden" {
+                appendAttributeNotAllowed("required", for: element, locations: locations, messages: &messages)
+            } else if !Self.inputRequiredTypes.contains(type) {
+                appendMessage(
+                    "Attribute \u{201c}required\u{201d} is only allowed when the input type is \u{201c}checkbox\u{201d}, \u{201c}date\u{201d}, \u{201c}datetime-local\u{201d}, \u{201c}email\u{201d}, \u{201c}file\u{201d}, \u{201c}month\u{201d}, \u{201c}number\u{201d}, \u{201c}password\u{201d}, \u{201c}radio\u{201d}, \u{201c}search\u{201d}, \u{201c}tel\u{201d}, \u{201c}text\u{201d}, \u{201c}time\u{201d}, \u{201c}url\u{201d}, or \u{201c}week\u{201d}.",
+                    for: element,
+                    locations: locations,
+                    messages: &messages
+                )
+            }
+        }
+
+        if element.hasAttribute("pattern") {
+            if type == "hidden" {
+                appendAttributeNotAllowed("pattern", for: element, locations: locations, messages: &messages)
+            } else if !Self.inputPatternTypes.contains(type) {
+                appendMessage(
+                    "Attribute \u{201c}pattern\u{201d} is only allowed when the input type is \u{201c}email\u{201d}, \u{201c}password\u{201d}, \u{201c}search\u{201d}, \u{201c}tel\u{201d}, \u{201c}text\u{201d}, or \u{201c}url\u{201d}.",
+                    for: element,
+                    locations: locations,
+                    messages: &messages
+                )
+            }
+        }
+
+        if element.hasAttribute("list"), !Self.inputListTypes.contains(type) {
+            appendMessage(
+                "Attribute \u{201c}list\u{201d} is only allowed when the input type is \u{201c}color\u{201d}, \u{201c}date\u{201d}, \u{201c}datetime-local\u{201d}, \u{201c}email\u{201d}, \u{201c}month\u{201d}, \u{201c}number\u{201d}, \u{201c}range\u{201d}, \u{201c}search\u{201d}, \u{201c}tel\u{201d}, \u{201c}text\u{201d}, \u{201c}time\u{201d}, \u{201c}url\u{201d}, or \u{201c}week\u{201d}.",
+                for: element,
+                locations: locations,
+                messages: &messages
+            )
+        }
+
+        if element.hasAttribute("maxlength"), !Self.inputTextEntryTypes.contains(type) {
+            appendMessage(
+                "Attribute \u{201c}maxlength\u{201d} is only allowed when the input type is \u{201c}email\u{201d}, \u{201c}password\u{201d}, \u{201c}search\u{201d}, \u{201c}tel\u{201d}, \u{201c}text\u{201d}, or \u{201c}url\u{201d}.",
+                for: element,
+                locations: locations,
+                messages: &messages
+            )
+        }
+
+        for attribute in ["accept"] where element.hasAttribute(attribute) && type != "file" {
+            appendAttributeNotAllowed(attribute, for: element, locations: locations, messages: &messages)
+        }
+        for attribute in ["alt", "height", "src", "width"] where element.hasAttribute(attribute) && type != "image" {
+            appendAttributeNotAllowed(attribute, for: element, locations: locations, messages: &messages)
+        }
+        if element.hasAttribute("checked"), type != "checkbox" && type != "radio" {
+            appendAttributeNotAllowed("checked", for: element, locations: locations, messages: &messages)
+        }
+        if element.hasAttribute("dirname"), type != "text" && type != "search" {
+            appendAttributeNotAllowed("dirname", for: element, locations: locations, messages: &messages)
+        }
+        if element.hasAttribute("multiple"), type != "email" && type != "file" {
+            appendAttributeNotAllowed("multiple", for: element, locations: locations, messages: &messages)
+        }
+        if element.hasAttribute("placeholder"), type == "hidden" {
+            appendAttributeNotAllowed("placeholder", for: element, locations: locations, messages: &messages)
+        }
+        if element.hasAttribute("size"), !Self.inputTextEntryTypes.contains(type) {
+            appendAttributeNotAllowed("size", for: element, locations: locations, messages: &messages)
+        }
+        for attribute in ["max", "min"] where element.hasAttribute(attribute) && !Self.inputMinMaxTypes.contains(type) {
+            appendAttributeNotAllowed(attribute, for: element, locations: locations, messages: &messages)
+        }
+        if element.hasAttribute("step"), !Self.inputStepTypes.contains(type) {
+            appendAttributeNotAllowed("step", for: element, locations: locations, messages: &messages)
+        }
+    }
+
+    private func appendInputValueMessages(
+        for element: HTMLStartElement,
+        type: String,
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) {
+        if type == "color", let value = element.attributeValue("value"), !isValidColorInputValue(value) {
+            appendBadAttributeValue(value, attribute: "value", for: element, locations: locations, messages: &messages)
+        }
+        if type == "number", let value = element.attributeValue("value"), !value.isEmpty, !isValidFloatingPointNumber(value) {
+            appendBadAttributeValue(value, attribute: "value", for: element, locations: locations, messages: &messages)
+        }
+        if type == "range", let min = element.attributeValue("min"), !min.isEmpty, !isValidFloatingPointNumber(min) {
+            appendBadAttributeValue(min, attribute: "min", for: element, locations: locations, messages: &messages)
+        }
+        if element.hasAttribute("size"), Self.inputTextEntryTypes.contains(type) {
+            let size = element.attributeValue("size") ?? ""
+            guard let value = Int(size), value > 0, String(value) == size else {
+                appendBadAttributeValue(size, attribute: "size", for: element, locations: locations, messages: &messages)
+                return
+            }
+        }
+    }
+
+    private func appendInputReferenceMessages(
+        for element: HTMLStartElement,
+        type: String,
+        idElementNames: [String: String],
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) {
+        if let form = element.attributeValue("form"), idElementNames[form] != "form" {
+            appendMessage("The \u{201c}form\u{201d} attribute must refer to a form element.", for: element, locations: locations, messages: &messages)
+        }
+        if Self.inputListTypes.contains(type),
+           let list = element.attributeValue("list"),
+           idElementNames[list] != "datalist" {
+            appendMessage("The \u{201c}list\u{201d} attribute of the \u{201c}input\u{201d} element must refer to a \u{201c}datalist\u{201d} element.", for: element, locations: locations, messages: &messages)
+        }
+    }
+
+    private func appendButtonReferenceMessages(
+        for element: HTMLStartElement,
+        idElementNames: [String: String],
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) {
+        guard let commandFor = element.attributeValue("commandfor"),
+              idElementNames[commandFor] == nil else {
+            return
+        }
+        appendMessage(
+            "The value of the \u{201c}commandfor\u{201d} attribute of the \u{201c}button\u{201d} element must be the ID of an element in the same tree as the \u{201c}button\u{201d} with the \u{201c}commandfor\u{201d} attribute.",
+            for: element,
+            locations: locations,
+            messages: &messages
+        )
+    }
+
+    private func inputType(for element: HTMLStartElement) -> String {
+        let type = element.attributeValue("type")?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+        return Self.inputTypes.contains(type) ? type : "text"
+    }
+
+    private func isValidAutocompleteValue(_ value: String) -> Bool {
+        let tokens = value.lowercased().split(whereSeparator: { $0.isWhitespace }).map(String.init)
+        guard !tokens.isEmpty else { return false }
+        if tokens.count == 1, tokens[0] == "on" || tokens[0] == "off" {
+            return true
+        }
+
+        var remaining = tokens
+        if remaining.last == "webauthn" {
+            guard remaining.count > 1 else { return false }
+            remaining.removeLast()
+        } else if remaining.contains("webauthn") {
+            return false
+        }
+        if remaining.first?.hasPrefix("section-") == true {
+            guard remaining[0].count > "section-".count else { return false }
+            remaining.removeFirst()
+        }
+        if let first = remaining.first, first == "billing" || first == "shipping" {
+            remaining.removeFirst()
+        }
+        if let first = remaining.first, Self.autocompleteContactTokens.contains(first) {
+            remaining.removeFirst()
+            guard remaining.count == 1, Self.autocompleteContactFields.contains(remaining[0]) else {
+                return false
+            }
+            return true
+        }
+        return remaining.count == 1 && Self.autocompleteFields.contains(remaining[0])
+    }
+
+    private func isValidColorInputValue(_ value: String) -> Bool {
+        guard value.utf8.count == 7, value.first == "#" else { return false }
+        return value.dropFirst().unicodeScalars.allSatisfy(isASCIIHexDigit)
+    }
+
+    private func isValidFloatingPointNumber(_ value: String) -> Bool {
+        guard !value.unicodeScalars.contains(where: isASCIIWhitespace),
+              let parsed = Double(value),
+              parsed.isFinite else {
+            return false
+        }
+        return true
     }
 
     private enum ScriptKind {
@@ -1940,6 +2261,62 @@ struct HTMLGeneralAttributeChecker {
         "audio", "image", "input", "link", "object", "track", "video"
     ]
 
+    private static let inputTypes: Set<String> = [
+        "button", "checkbox", "color", "date", "datetime-local", "email", "file", "hidden", "image",
+        "month", "number", "password", "radio", "range", "reset", "search", "submit", "tel", "text",
+        "time", "url", "week"
+    ]
+
+    private static let inputReadonlyTypes: Set<String> = [
+        "date", "datetime-local", "email", "month", "number", "password", "search", "tel", "text", "time", "url", "week"
+    ]
+
+    private static let inputRequiredTypes: Set<String> = [
+        "checkbox", "date", "datetime-local", "email", "file", "month", "number", "password", "radio", "search", "tel", "text", "time", "url", "week"
+    ]
+
+    private static let inputPatternTypes: Set<String> = [
+        "email", "password", "search", "tel", "text", "url"
+    ]
+
+    private static let inputTextEntryTypes: Set<String> = [
+        "email", "password", "search", "tel", "text", "url"
+    ]
+
+    private static let inputListTypes: Set<String> = [
+        "color", "date", "datetime-local", "email", "month", "number", "range", "search", "tel", "text", "time", "url", "week"
+    ]
+
+    private static let inputMinMaxTypes: Set<String> = [
+        "date", "datetime-local", "month", "number", "range", "time", "week"
+    ]
+
+    private static let inputStepTypes: Set<String> = [
+        "date", "datetime-local", "month", "number", "range", "time", "week"
+    ]
+
+    private static let autocompleteContactTokens: Set<String> = [
+        "home", "work", "mobile", "fax", "pager"
+    ]
+
+    private static let autocompleteContactFields: Set<String> = [
+        "tel", "tel-country-code", "tel-national", "tel-area-code", "tel-local", "tel-local-prefix",
+        "tel-local-suffix", "tel-extension", "email", "impp"
+    ]
+
+    private static let autocompleteFields: Set<String> = [
+        "name", "honorific-prefix", "given-name", "additional-name", "family-name", "honorific-suffix",
+        "nickname", "username", "new-password", "current-password", "one-time-code", "organization-title",
+        "organization", "street-address", "address-line1", "address-line2", "address-line3",
+        "address-level4", "address-level3", "address-level2", "address-level1", "country",
+        "country-name", "postal-code", "cc-name", "cc-given-name", "cc-additional-name",
+        "cc-family-name", "cc-number", "cc-exp", "cc-exp-month", "cc-exp-year", "cc-csc",
+        "cc-type", "transaction-currency", "transaction-amount", "language", "bday", "bday-day",
+        "bday-month", "bday-year", "sex", "url", "photo", "email", "impp", "tel",
+        "tel-country-code", "tel-national", "tel-area-code", "tel-local", "tel-local-prefix",
+        "tel-local-suffix", "tel-extension"
+    ]
+
     private static let javaScriptMIMETypes: Set<String> = [
         "application/ecmascript",
         "application/javascript",
@@ -2042,6 +2419,12 @@ struct HTMLGeneralAttributeChecker {
         default:
             return false
         }
+    }
+
+    private func isASCIIHexDigit(_ scalar: Unicode.Scalar) -> Bool {
+        (scalar.value >= 48 && scalar.value <= 57)
+            || (scalar.value >= 65 && scalar.value <= 70)
+            || (scalar.value >= 97 && scalar.value <= 102)
     }
 
     private func isPlausibleLanguageTag(_ value: String) -> Bool {

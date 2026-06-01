@@ -173,6 +173,23 @@ import Testing
     #expect(result.messages.contains { $0.message == "Element \u{201c}img\u{201d} is missing one or more of the following attributes: \u{201c}src\u{201d}, \u{201c}srcset\u{201d}." })
 }
 
+@Test func generalAttributeCheckerCoversInputTypeRules() {
+    let result = checkHTML("<!doctype html><html lang=en><meta charset=utf-8><title>T</title><input autocomplete=\"country shipping\"><input type=hidden autocomplete=on aria-label=x required><input type=button value=\"\"><input type=color value=red pattern=x><input type=number value=abc multiple><input type=checkbox role=button><input type=text list=missing form=notform><div id=notform></div><button commandfor=missing command=show-popover>Open</button>")
+    #expect(result.messages.contains { $0.message == "Bad value \u{201c}country shipping\u{201d} for attribute \u{201c}autocomplete\u{201d} on element \u{201c}input\u{201d}." })
+    #expect(result.messages.contains { $0.message == "An \u{201c}input\u{201d} element with a \u{201c}type\u{201d} attribute whose value is \u{201c}hidden\u{201d} must not have an \u{201c}autocomplete\u{201d} attribute whose value is \u{201c}on\u{201d} or \u{201c}off\u{201d}." })
+    #expect(result.messages.contains { $0.message == "An \u{201c}input\u{201d} element with a \u{201c}type\u{201d} attribute whose value is \u{201c}hidden\u{201d} must not have any \u{201c}aria-*\u{201d} attributes." })
+    #expect(result.messages.contains { $0.message == "Attribute \u{201c}required\u{201d} not allowed on element \u{201c}input\u{201d} at this point." })
+    #expect(result.messages.contains { $0.message == "Element \u{201c}input\u{201d} with attribute \u{201c}type\u{201d} whose value is \u{201c}button\u{201d} must have non-empty attribute \u{201c}value\u{201d}." })
+    #expect(result.messages.contains { $0.message == "Bad value \u{201c}red\u{201d} for attribute \u{201c}value\u{201d} on element \u{201c}input\u{201d}." })
+    #expect(result.messages.contains { $0.message == "Attribute \u{201c}pattern\u{201d} is only allowed when the input type is \u{201c}email\u{201d}, \u{201c}password\u{201d}, \u{201c}search\u{201d}, \u{201c}tel\u{201d}, \u{201c}text\u{201d}, or \u{201c}url\u{201d}." })
+    #expect(result.messages.contains { $0.message == "Bad value \u{201c}abc\u{201d} for attribute \u{201c}value\u{201d} on element \u{201c}input\u{201d}." })
+    #expect(result.messages.contains { $0.message == "Attribute \u{201c}multiple\u{201d} not allowed on element \u{201c}input\u{201d} at this point." })
+    #expect(result.messages.contains { $0.message == "An \u{201c}input\u{201d} element with a \u{201c}type\u{201d} attribute whose value is \u{201c}checkbox\u{201d} and with a \u{201c}role\u{201d} attribute whose value is \u{201c}button\u{201d} must have an \u{201c}aria-pressed\u{201d} attribute." })
+    #expect(result.messages.contains { $0.message == "The \u{201c}list\u{201d} attribute of the \u{201c}input\u{201d} element must refer to a \u{201c}datalist\u{201d} element." })
+    #expect(result.messages.contains { $0.message == "The \u{201c}form\u{201d} attribute must refer to a form element." })
+    #expect(result.messages.contains { $0.message == "The value of the \u{201c}commandfor\u{201d} attribute of the \u{201c}button\u{201d} element must be the ID of an element in the same tree as the \u{201c}button\u{201d} with the \u{201c}commandfor\u{201d} attribute." })
+}
+
 @Test func generalAttributeCheckerCoversLinkRelationConstraints() {
     let result = checkHTML("<!doctype html><html lang=en><meta charset=utf-8><title>T</title><link rel=\"alternate stylesheet\" href=x><link rel=stylesheet href=x as=style><link rel=canonical href=x integrity=sha256-x><body><link rel=canonical href=x></body>")
     #expect(result.messages.contains { $0.message == "A \u{201c}link\u{201d} element with a \u{201c}rel\u{201d} attribute that contains both the values \u{201c}alternate\u{201d} and \u{201c}stylesheet\u{201d} must have a \u{201c}title\u{201d} attribute with a non-empty value." })
@@ -237,6 +254,14 @@ import Testing
         options: CheckerOptions(parameters: ["out": ["json"]])
     )
     #expect(result.messages.contains { $0.message == "The \u{201c}language\u{201d} attribute on the \u{201c}script\u{201d} element is obsolete. Use the \u{201c}type\u{201d} attribute instead." && $0.subType == "warning" })
+}
+
+@Test func xmlValidatorCoversXHTMLInputListReference() {
+    let result = NuValidator().check(
+        input: DocumentInput(data: Data("<html xmlns=\"http://www.w3.org/1999/xhtml\"><head><title>T</title></head><body><datalist id=\"known\"/><input type=\"text\" list=\"missing\"/></body></html>".utf8), contentType: "application/xhtml+xml; charset=utf-8"),
+        options: CheckerOptions(parameters: ["out": ["json"]])
+    )
+    #expect(result.messages.contains { $0.message == "The \u{201c}list\u{201d} attribute of the \u{201c}input\u{201d} element must refer to a \u{201c}datalist\u{201d} element." })
 }
 
 private func checkHTML(_ source: String) -> ValidationResult {

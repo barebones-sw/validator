@@ -1,10 +1,19 @@
 import Foundation
 
 public final class XMLValidator: NSObject, XMLParserDelegate, @unchecked Sendable {
+    private struct PendingInputListReference {
+        var value: String
+        var location: SourceLocation
+    }
+
     private var messages: [ValidationMessage] = []
+    private var idElementNames: [String: String] = [:]
+    private var pendingInputListReferences: [PendingInputListReference] = []
 
     public func validate(data: Data, source: String) -> [ValidationMessage] {
         messages = []
+        idElementNames = [:]
+        pendingInputListReferences = []
         let parser = XMLParser(data: data)
         parser.delegate = self
         parser.shouldProcessNamespaces = true
@@ -43,6 +52,9 @@ public final class XMLValidator: NSObject, XMLParserDelegate, @unchecked Sendabl
             lastLine: parser.lineNumber,
             lastColumn: parser.columnNumber
         )
+        if let id = attributeDict["id"], idElementNames[id] == nil {
+            idElementNames[id] = name
+        }
         if name == "script", attributeDict["language"] != nil {
             messages.append(.warning(
                 "The \u{201c}language\u{201d} attribute on the \u{201c}script\u{201d} element is obsolete. Use the \u{201c}type\u{201d} attribute instead.",
@@ -55,6 +67,18 @@ public final class XMLValidator: NSObject, XMLParserDelegate, @unchecked Sendabl
             messages.append(.error(
                 "A \u{201c}link\u{201d} element must have an \u{201c}href\u{201d} or \u{201c}imagesrcset\u{201d} attribute, or both.",
                 location: location
+            ))
+        }
+        if name == "input", let list = attributeDict["list"] {
+            pendingInputListReferences.append(PendingInputListReference(value: list, location: location))
+        }
+    }
+
+    public func parserDidEndDocument(_ parser: XMLParser) {
+        for reference in pendingInputListReferences where idElementNames[reference.value] != "datalist" {
+            messages.append(.error(
+                "The \u{201c}list\u{201d} attribute of the \u{201c}input\u{201d} element must refer to a \u{201c}datalist\u{201d} element.",
+                location: reference.location
             ))
         }
     }
