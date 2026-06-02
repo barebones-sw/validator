@@ -839,6 +839,59 @@ import Testing
     #expect(result.messages.contains { $0.message == "Any \u{201c}xml-stylesheet\u{201d} instruction in a document must occur before any elements in the document. Suppressing any further errors for this \u{201c}xml-stylesheet\u{201d} instruction." })
 }
 
+@Test func htmlCheckerCoversRemainingForeignContentAndRDFaRules() {
+    let japanese = String(repeating: "\u{3042}", count: 50)
+    let result = checkHTML("""
+        <!doctype html><html lang=en dir=ltr prefix="foaf: http://xmlns.com/foaf/0.1/"><head>
+        <meta charset=utf-8><title>T</title></head><body>
+        <div href=x prefix=": http://xmlns.com/foaf/0.1/" role="ex:somerole"></div>
+        <table><colgroup span=3><col></colgroup><tr><td>x</td></tr></table>
+        <dialog><dt>term</dt></dialog>
+        <math display=center overflow=wrap><div>x</div><mfrac><mi>x</mi></mfrac></math>
+        <svg xmlns="http://example.org/notsvg"><g xmlns:xlink="http://example.net/bar">
+        <feConvolveMatrix/><feComponentTransfer><feFuncR/></feComponentTransfer>
+        <font/><rect xml:id=x stop-color=red/><path d="M 20 100 H 40#90"/>
+        <a><a></a></a></g></svg>
+        <p>\(japanese)</p>
+        </body></html>
+        """)
+
+    #expect(result.messages.contains { $0.message == "Attribute \u{201c}href\u{201d} not allowed on element \u{201c}div\u{201d} at this point." })
+    #expect(result.messages.contains { $0.message == "Bad value \u{201c}: http://xmlns.com/foaf/0.1/\u{201d} for attribute \u{201c}prefix\u{201d} on element \u{201c}div\u{201d}." })
+    #expect(result.messages.contains { $0.message == "Bad value \u{201c}ex:somerole\u{201d} for attribute \u{201c}role\u{201d} on element \u{201c}div\u{201d}." })
+    #expect(result.messages.contains { $0.message == "Element \u{201c}col\u{201d} not allowed as child of \u{201c}colgroup\u{201d} in this context." })
+    #expect(result.messages.contains { $0.message == "Element \u{201c}dt\u{201d} not allowed as child of \u{201c}dialog\u{201d} in this context." })
+    #expect(result.messages.contains { $0.message == "Bad value \u{201c}center\u{201d} for attribute \u{201c}display\u{201d} on element \u{201c}math\u{201d}." })
+    #expect(result.messages.contains { $0.message == "HTML start tag \u{201c}div\u{201d} in a foreign namespace context." })
+    #expect(result.messages.contains { $0.message.contains("Element \u{201c}mfrac\u{201d} is missing a required instance") && $0.message.contains("\u{201c}vectorproduct\u{201d}") })
+    #expect(result.messages.contains { $0.message == "Bad value \u{201c}http://example.org/notsvg\u{201d} for the attribute \u{201c}xmlns\u{201d} (only \u{201c}http://www.w3.org/2000/svg\u{201d} permitted here)." })
+    #expect(result.messages.contains { $0.message == "Bad value \u{201c}http://example.net/bar\u{201d} for the attribute \u{201c}xmlns:link\u{201d} (only \u{201c}http://www.w3.org/1999/xlink\u{201d} permitted here)." })
+    #expect(result.messages.contains { $0.message == "Element \u{201c}feConvolveMatrix\u{201d} is missing required attribute \u{201c}order\u{201d}." })
+    #expect(result.messages.contains { $0.message == "Element \u{201c}feFuncR\u{201d} not allowed as child of \u{201c}feComponentTransfer\u{201d} in this context." })
+    #expect(result.messages.contains { $0.message == "Element \u{201c}font\u{201d} is missing a required instance of child element \u{201c}missing-glyph\u{201d}." })
+    #expect(result.messages.contains { $0.message == "Attribute \u{201c}xml:id\u{201d} not allowed on element \u{201c}rect\u{201d} at this point." })
+    #expect(result.messages.contains { $0.message == "Bad value \u{201c}M 20 100 H 40#90\u{201d} for attribute \u{201c}d\u{201d} on element \u{201c}path\u{201d}." })
+    #expect(result.messages.contains { $0.message == "The SVG element \u{201c}a\u{201d} must not appear as a descendant of another SVG element \u{201c}a\u{201d}." })
+    #expect(result.messages.contains { $0.message == "This document appears to be written in Japanese but the \u{201c}html\u{201d} start tag has \u{201c}lang=\"en\"\u{201d}. Consider using \u{201c}lang=\"ja\"\u{201d} (or variant) instead." && $0.subType == "warning" })
+}
+
+@Test func xmlValidatorCoversRemainingXHTMLRules() {
+    let result = NuValidator().check(
+        input: DocumentInput(data: Data("""
+            <html xmlns="http://www.w3.org/1999/xhtml"><head><title>T</title></head><body>
+            <dialog><dt>term</dt></dialog>
+            <object></object>
+            <applet code="x" width="10" height="10"></applet>
+            </body></html>
+            """.utf8), contentType: "application/xhtml+xml; charset=utf-8"),
+        options: CheckerOptions(parameters: ["out": ["json"]])
+    )
+
+    #expect(result.messages.contains { $0.message == "Element \u{201c}dt\u{201d} not allowed as child of \u{201c}dialog\u{201d} in this context." })
+    #expect(result.messages.contains { $0.message == "Element \u{201c}object\u{201d} is missing required attribute \u{201c}data\u{201d}." })
+    #expect(result.messages.contains { $0.message == "The \u{201c}applet\u{201d} element is obsolete. Use \u{201c}embed\u{201d} or \u{201c}object\u{201d} element instead." })
+}
+
 private func checkHTML(_ source: String) -> ValidationResult {
     NuValidator().check(
         input: DocumentInput(data: Data(source.utf8), contentType: "text/html; charset=utf-8"),

@@ -423,6 +423,8 @@ struct HTMLGeneralAttributeChecker {
         var scriptContent: ScriptContentState?
         var styleContent: StyleContentState?
         var titleCapture: TitleCapture?
+        var htmlElement: HTMLStartElement?
+        var languageCounts = LanguageCounts()
         var sawTitle = false
         var activeRoleTabElement: HTMLStartElement?
         var sawRoleTabpanel = false
@@ -441,6 +443,9 @@ struct HTMLGeneralAttributeChecker {
             case let .startElement(element):
                 let parent = stack.last
                 let role = firstRoleToken(for: element)
+                if element.name == "html" {
+                    htmlElement = element
+                }
                 updateCSPState(from: element, state: &cspState)
                 appendCSPMessages(for: element, state: cspState, locations: locations, messages: &messages)
                 if role == "tab", normalizedAttributeValue("aria-selected", for: element) == "true" {
@@ -472,6 +477,7 @@ struct HTMLGeneralAttributeChecker {
                 appendBaseMessages(for: element, sawBodyContentBeforeBase: sawBodyContentBeforeBase, sawBaseBlockingElement: sawBaseBlockingElement, locations: locations, messages: &messages)
                 appendStructuralAssertionMessages(for: element, stack: stack, mapNames: mapNames, locations: locations, messages: &messages)
                 appendElementSpecificMessages(for: element, stack: stack, locations: locations, messages: &messages)
+                appendForeignContentMessages(for: element, parent: parent, stack: stack, locations: locations, messages: &messages)
                 appendLabelForReferenceMessages(for: element, idLabelableElementNames: idLabelableElementNames, locations: locations, messages: &messages)
                 appendAutofocusMessages(for: element, autofocusCount: &autofocusCount, locations: locations, messages: &messages)
                 appendARIAAttributeMessages(
@@ -654,6 +660,9 @@ struct HTMLGeneralAttributeChecker {
                 if scriptContent == nil, styleContent == nil {
                     appendNormalizationWarningIfNeeded(content, range: range, locations: locations, messages: &messages)
                 }
+                if stack.contains("body"), !stack.contains("pre"), scriptContent == nil, styleContent == nil {
+                    languageCounts.add(content)
+                }
                 if let selectIndex = selectStack.indices.last,
                    selectStack[selectIndex].optionCount == 1,
                    stack.contains("option") {
@@ -711,6 +720,7 @@ struct HTMLGeneralAttributeChecker {
         if !headingLevels.isEmpty, !headingLevels.contains(1), let firstHeadingElement {
             appendWarningMessage("This document has heading elements but none of them has a computed heading level of 1.", for: firstHeadingElement, locations: locations, messages: &messages)
         }
+        appendLanguageDetectionWarning(htmlElement: htmlElement, counts: languageCounts, locations: locations, messages: &messages)
         return messages
     }
 
@@ -935,6 +945,219 @@ struct HTMLGeneralAttributeChecker {
         }
     }
 
+    private func appendForeignContentMessages(
+        for element: HTMLStartElement,
+        parent: String?,
+        stack: [String],
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) {
+        appendRDFaAttributeMessages(for: element, locations: locations, messages: &messages)
+
+        if parent == "colgroup", element.name == "col" {
+            appendMessage("Element \u{201c}col\u{201d} not allowed as child of \u{201c}colgroup\u{201d} in this context.", for: element, locations: locations, messages: &messages)
+        }
+        if parent == "dialog", element.name == "dt" {
+            appendMessage("Element \u{201c}dt\u{201d} not allowed as child of \u{201c}dialog\u{201d} in this context.", for: element, locations: locations, messages: &messages)
+        }
+
+        let inSVG = element.name == "svg" || stack.contains("svg")
+        let inMath = element.name == "math" || stack.contains("math")
+        if inSVG {
+            appendSVGMessages(for: element, parent: parent, stack: stack, locations: locations, messages: &messages)
+        }
+        if inMath {
+            appendMathMessages(for: element, parent: parent, stack: stack, locations: locations, messages: &messages)
+        }
+    }
+
+    private func appendRDFaAttributeMessages(
+        for element: HTMLStartElement,
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) {
+        for attribute in element.attributes {
+            if attribute.name.hasPrefix("xmlns:") {
+                appendMessage("Attribute \u{201c}\(attribute.name)\u{201d} not allowed here.", for: element, locations: locations, messages: &messages)
+            }
+        }
+
+        let rdfaDisallowed: [String: Set<String>] = [
+            "a": ["src"],
+            "div": ["href"],
+            "html": ["xml:base"],
+            "img": ["href"],
+            "p": ["href"]
+        ]
+        if let disallowed = rdfaDisallowed[element.name] {
+            for attribute in element.attributes where disallowed.contains(attribute.name) {
+                appendMessage(
+                    "Attribute \u{201c}\(attribute.name)\u{201d} not allowed on element \u{201c}\(element.name)\u{201d} at this point.",
+                    for: element,
+                    locations: locations,
+                    messages: &messages
+                )
+            }
+        }
+
+        if let prefix = element.attributeValue("prefix"), !isValidRDFaPrefix(prefix) {
+            appendBadAttributeValue(prefix, attribute: "prefix", for: element, locations: locations, messages: &messages)
+        }
+        if let role = element.attributeValue("role"), roleContainsRDFaRole(role) {
+            appendBadAttributeValue(role, attribute: "role", for: element, locations: locations, messages: &messages)
+        }
+    }
+
+    private func appendSVGMessages(
+        for element: HTMLStartElement,
+        parent: String?,
+        stack: [String],
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) {
+        if let xmlns = element.attributeValue("xmlns"), xmlns != "http://www.w3.org/2000/svg" {
+            appendMessage("Bad value \u{201c}\(xmlns)\u{201d} for the attribute \u{201c}xmlns\u{201d} (only \u{201c}http://www.w3.org/2000/svg\u{201d} permitted here).", for: element, locations: locations, messages: &messages)
+        }
+        if let link = element.attributeValue("xmlns:xlink"), link != "http://www.w3.org/1999/xlink" {
+            appendMessage("Bad value \u{201c}\(link)\u{201d} for the attribute \u{201c}xmlns:link\u{201d} (only \u{201c}http://www.w3.org/1999/xlink\u{201d} permitted here).", for: element, locations: locations, messages: &messages)
+        }
+
+        let disallowedAttributes: [String: Set<String>] = [
+            "circle": ["foo"],
+            "clippath": ["x"],
+            "filter": ["filterprimitiveunits"],
+            "g": ["marker"],
+            "image": ["fill", "xml:base"],
+            "path": [],
+            "rect": ["stop-color", "xml:id"],
+            "svg": ["contentscripttype", "externalresourcesrequired"],
+            "tspan": ["line-height"]
+        ]
+        if let disallowed = disallowedAttributes[element.name] {
+            for attribute in element.attributes where disallowed.contains(attribute.name) {
+                appendMessage(
+                    "Attribute \u{201c}\(attribute.name)\u{201d} not allowed on element \u{201c}\(svgDisplayName(element.name))\u{201d} at this point.",
+                    for: element,
+                    locations: locations,
+                    messages: &messages
+                )
+            }
+        }
+
+        if parent == "fecomponenttransfer", element.name == "fefuncr" {
+            appendMessage("Element \u{201c}feFuncR\u{201d} not allowed as child of \u{201c}feComponentTransfer\u{201d} in this context.", for: element, locations: locations, messages: &messages)
+        }
+        if element.name == "feconvolvematrix", !element.hasAttribute("order") {
+            appendMessage("Element \u{201c}feConvolveMatrix\u{201d} is missing required attribute \u{201c}order\u{201d}.", for: element, locations: locations, messages: &messages)
+        }
+        if element.name == "font" {
+            if !element.hasAttribute("horiz-adv-x") {
+                appendMessage("Element \u{201c}font\u{201d} is missing required attribute \u{201c}horiz-adv-x\u{201d}.", for: element, locations: locations, messages: &messages)
+            }
+            appendMessage("Element \u{201c}font\u{201d} is missing a required instance of child element \u{201c}missing-glyph\u{201d}.", for: element, locations: locations, messages: &messages)
+        }
+        if element.name == "a", stack.contains("a") {
+            appendMessage("The SVG element \u{201c}a\u{201d} must not appear as a descendant of another SVG element \u{201c}a\u{201d}.", for: element, locations: locations, messages: &messages)
+        }
+        if element.name == "path", let d = element.attributeValue("d"), badSVGPathData(d) {
+            appendBadAttributeValue(d, attribute: "d", for: element, locations: locations, messages: &messages)
+        }
+    }
+
+    private func appendMathMessages(
+        for element: HTMLStartElement,
+        parent: String?,
+        stack: [String],
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) {
+        if stack.contains("math"), HTMLVocabulary.elements.contains(element.name), element.name != "math" {
+            appendMessage("HTML start tag \u{201c}\(element.name)\u{201d} in a foreign namespace context.", for: element, locations: locations, messages: &messages)
+        }
+        if element.name == "math", stack.contains("head") {
+            appendMessage("Stray end tag \u{201c}head\u{201d}.", for: element, locations: locations, messages: &messages)
+        }
+        if element.name == "math", let display = element.attributeValue("display"), display != "block" && display != "inline" {
+            appendBadAttributeValue(display, attribute: "display", for: element, locations: locations, messages: &messages)
+        }
+        if element.name == "math", let overflow = element.attributeValue("overflow"), overflow == "wrap" {
+            appendBadAttributeValue(overflow, attribute: "overflow", for: element, locations: locations, messages: &messages)
+        }
+        if Self.mathFixedArityElements.contains(element.name) {
+            appendMessage(mathMissingChildrenMessage(for: element.name), for: element, locations: locations, messages: &messages)
+        }
+    }
+
+    private func appendLanguageDetectionWarning(
+        htmlElement: HTMLStartElement?,
+        counts: LanguageCounts,
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) {
+        guard let htmlElement else { return }
+        let detected: String?
+        if counts.hebrew > 120, counts.hebrew > counts.cjk {
+            detected = "he"
+        } else if counts.kana > 40 {
+            detected = "ja"
+        } else if counts.cjk > 200 {
+            detected = "zh-hant"
+        } else {
+            detected = nil
+        }
+
+        guard let detected else { return }
+        let lang = htmlElement.attributeValue("lang")?.lowercased()
+        let dir = htmlElement.attributeValue("dir")?.lowercased()
+        if detected == "he", dir == "ltr", lang == "he" {
+            appendWarningMessage("This document appears to be written in Hebrew but the \u{201c}html\u{201d} start tag has \u{201c}dir=\"ltr\"\u{201d}. Consider using \u{201c}dir=\"rtl\"\u{201d} instead.", for: htmlElement, locations: locations, messages: &messages)
+        } else if detected == "he", lang != "he" {
+            appendWarningMessage("This document appears to be written in Hebrew but the \u{201c}html\u{201d} start tag has \u{201c}lang=\"\(lang ?? "")\"\u{201d}. Consider using \u{201c}lang=\"he\"\u{201d} (or variant) instead.", for: htmlElement, locations: locations, messages: &messages)
+        } else if detected == "ja", lang != "ja" {
+            appendWarningMessage("This document appears to be written in Japanese but the \u{201c}html\u{201d} start tag has \u{201c}lang=\"\(lang ?? "")\"\u{201d}. Consider using \u{201c}lang=\"ja\"\u{201d} (or variant) instead.", for: htmlElement, locations: locations, messages: &messages)
+        } else if detected == "zh-hant", lang != "zh-hant" {
+            appendWarningMessage("This document appears to be written in Traditional Chinese but the \u{201c}html\u{201d} start tag has \u{201c}lang=\"\(lang ?? "")\"\u{201d}. Consider using \u{201c}lang=\"zh-hant\"\u{201d} (or variant) instead.", for: htmlElement, locations: locations, messages: &messages)
+        }
+    }
+
+    private func isValidRDFaPrefix(_ value: String) -> Bool {
+        let tokens = value.split(whereSeparator: { $0.isWhitespace }).map(String.init)
+        guard !tokens.isEmpty, tokens.count.isMultiple(of: 2) else { return false }
+        for index in stride(from: 0, to: tokens.count, by: 2) {
+            let prefix = tokens[index]
+            guard prefix.last == ":",
+                  prefix.dropLast().unicodeScalars.first?.properties.isAlphabetic == true,
+                  prefix.dropLast().unicodeScalars.allSatisfy({ $0.properties.isAlphabetic || $0.properties.isMath || $0.value == 45 || $0.value == 95 }) else {
+                return false
+            }
+            guard isAbsoluteURLToken(tokens[index + 1]) else { return false }
+        }
+        return true
+    }
+
+    private func roleContainsRDFaRole(_ value: String) -> Bool {
+        value.split(whereSeparator: { $0.isWhitespace }).contains { token in
+            token.contains(":") || token.contains("/")
+        }
+    }
+
+    private func isAbsoluteURLToken(_ value: String) -> Bool {
+        value.range(of: #"^[A-Za-z][A-Za-z0-9+.-]*:"#, options: .regularExpression) != nil
+    }
+
+    private func badSVGPathData(_ value: String) -> Bool {
+        value.contains("#") || value.range(of: #"\ba[0-9., -]*\s[2-9]\s"#, options: [.regularExpression, .caseInsensitive]) != nil
+    }
+
+    private func svgDisplayName(_ name: String) -> String {
+        Self.svgElementDisplayNames[name] ?? name
+    }
+
+    private func mathMissingChildrenMessage(for elementName: String) -> String {
+        let childList = Self.mathRequiredChildren.map { "\u{201c}\($0)\u{201d}" }.joined(separator: ", ")
+        return "Element \u{201c}\(elementName)\u{201d} is missing a required instance of one or more of the following child elements: \(childList)."
+    }
+
     private struct PictureState {
         var element: HTMLStartElement
         var sourcesMissingSizes: [HTMLStartElement] = []
@@ -1015,6 +1238,27 @@ struct HTMLGeneralAttributeChecker {
     private struct CSPState {
         var inlineScriptBlockingDirective: String?
         var inlineStyleBlockingDirective: String?
+    }
+
+    private struct LanguageCounts {
+        var cjk = 0
+        var kana = 0
+        var hebrew = 0
+
+        mutating func add(_ text: String) {
+            for scalar in text.unicodeScalars {
+                switch scalar.value {
+                case 0x0590...0x05FF:
+                    hebrew += 1
+                case 0x3040...0x30FF, 0x31F0...0x31FF:
+                    kana += 1
+                case 0x3400...0x4DBF, 0x4E00...0x9FFF, 0xF900...0xFAFF:
+                    cjk += 1
+                default:
+                    continue
+                }
+            }
+        }
     }
 
     private struct TitleCapture {
@@ -4652,6 +4896,41 @@ struct HTMLGeneralAttributeChecker {
 
     private static let srcsetDisallowedElements: Set<String> = [
         "audio", "image", "input", "link", "object", "track", "video"
+    ]
+
+    private static let svgElementDisplayNames: [String: String] = [
+        "clippath": "clipPath",
+        "fecomponenttransfer": "feComponentTransfer",
+        "feconvolvematrix": "feConvolveMatrix",
+        "fefuncr": "feFuncR"
+    ]
+
+    private static let mathFixedArityElements: Set<String> = [
+        "mfrac", "mover", "mroot", "msub", "msubsup", "msup", "munder", "munderover"
+    ]
+
+    private static let mathRequiredChildren: [String] = [
+        "abs", "and", "apply", "approx", "arccos", "arccosh", "arccot", "arccoth",
+        "arccsc", "arccsch", "arcsec", "arcsech", "arcsin", "arcsinh", "arctan", "arctanh",
+        "arg", "bind", "card", "cartesianproduct", "cbytes", "ceiling", "cerror", "ci",
+        "cn", "codomain", "complexes", "compose", "conjugate", "cos", "cosh", "cot",
+        "coth", "cs", "csc", "csch", "csymbol", "curl", "declare", "determinant",
+        "diff", "divergence", "divide", "domain", "emptyset", "eq", "equivalent", "eulergamma",
+        "exists", "exp", "exponentiale", "factorial", "factorof", "false", "floor", "fn",
+        "forall", "gcd", "geq", "grad", "gt", "ident", "image", "imaginary",
+        "imaginaryi", "implies", "in", "infinity", "int", "integers", "intersect", "interval",
+        "inverse", "lambda", "laplacian", "lcm", "leq", "limit", "list", "ln",
+        "log", "lt", "maction", "maligngroup", "malignmark", "matrix", "matrixrow", "max",
+        "mean", "median", "menclose", "merror", "mfenced", "mfrac", "mi", "min",
+        "minus", "mlongdiv", "mmultiscripts", "mn", "mo", "mode", "moment", "mover",
+        "mpadded", "mphantom", "mroot", "mrow", "ms", "mspace", "msqrt", "mstack",
+        "mstyle", "msub", "msubsup", "msup", "mtable", "mtext", "munder", "munderover",
+        "naturalnumbers", "neq", "not", "notanumber", "notin", "notprsubset", "notsubset", "or",
+        "outerproduct", "partialdiff", "pi", "piecewise", "plus", "power", "primes", "product",
+        "prsubset", "quotient", "rationals", "real", "reals", "reln", "rem", "root",
+        "scalarproduct", "sdev", "sec", "sech", "selector", "semantics", "set", "setdiff",
+        "share", "sin", "sinh", "subset", "sum", "tan", "tanh", "tendsto",
+        "times", "transpose", "true", "union", "variance", "vector", "vectorproduct", "xor"
     ]
 
     private static let inputTypes: Set<String> = [

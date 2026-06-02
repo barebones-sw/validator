@@ -133,6 +133,18 @@ public final class XMLValidator: NSObject, XMLParserDelegate, @unchecked Sendabl
                 location: location
             ))
         }
+        if name == "applet" {
+            messages.append(.error(
+                "The \u{201c}applet\u{201d} element is obsolete. Use \u{201c}embed\u{201d} or \u{201c}object\u{201d} element instead.",
+                location: location
+            ))
+        }
+        if name == "object", normalizedAttributes["data"] == nil {
+            messages.append(.error(
+                "Element \u{201c}object\u{201d} is missing required attribute \u{201c}data\u{201d}.",
+                location: location
+            ))
+        }
         if name == "embed" {
             appendEmbedMessages(attributes: attributeDict, location: location)
         }
@@ -231,6 +243,12 @@ public final class XMLValidator: NSObject, XMLParserDelegate, @unchecked Sendabl
         if elementStack.last == "menu", !Self.xhtmlMenuChildElements.contains(name) {
             messages.append(.error(
                 "Element \u{201c}\(name)\u{201d} not allowed as child of \u{201c}menu\u{201d} in this context.",
+                location: location
+            ))
+        }
+        if elementStack.last == "dialog", name == "dt" {
+            messages.append(.error(
+                "Element \u{201c}dt\u{201d} not allowed as child of \u{201c}dialog\u{201d} in this context.",
                 location: location
             ))
         }
