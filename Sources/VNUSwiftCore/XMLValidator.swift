@@ -27,6 +27,11 @@ public final class XMLValidator: NSObject, XMLParserDelegate, @unchecked Sendabl
         var sawBaseContent = false
     }
 
+    private struct XMLStylesheetPseudoAttribute {
+        var name: String
+        var value: String?
+    }
+
     private var messages: [ValidationMessage] = []
     private var idElementNames: [String: String] = [:]
     private var pendingInputListReferences: [PendingInputListReference] = []
@@ -36,6 +41,7 @@ public final class XMLValidator: NSObject, XMLParserDelegate, @unchecked Sendabl
     private var dtCaptures: [DTCapture] = []
     private var figureContexts: [FigureContext] = []
     private var rubyContexts: [RubyContext] = []
+    private var sawElement = false
     private var tableChecker = HTMLTableModelChecker(mode: .xhtml)
 
     public func validate(data: Data, source: String) -> [ValidationMessage] {
@@ -48,6 +54,7 @@ public final class XMLValidator: NSObject, XMLParserDelegate, @unchecked Sendabl
         dtCaptures = []
         figureContexts = []
         rubyContexts = []
+        sawElement = false
         tableChecker = HTMLTableModelChecker(mode: .xhtml)
         let parser = XMLParser(data: data)
         parser.delegate = self
@@ -76,6 +83,7 @@ public final class XMLValidator: NSObject, XMLParserDelegate, @unchecked Sendabl
         qualifiedName qName: String?,
         attributes attributeDict: [String: String] = [:]
     ) {
+        sawElement = true
         let name = elementName.lowercased()
         guard isXHTMLElement(namespaceURI) else {
             return
@@ -282,6 +290,28 @@ public final class XMLValidator: NSObject, XMLParserDelegate, @unchecked Sendabl
         }
     }
 
+    public func parser(
+        _ parser: XMLParser,
+        foundProcessingInstructionWithTarget target: String,
+        data: String?
+    ) {
+        guard target.lowercased() == "xml-stylesheet" else { return }
+        let location = SourceLocation(
+            firstLine: parser.lineNumber,
+            firstColumn: parser.columnNumber,
+            lastLine: parser.lineNumber,
+            lastColumn: parser.columnNumber
+        )
+        if sawElement {
+            messages.append(.error(
+                "Any \u{201c}xml-stylesheet\u{201d} instruction in a document must occur before any elements in the document. Suppressing any further errors for this \u{201c}xml-stylesheet\u{201d} instruction.",
+                location: location
+            ))
+            return
+        }
+        appendXMLStylesheetMessages(data ?? "", location: location)
+    }
+
     private func appendXHTMLRubyMessages(_ context: RubyContext) {
         if !context.sawBaseContent && context.directChildNames.isEmpty {
             messages.append(.error(
@@ -450,6 +480,153 @@ public final class XMLValidator: NSObject, XMLParserDelegate, @unchecked Sendabl
         return Int(value) != nil
     }
 
+    private func appendXMLStylesheetMessages(_ data: String, location: SourceLocation) {
+        let attributes = parseXMLStylesheetPseudoAttributes(data)
+        let allowedAttributes: Set<String> = ["href", "type", "title", "media", "charset", "alternate"]
+        var values: [String: String] = [:]
+        var seenNames: Set<String> = []
+
+        for attribute in attributes {
+            guard allowedAttributes.contains(attribute.name) else {
+                messages.append(.error(
+                    "Pseudo-attribute \u{201c}\(attribute.name)\u{201d} not allowed in \u{201c}xml-stylesheet\u{201d} instruction.",
+                    location: location
+                ))
+                continue
+            }
+            guard let value = attribute.value else {
+                messages.append(.error(
+                    "Found \u{201c}xml-stylesheet\u{201d} pseudo-attribute \u{201c}\(attribute.name)\u{201d} without a value. All pseudo-attributes in \u{201c}xml-stylesheet\u{201d} instructions must have values.",
+                    location: location
+                ))
+                continue
+            }
+            if seenNames.contains(attribute.name) {
+                messages.append(.error(
+                    "Duplicate \u{201c}xml-stylesheet\u{201d} pseudo-attribute \u{201c}\(attribute.name)\u{201d}.",
+                    location: location
+                ))
+                continue
+            }
+            seenNames.insert(attribute.name)
+            values[attribute.name] = value
+        }
+
+        if values["href"] == nil {
+            messages.append(.error(
+                "\u{201c}xml-stylesheet\u{201d} instruction lacks \u{201c}href\u{201d} pseudo-attribute. The \u{201c}href\u{201d} pseudo-attribute is required in all \u{201c}xml-stylesheet\u{201d} instructions.",
+                location: location
+            ))
+        } else if let href = values["href"], href.unicodeScalars.contains(where: isASCIIWhitespace) {
+            messages.append(.error(
+                "Bad value \u{201c}\(href)\u{201d} for \u{201c}xml-stylesheet\u{201d} pseudo-attribute \u{201c}href\u{201d}. Bad URL: Illegal character in path segment. Space is not allowed.",
+                location: location
+            ))
+        }
+
+        if let type = values["type"] {
+            if !isValidMIMEType(type) {
+                let suffix = type == "text" ? " Bad MIME type: Subtype missing." : ""
+                messages.append(.error(
+                    "Bad value \u{201c}\(type)\u{201d} for \u{201c}xml-stylesheet\u{201d} pseudo-attribute \u{201c}type\u{201d}.\(suffix)",
+                    location: location
+                ))
+            } else if !Self.supportedXMLStylesheetTypes.contains(type.lowercased()) {
+                messages.append(.warning(
+                    "\u{201c}text/css\u{201d} and \u{201c}text/xsl\u{201d} are the only MIME types for the \u{201c}xml-stylesheet\u{201d} pseudo-attribute \u{201c}type\u{201d} that are supported across browsers.",
+                    location: location
+                ))
+            }
+        }
+
+        if let charset = values["charset"] {
+            if !Self.supportedXMLStylesheetCharsets.contains(charset.lowercased()) {
+                messages.append(.error(
+                    "Bad value \u{201c}\(charset)\u{201d} for \u{201c}xml-stylesheet\u{201d} pseudo-attribute \u{201c}charset\u{201d}. Bad encoding name: \u{201c}\(charset)\u{201d} is not a valid character encoding name.",
+                    location: location
+                ))
+            } else {
+                messages.append(.warning(
+                    "Some browsers ignore the value of the \u{201c}xml-stylesheet\u{201d} pseudo-attribute \u{201c}charset\u{201d}.",
+                    location: location
+                ))
+            }
+        }
+
+        if let alternate = values["alternate"] {
+            if alternate != "yes" && alternate != "no" {
+                messages.append(.error(
+                    "The value of the \u{201c}xml-stylesheet\u{201d} pseudo-attribute \u{201c}alternate\u{201d} must be either \u{201c}yes\u{201d} or \u{201c}no\u{201d}.",
+                    location: location
+                ))
+            } else if alternate == "yes", values["title"]?.isEmpty != false {
+                messages.append(.error(
+                    "An \u{201c}xml-stylesheet\u{201d} instruction with an \u{201c}alternate\u{201d} pseudo-attribute whose value is \u{201c}yes\u{201d} must also have a \u{201c}title\u{201d} pseudo-attribute with a non-empty value.",
+                    location: location
+                ))
+            }
+        }
+    }
+
+    private func parseXMLStylesheetPseudoAttributes(_ data: String) -> [XMLStylesheetPseudoAttribute] {
+        var attributes: [XMLStylesheetPseudoAttribute] = []
+        var index = data.startIndex
+
+        while index < data.endIndex {
+            skipXMLStylesheetWhitespace(in: data, index: &index)
+            guard index < data.endIndex else { break }
+
+            let nameStart = index
+            while index < data.endIndex,
+                  data[index] != "=",
+                  !data[index].unicodeScalars.allSatisfy(isASCIIWhitespace) {
+                data.formIndex(after: &index)
+            }
+            let name = String(data[nameStart..<index])
+            skipXMLStylesheetWhitespace(in: data, index: &index)
+            guard index < data.endIndex, data[index] == "=" else {
+                attributes.append(XMLStylesheetPseudoAttribute(name: name, value: nil))
+                continue
+            }
+
+            data.formIndex(after: &index)
+            skipXMLStylesheetWhitespace(in: data, index: &index)
+            guard index < data.endIndex else {
+                attributes.append(XMLStylesheetPseudoAttribute(name: name, value: ""))
+                break
+            }
+
+            let quote = data[index]
+            if quote == "\"" || quote == "'" {
+                data.formIndex(after: &index)
+                let valueStart = index
+                while index < data.endIndex, data[index] != quote {
+                    data.formIndex(after: &index)
+                }
+                let value = String(data[valueStart..<index])
+                if index < data.endIndex {
+                    data.formIndex(after: &index)
+                }
+                attributes.append(XMLStylesheetPseudoAttribute(name: name, value: value))
+            } else {
+                let valueStart = index
+                while index < data.endIndex,
+                      !data[index].unicodeScalars.allSatisfy(isASCIIWhitespace) {
+                    data.formIndex(after: &index)
+                }
+                attributes.append(XMLStylesheetPseudoAttribute(name: name, value: String(data[valueStart..<index])))
+            }
+        }
+
+        return attributes
+    }
+
+    private func skipXMLStylesheetWhitespace(in data: String, index: inout String.Index) {
+        while index < data.endIndex, data[index].unicodeScalars.allSatisfy(isASCIIWhitespace) {
+            data.formIndex(after: &index)
+        }
+    }
+
     private func isValidMIMEType(_ value: String) -> Bool {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
         let parts = trimmed.split(separator: "/", omittingEmptySubsequences: false)
@@ -541,6 +718,14 @@ public final class XMLValidator: NSObject, XMLParserDelegate, @unchecked Sendabl
 
     private static let xhtmlRubyAnnotationElements: Set<String> = [
         "rp", "rt", "rtc"
+    ]
+
+    private static let supportedXMLStylesheetTypes: Set<String> = [
+        "text/css", "text/xsl"
+    ]
+
+    private static let supportedXMLStylesheetCharsets: Set<String> = [
+        "utf-8", "utf8", "us-ascii", "iso-8859-1", "utf-16"
     ]
 }
 

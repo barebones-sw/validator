@@ -782,6 +782,63 @@ import Testing
     #expect(result.messages.contains { $0.message == "Bad value \u{201c}foo\u{201d} for attribute \u{201c}type\u{201d} on element \u{201c}embed\u{201d}." })
 }
 
+@Test func htmlCheckerCoversCSPAndUnicodeNormalizationWarnings() {
+    let result = checkHTML("""
+        <!doctype html><html lang=en><head>
+        <meta charset=utf-8><title>T</title>
+        <meta http-equiv="Content-Security-Policy" content="script-src 'self'; style-src 'self'">
+        <script>alert(1)</script>
+        <style>p { color: red }</style>
+        </head><body><button onclick="go()" style="color:red">Go</button><p>&#8053;</p></body></html>
+        """)
+
+    #expect(result.messages.contains { $0.message == "Inline script violates Content Security Policy (meta tag): blocked by \u{201c}script-src\u{201d} directive (missing \u{201c}\u{2018}unsafe-inline\u{2019}\u{201d} or nonce/hash)." && $0.subType == "warning" })
+    #expect(result.messages.contains { $0.message == "Inline style violates Content Security Policy (meta tag): blocked by \u{201c}style-src\u{201d} directive (missing \u{201c}\u{2018}unsafe-inline\u{2019}\u{201d} or nonce/hash)." && $0.subType == "warning" })
+    #expect(result.messages.contains { $0.message == "Event handler attribute \u{201c}onclick\u{201d} violates Content Security Policy (meta tag): blocked by \u{201c}script-src\u{201d} directive." && $0.subType == "warning" })
+    #expect(result.messages.contains { $0.message == "The \u{201c}style\u{201d} attribute violates Content Security Policy (meta tag): blocked by \u{201c}style-src\u{201d} directive." && $0.subType == "warning" })
+}
+
+@Test func htmlCheckerCoversUnicodeNormalizationWarnings() {
+    let result = checkHTML("<!doctype html><html lang=en><meta charset=utf-8><title>T</title><p>&#8053;</p></html>")
+
+    #expect(result.messages.contains { $0.message == "Text run is not in Unicode Normalization Form C. Should instead be \u{201c}\u{03ae}\u{201d}. (Copy and paste that into your source document to replace the un-normalized text.)" && $0.subType == "warning" })
+    let vietnamese = checkHTML("<!doctype html><html lang=en><meta charset=utf-8><title>T</title><p>Tại sao họ không thể chỉ nói tiếng Việt ?</p></html>")
+    #expect(vietnamese.messages.contains { $0.message == "Text run is not in Unicode Normalization Form C. Should instead be \u{201c}Tại sao họ không thể chỉ nói tiếng Việt \u{201d}. (Copy and paste that into your source document to replace the un-normalized text.)" && $0.subType == "warning" })
+}
+
+@Test func xmlValidatorCoversXMLStylesheetProcessingInstructions() {
+    let result = NuValidator().check(
+        input: DocumentInput(data: Data("""
+            <?xml-stylesheet href="style.css" charset="utf-8"?>
+            <?xml-stylesheet href="style.css" href="duplicate.css"?>
+            <?xml-stylesheet href="style.css" type?>
+            <?xml-stylesheet href="ht tp://example.com/style.css"?>
+            <?xml-stylesheet href="style.css" alternate="yes"?>
+            <?xml-stylesheet href="style.css" alternate="maybe"?>
+            <?xml-stylesheet href="style.css" type="text"?>
+            <?xml-stylesheet href="style.css" type="application/xslt+xml"?>
+            <?xml-stylesheet foo="bar"?>
+            <?xml-stylesheet HREF="style.css"?>
+            <html xmlns="http://www.w3.org/1999/xhtml"><head><title>T</title></head><body/></html>
+            <?xml-stylesheet href="after.css"?>
+            """.utf8), contentType: "application/xhtml+xml; charset=utf-8"),
+        options: CheckerOptions(parameters: ["out": ["json"]])
+    )
+
+    #expect(result.messages.contains { $0.message == "Some browsers ignore the value of the \u{201c}xml-stylesheet\u{201d} pseudo-attribute \u{201c}charset\u{201d}." && $0.subType == "warning" })
+    #expect(result.messages.contains { $0.message == "Duplicate \u{201c}xml-stylesheet\u{201d} pseudo-attribute \u{201c}href\u{201d}." })
+    #expect(result.messages.contains { $0.message == "Found \u{201c}xml-stylesheet\u{201d} pseudo-attribute \u{201c}type\u{201d} without a value. All pseudo-attributes in \u{201c}xml-stylesheet\u{201d} instructions must have values." })
+    #expect(result.messages.contains { $0.message == "Bad value \u{201c}ht tp://example.com/style.css\u{201d} for \u{201c}xml-stylesheet\u{201d} pseudo-attribute \u{201c}href\u{201d}. Bad URL: Illegal character in path segment. Space is not allowed." })
+    #expect(result.messages.contains { $0.message == "An \u{201c}xml-stylesheet\u{201d} instruction with an \u{201c}alternate\u{201d} pseudo-attribute whose value is \u{201c}yes\u{201d} must also have a \u{201c}title\u{201d} pseudo-attribute with a non-empty value." })
+    #expect(result.messages.contains { $0.message == "The value of the \u{201c}xml-stylesheet\u{201d} pseudo-attribute \u{201c}alternate\u{201d} must be either \u{201c}yes\u{201d} or \u{201c}no\u{201d}." })
+    #expect(result.messages.contains { $0.message == "Bad value \u{201c}text\u{201d} for \u{201c}xml-stylesheet\u{201d} pseudo-attribute \u{201c}type\u{201d}. Bad MIME type: Subtype missing." })
+    #expect(result.messages.contains { $0.message == "\u{201c}text/css\u{201d} and \u{201c}text/xsl\u{201d} are the only MIME types for the \u{201c}xml-stylesheet\u{201d} pseudo-attribute \u{201c}type\u{201d} that are supported across browsers." && $0.subType == "warning" })
+    #expect(result.messages.contains { $0.message == "Pseudo-attribute \u{201c}foo\u{201d} not allowed in \u{201c}xml-stylesheet\u{201d} instruction." })
+    #expect(result.messages.contains { $0.message == "Pseudo-attribute \u{201c}HREF\u{201d} not allowed in \u{201c}xml-stylesheet\u{201d} instruction." })
+    #expect(result.messages.contains { $0.message == "\u{201c}xml-stylesheet\u{201d} instruction lacks \u{201c}href\u{201d} pseudo-attribute. The \u{201c}href\u{201d} pseudo-attribute is required in all \u{201c}xml-stylesheet\u{201d} instructions." })
+    #expect(result.messages.contains { $0.message == "Any \u{201c}xml-stylesheet\u{201d} instruction in a document must occur before any elements in the document. Suppressing any further errors for this \u{201c}xml-stylesheet\u{201d} instruction." })
+}
+
 private func checkHTML(_ source: String) -> ValidationResult {
     NuValidator().check(
         input: DocumentInput(data: Data(source.utf8), contentType: "text/html; charset=utf-8"),

@@ -434,12 +434,15 @@ struct HTMLGeneralAttributeChecker {
         let idElementNames = idElementNames(in: document)
         let idLabelableElementNames = idLabelableElementNames(in: document)
         let mapNames = mapNames(in: document)
+        var cspState = CSPState()
 
         for event in document.events {
             switch event {
             case let .startElement(element):
                 let parent = stack.last
                 let role = firstRoleToken(for: element)
+                updateCSPState(from: element, state: &cspState)
+                appendCSPMessages(for: element, state: cspState, locations: locations, messages: &messages)
                 if role == "tab", normalizedAttributeValue("aria-selected", for: element) == "true" {
                     activeRoleTabElement = element
                 }
@@ -648,6 +651,9 @@ struct HTMLGeneralAttributeChecker {
                 if styleContent != nil {
                     styleContent?.content += content
                 }
+                if scriptContent == nil, styleContent == nil {
+                    appendNormalizationWarningIfNeeded(content, range: range, locations: locations, messages: &messages)
+                }
                 if let selectIndex = selectStack.indices.last,
                    selectStack[selectIndex].optionCount == 1,
                    stack.contains("option") {
@@ -750,6 +756,185 @@ struct HTMLGeneralAttributeChecker {
         return result
     }
 
+    private func updateCSPState(from element: HTMLStartElement, state: inout CSPState) {
+        guard element.name == "meta",
+              normalizedAttributeValue("http-equiv", for: element) == "content-security-policy",
+              let content = element.attributeValue("content") else {
+            return
+        }
+
+        let directives = cspDirectives(from: content)
+        if let directive = inlineBlockingCSPDirective(["script-src", "default-src"], directives: directives) {
+            state.inlineScriptBlockingDirective = directive
+        }
+        if let directive = inlineBlockingCSPDirective(["style-src", "default-src"], directives: directives) {
+            state.inlineStyleBlockingDirective = directive
+        }
+    }
+
+    private func appendCSPMessages(
+        for element: HTMLStartElement,
+        state: CSPState,
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) {
+        if let directive = state.inlineScriptBlockingDirective {
+            for attribute in element.attributes where attribute.name.hasPrefix("on") {
+                appendWarningMessage(
+                    "Event handler attribute \u{201c}\(attribute.name)\u{201d} violates Content Security Policy (meta tag): blocked by \u{201c}\(directive)\u{201d} directive.",
+                    for: element,
+                    locations: locations,
+                    messages: &messages
+                )
+            }
+            if element.name == "script", !element.hasAttribute("src"), !element.hasAttribute("nonce") {
+                appendWarningMessage(
+                    "Inline script violates Content Security Policy (meta tag): blocked by \u{201c}\(directive)\u{201d} directive (missing \u{201c}\u{2018}unsafe-inline\u{2019}\u{201d} or nonce/hash).",
+                    for: element,
+                    locations: locations,
+                    messages: &messages
+                )
+            }
+        }
+
+        if let directive = state.inlineStyleBlockingDirective {
+            if element.hasAttribute("style") {
+                appendWarningMessage(
+                    "The \u{201c}style\u{201d} attribute violates Content Security Policy (meta tag): blocked by \u{201c}\(directive)\u{201d} directive.",
+                    for: element,
+                    locations: locations,
+                    messages: &messages
+                )
+            }
+            if element.name == "style", !element.hasAttribute("nonce") {
+                appendWarningMessage(
+                    "Inline style violates Content Security Policy (meta tag): blocked by \u{201c}\(directive)\u{201d} directive (missing \u{201c}\u{2018}unsafe-inline\u{2019}\u{201d} or nonce/hash).",
+                    for: element,
+                    locations: locations,
+                    messages: &messages
+                )
+            }
+        }
+    }
+
+    private func cspDirectives(from content: String) -> [String: Set<String>] {
+        var result: [String: Set<String>] = [:]
+        for rawDirective in content.split(separator: ";", omittingEmptySubsequences: true) {
+            let tokens = rawDirective.split(whereSeparator: { $0.isWhitespace }).map { $0.lowercased() }
+            guard let name = tokens.first, result[name] == nil else { continue }
+            result[name] = Set(tokens.dropFirst())
+        }
+        return result
+    }
+
+    private func inlineBlockingCSPDirective(_ names: [String], directives: [String: Set<String>]) -> String? {
+        for name in names {
+            guard let tokens = directives[name] else { continue }
+            if !tokens.contains("'unsafe-inline'") {
+                return name
+            }
+        }
+        return nil
+    }
+
+    private func appendNormalizationWarningIfNeeded(
+        _ content: String,
+        range: HTMLSourceRange,
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) {
+        let decoded = decodedTextForNormalization(content)
+        guard decoded.unicodeScalars.contains(where: { !isASCIIWhitespace($0) }) else { return }
+        let normalized = decoded.precomposedStringWithCanonicalMapping
+        guard Array(normalized.unicodeScalars) != Array(decoded.unicodeScalars) else { return }
+        var replacement = normalized.trimmingCharacters(in: .whitespacesAndNewlines)
+        if replacement.hasSuffix(" ?") {
+            replacement.removeLast()
+        }
+        appendWarningMessage(
+            "Text run is not in Unicode Normalization Form C. Should instead be \u{201c}\(replacement)\u{201d}. (Copy and paste that into your source document to replace the un-normalized text.)",
+            range: range,
+            locations: locations,
+            messages: &messages
+        )
+    }
+
+    private func decodedTextForNormalization(_ content: String) -> String {
+        let scalars = Array(content.unicodeScalars)
+        var output = String.UnicodeScalarView()
+        var index = 0
+
+        while index < scalars.count {
+            if let decoded = decodedNumericCharacterReference(in: scalars, index: index) {
+                output.append(decoded.scalar)
+                index = decoded.endIndex
+            } else {
+                output.append(scalars[index])
+                index += 1
+            }
+        }
+
+        return String(output)
+    }
+
+    private func decodedNumericCharacterReference(
+        in scalars: [Unicode.Scalar],
+        index: Int
+    ) -> (scalar: Unicode.Scalar, endIndex: Int)? {
+        guard index + 3 < scalars.count,
+              scalars[index].value == 38,
+              scalars[index + 1].value == 35 else {
+            return nil
+        }
+
+        var cursor = index + 2
+        let isHexadecimal: Bool
+        if scalars[cursor].value == 120 || scalars[cursor].value == 88 {
+            isHexadecimal = true
+            cursor += 1
+        } else {
+            isHexadecimal = false
+        }
+
+        var value: UInt32 = 0
+        var sawDigit = false
+        while cursor < scalars.count, scalars[cursor].value != 59 {
+            let digit: UInt32?
+            if isHexadecimal {
+                digit = hexadecimalValue(of: scalars[cursor])
+            } else if scalars[cursor].value >= 48, scalars[cursor].value <= 57 {
+                digit = scalars[cursor].value - 48
+            } else {
+                digit = nil
+            }
+            guard let digit else { return nil }
+            value = value * (isHexadecimal ? 16 : 10) + digit
+            sawDigit = true
+            cursor += 1
+        }
+
+        guard sawDigit,
+              cursor < scalars.count,
+              scalars[cursor].value == 59,
+              let scalar = Unicode.Scalar(value) else {
+            return nil
+        }
+        return (scalar, cursor + 1)
+    }
+
+    private func hexadecimalValue(of scalar: Unicode.Scalar) -> UInt32? {
+        switch scalar.value {
+        case 48...57:
+            return scalar.value - 48
+        case 65...70:
+            return scalar.value - 55
+        case 97...102:
+            return scalar.value - 87
+        default:
+            return nil
+        }
+    }
+
     private struct PictureState {
         var element: HTMLStartElement
         var sourcesMissingSizes: [HTMLStartElement] = []
@@ -825,6 +1010,11 @@ struct HTMLGeneralAttributeChecker {
         var labelableDescendantCount = 0
         var reportedMultipleDescendants = false
         var reportedForMismatch = false
+    }
+
+    private struct CSPState {
+        var inlineScriptBlockingDirective: String?
+        var inlineStyleBlockingDirective: String?
     }
 
     private struct TitleCapture {
@@ -4703,6 +4893,19 @@ struct HTMLGeneralAttributeChecker {
             message,
             location: locations.location(offset: element.range.offset, length: element.range.length),
             extract: locations.extract(offset: element.range.offset, length: element.range.length)
+        ))
+    }
+
+    private func appendWarningMessage(
+        _ message: String,
+        range: HTMLSourceRange,
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) {
+        messages.append(.warning(
+            message,
+            location: locations.location(offset: range.offset, length: range.length),
+            extract: locations.extract(offset: range.offset, length: range.length)
         ))
     }
 
