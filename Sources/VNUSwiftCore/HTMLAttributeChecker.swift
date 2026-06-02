@@ -258,17 +258,66 @@ struct HTMLURLAttributeChecker {
 struct HTMLMicrodataAttributeChecker {
     func validate(document: HTMLParsedDocument, locations: SourceLocationMap) -> [ValidationMessage] {
         var messages: [ValidationMessage] = []
+        var itemScopeStack: [Bool] = []
+        let idValues = idValues(in: document)
+        let referencedItemIDs = referencedItemIDs(in: document)
 
         for event in document.events {
-            guard case let .startElement(element) = event else { continue }
-            appendMicrodataMessages(for: element, locations: locations, messages: &messages)
+            switch event {
+            case let .startElement(element):
+                appendMicrodataMessages(
+                    for: element,
+                    hasItemAncestor: itemScopeStack.contains(true),
+                    idValues: idValues,
+                    referencedItemIDs: referencedItemIDs,
+                    locations: locations,
+                    messages: &messages
+                )
+                itemScopeStack.append(element.hasAttribute("itemscope"))
+            case .endElement:
+                if !itemScopeStack.isEmpty {
+                    _ = itemScopeStack.popLast()
+                }
+            default:
+                continue
+            }
         }
 
         return messages
     }
 
+    private func idValues(in document: HTMLParsedDocument) -> Set<String> {
+        var result: Set<String> = []
+        for event in document.events {
+            guard case let .startElement(element) = event,
+                  let id = element.attributeValue("id"),
+                  !id.isEmpty else {
+                continue
+            }
+            result.insert(id)
+        }
+        return result
+    }
+
+    private func referencedItemIDs(in document: HTMLParsedDocument) -> Set<String> {
+        var result: Set<String> = []
+        for event in document.events {
+            guard case let .startElement(element) = event,
+                  let itemref = element.attributeValue("itemref") else {
+                continue
+            }
+            for token in microdataTokens(itemref) {
+                result.insert(token)
+            }
+        }
+        return result
+    }
+
     private func appendMicrodataMessages(
         for element: HTMLStartElement,
+        hasItemAncestor: Bool,
+        idValues: Set<String>,
+        referencedItemIDs: Set<String>,
         locations: SourceLocationMap,
         messages: inout [ValidationMessage]
     ) {
@@ -291,14 +340,51 @@ struct HTMLMicrodataAttributeChecker {
             )
         }
 
-        if element.hasAttribute("itemref"), !element.hasAttribute("itemscope") {
+        if let itemref = element.attributeValue("itemref") {
+            if !element.hasAttribute("itemscope") {
+                appendMessage(
+                    "The \u{201c}itemref\u{201d} attribute must not be specified on elements that do not have an \u{201c}itemscope\u{201d} attribute specified.",
+                    for: element,
+                    locations: locations,
+                    messages: &messages
+                )
+            }
+            let tokens = microdataTokens(itemref)
+            if Set(tokens).count < tokens.count {
+                appendMessage(
+                    "The \u{201c}itemref\u{201d} attribute contained redundant references.",
+                    for: element,
+                    locations: locations,
+                    messages: &messages
+                )
+            }
+            if let missing = tokens.first(where: { !idValues.contains($0) }) {
+                appendMessage(
+                    "The \u{201c}itemref\u{201d} attribute referenced \u{201c}\(missing)\u{201d}, but there is no element with an \u{201c}id\u{201d} attribute with that value.",
+                    for: element,
+                    locations: locations,
+                    messages: &messages
+                )
+            }
+        }
+
+        let isReferencedProperty = element.attributeValue("id").map { referencedItemIDs.contains($0) } ?? false
+        if element.hasAttribute("itemprop"),
+           !hasItemAncestor,
+           !isReferencedProperty {
             appendMessage(
-                "The \u{201c}itemref\u{201d} attribute must not be specified on elements that do not have an \u{201c}itemscope\u{201d} attribute specified.",
+                "The \u{201c}itemprop\u{201d} attribute was specified, but the element is not a property of any item.",
                 for: element,
                 locations: locations,
                 messages: &messages
             )
         }
+    }
+
+    private func microdataTokens(_ value: String) -> [String] {
+        value.split { scalar in
+            scalar == " " || scalar == "\t" || scalar == "\n" || scalar == "\r" || scalar == "\u{0C}"
+        }.map(String.init)
     }
 
     private func appendMessage(
@@ -329,6 +415,11 @@ struct HTMLGeneralAttributeChecker {
         var figureStack: [FigureState] = []
         var detailsStack: [DetailsState] = []
         var sectioningStack: [SectioningState] = []
+        var headingStack: [HeadingState] = []
+        var headingLevels: [Int] = []
+        var firstHeadingElement: HTMLStartElement?
+        var rubyStack: [RubyState] = []
+        var optgroupStack: [OptgroupState] = []
         var scriptContent: ScriptContentState?
         var styleContent: StyleContentState?
         var titleCapture: TitleCapture?
@@ -359,6 +450,18 @@ struct HTMLGeneralAttributeChecker {
                     for index in sectioningStack.indices {
                         sectioningStack[index].hasHeading = true
                     }
+                }
+                if let level = Self.headingLevel(for: element.name) {
+                    headingStack.append(HeadingState(element: element, level: level))
+                }
+                if let rubyIndex = rubyStack.indices.last, parent == "ruby" {
+                    rubyStack[rubyIndex].directChildNames.append(element.name)
+                    if !Self.rubyAnnotationElements.contains(element.name) {
+                        rubyStack[rubyIndex].sawBaseContent = true
+                    }
+                }
+                if parent == "optgroup", element.name == "legend", let optgroupIndex = optgroupStack.indices.last {
+                    optgroupStack[optgroupIndex].sawLegend = true
                 }
                 appendDisallowedAttributeMessages(for: element, parent: parent, locations: locations, messages: &messages)
                 appendDatatypeAttributeMessages(for: element, locations: locations, messages: &messages)
@@ -465,6 +568,12 @@ struct HTMLGeneralAttributeChecker {
                 if element.name == "details" {
                     detailsStack.append(DetailsState(element: element))
                 }
+                if element.name == "ruby" {
+                    rubyStack.append(RubyState(element: element))
+                }
+                if element.name == "optgroup" {
+                    optgroupStack.append(OptgroupState(element: element, hasLabel: element.hasAttribute("label")))
+                }
                 if element.name == "article" || element.name == "section" {
                     sectioningStack.append(SectioningState(element: element))
                 }
@@ -511,6 +620,15 @@ struct HTMLGeneralAttributeChecker {
                 if (name == "article" || name == "section"), let state = sectioningStack.popLast(), !state.hasHeading {
                     appendSectioningHeadingWarning(for: state.element, locations: locations, messages: &messages)
                 }
+                if Self.headingElements.contains(name), let state = headingStack.popLast() {
+                    appendHeadingMessages(state, headingLevels: &headingLevels, firstHeadingElement: &firstHeadingElement, locations: locations, messages: &messages)
+                }
+                if name == "ruby", let state = rubyStack.popLast() {
+                    appendRubyMessages(state, locations: locations, messages: &messages)
+                }
+                if name == "optgroup", let state = optgroupStack.popLast() {
+                    appendOptgroupMessages(state, locations: locations, messages: &messages)
+                }
                 if name == "title", let capture = titleCapture {
                     appendTitleMessages(capture, locations: locations, messages: &messages)
                     titleCapture = nil
@@ -537,6 +655,12 @@ struct HTMLGeneralAttributeChecker {
                 }
                 if let optionIndex = optionStack.indices.last {
                     optionStack[optionIndex].text += content
+                }
+                for index in headingStack.indices {
+                    headingStack[index].text += content
+                }
+                if stack.last == "ruby", !content.unicodeScalars.allSatisfy(isASCIIWhitespace), let rubyIndex = rubyStack.indices.last {
+                    rubyStack[rubyIndex].sawBaseContent = true
                 }
                 if stack.last == "picture", pictureStack.indices.last != nil, !content.unicodeScalars.allSatisfy(isASCIIWhitespace) {
                     appendMessage(
@@ -577,6 +701,9 @@ struct HTMLGeneralAttributeChecker {
         }
         if let activeRoleTabElement, !sawRoleTabpanel {
             appendMessage("Every active \u{201c}role=tab\u{201d} element must have a corresponding \u{201c}role=tabpanel\u{201d} element.", for: activeRoleTabElement, locations: locations, messages: &messages)
+        }
+        if !headingLevels.isEmpty, !headingLevels.contains(1), let firstHeadingElement {
+            appendWarningMessage("This document has heading elements but none of them has a computed heading level of 1.", for: firstHeadingElement, locations: locations, messages: &messages)
         }
         return messages
     }
@@ -669,6 +796,24 @@ struct HTMLGeneralAttributeChecker {
     private struct SectioningState {
         var element: HTMLStartElement
         var hasHeading = false
+    }
+
+    private struct HeadingState {
+        var element: HTMLStartElement
+        var level: Int
+        var text = ""
+    }
+
+    private struct RubyState {
+        var element: HTMLStartElement
+        var directChildNames: [String] = []
+        var sawBaseContent = false
+    }
+
+    private struct OptgroupState {
+        var element: HTMLStartElement
+        var hasLabel: Bool
+        var sawLegend = false
     }
 
     private struct LabelState {
@@ -860,11 +1005,34 @@ struct HTMLGeneralAttributeChecker {
         if element.name == "area", let type = element.attributeValue("type"), !isValidMIMEType(type) {
             appendBadAttributeValue(type, attribute: "type", for: element, locations: locations, messages: &messages)
         }
+        if element.name == "link", let type = element.attributeValue("type"), !isValidMIMEType(type) {
+            appendBadAttributeValue(type, attribute: "type", for: element, locations: locations, messages: &messages)
+        }
         if element.name == "audio", let loading = element.attributeValue("loading"), loading.lowercased() != "lazy" {
+            appendBadAttributeValue(loading, attribute: "loading", for: element, locations: locations, messages: &messages)
+        }
+        if element.name == "video", let loading = element.attributeValue("loading"), loading.lowercased() != "lazy" {
             appendBadAttributeValue(loading, attribute: "loading", for: element, locations: locations, messages: &messages)
         }
         if element.name == "audio", element.hasAttribute("controls"), stack.contains("button") {
             appendMessage("The element \u{201c}audio\u{201d} with the attribute \u{201c}controls\u{201d} must not appear as a descendant of the \u{201c}button\u{201d} element.", for: element, locations: locations, messages: &messages)
+        }
+        if element.name == "form", let acceptCharset = element.attributeValue("accept-charset"), acceptCharset.lowercased() != "utf-8" {
+            appendMessage("The only allowed value for the \u{201c}accept-charset\u{201d} attribute for the \u{201c}form\u{201d} element is \u{201c}utf-8\u{201d}.", for: element, locations: locations, messages: &messages)
+        }
+        if element.name == "ol", let start = element.attributeValue("start"), !isValidInteger(start) {
+            appendBadAttributeValue(start, attribute: "start", for: element, locations: locations, messages: &messages)
+        }
+        if element.name == "rb" {
+            appendInfoMessage("Not all browsers position items appropriately when \"tabular markup\" is used with the \u{201c}rb\u{201d} element. See https://www.w3.org/International/articles/ruby/markup.en.html#visual for more guidance.", for: element, locations: locations, messages: &messages)
+        }
+        if element.name == "rtc" {
+            appendInfoMessage("Not all browsers position items appropriately when the \u{201c}rtc\u{201d} element is used. See https://www.w3.org/International/articles/ruby/markup.en.html#visual for more guidance.", for: element, locations: locations, messages: &messages)
+        }
+        if element.name == "template",
+           let assignment = element.attributeValue("shadowrootslotassignment"),
+           !Self.shadowRootSlotAssignmentValues.contains(assignment.lowercased()) {
+            appendBadAttributeValue(assignment, attribute: "shadowrootslotassignment", for: element, locations: locations, messages: &messages)
         }
         if element.name == "address", stack.contains("address") {
             appendMessage("The element \u{201c}address\u{201d} must not appear as a descendant of the \u{201c}address\u{201d} element.", for: element, locations: locations, messages: &messages)
@@ -875,6 +1043,50 @@ struct HTMLGeneralAttributeChecker {
         if element.name == "footer" || element.name == "header",
            let ancestor = stack.last(where: { $0 == "footer" || $0 == "header" }) {
             appendMessage("The element \u{201c}\(element.name)\u{201d} must not appear as a descendant of the \u{201c}\(ancestor)\u{201d} element.", for: element, locations: locations, messages: &messages)
+        }
+    }
+
+    private func appendHeadingMessages(
+        _ state: HeadingState,
+        headingLevels: inout [Int],
+        firstHeadingElement: inout HTMLStartElement?,
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) {
+        let trimmedText = state.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmedText.isEmpty {
+            appendWarningMessage("Empty heading.", for: state.element, locations: locations, messages: &messages)
+            return
+        }
+
+        if firstHeadingElement == nil {
+            firstHeadingElement = state.element
+        }
+        if let previousLevel = headingLevels.last, state.level > previousLevel + 1 {
+            appendMessage("The heading \u{201c}\(state.element.name)\u{201d} (with computed level \(state.level)) follows the heading \u{201c}h\(previousLevel)\u{201d} (with computed level \(previousLevel)), skipping \(state.level - previousLevel - 1) heading level.", for: state.element, locations: locations, messages: &messages)
+        }
+        headingLevels.append(state.level)
+    }
+
+    private func appendRubyMessages(
+        _ state: RubyState,
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) {
+        if !state.sawBaseContent && state.directChildNames.isEmpty {
+            appendMessage("Element \u{201c}ruby\u{201d} is missing a required instance of one or more of the following child elements: \u{201c}rp\u{201d}, \u{201c}rt\u{201d}, \u{201c}rtc\u{201d}.", for: state.element, locations: locations, messages: &messages)
+        } else if !state.sawBaseContent && state.directChildNames.contains("rt") {
+            appendMessage("Element \u{201c}ruby\u{201d} is missing a required instance of child element \u{201c}rt\u{201d}.", for: state.element, locations: locations, messages: &messages)
+        }
+    }
+
+    private func appendOptgroupMessages(
+        _ state: OptgroupState,
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) {
+        if !state.hasLabel && !state.sawLegend {
+            appendMessage("An \u{201c}optgroup\u{201d} element with no child \u{201c}legend\u{201d} element must have a \u{201c}label\u{201d} attribute.", for: state.element, locations: locations, messages: &messages)
         }
     }
 
@@ -1509,6 +1721,9 @@ struct HTMLGeneralAttributeChecker {
             } else if role != "textbox" && role != "searchbox" {
                 appendAttributeNotAllowed("aria-placeholder", for: element, locations: locations, messages: &messages)
             }
+        }
+        if element.name == "output", element.hasAttribute("aria-pressed"), role == nil {
+            appendMessage("Element \u{201c}output\u{201d} is missing required attribute \u{201c}role\u{201d}.", for: element, locations: locations, messages: &messages)
         }
         if normalizedAttributeValue("aria-readonly", for: element) == "true", role == nil {
             appendMessage("Element \u{201c}\(element.name)\u{201d} is missing one or more of the following attributes: \u{201c}aria-checked\u{201d}, \u{201c}aria-expanded\u{201d}, \u{201c}aria-valuenow\u{201d}, \u{201c}role\u{201d}.", for: element, locations: locations, messages: &messages)
@@ -2275,6 +2490,16 @@ struct HTMLGeneralAttributeChecker {
         return Int(value) != nil
     }
 
+    private func isValidInteger(_ value: String) -> Bool {
+        guard !value.isEmpty else { return false }
+        let scalars = Array(value.unicodeScalars)
+        let digitStart = scalars.first?.value == 43 || scalars.first?.value == 45 ? 1 : 0
+        guard digitStart < scalars.count else { return false }
+        return scalars[digitStart...].allSatisfy { scalar in
+            scalar.value >= 48 && scalar.value <= 57
+        }
+    }
+
     private func isValidPositiveInteger(_ value: String) -> Bool {
         guard let parsed = Int(value), String(parsed) == value else { return false }
         return parsed > 0
@@ -2282,6 +2507,7 @@ struct HTMLGeneralAttributeChecker {
 
     private func isValidMIMEType(_ value: String) -> Bool {
         let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard trimmed == value else { return false }
         let parts = trimmed.split(separator: "/", omittingEmptySubsequences: false)
         guard parts.count == 2, !parts[0].isEmpty, !parts[1].isEmpty else {
             return false
@@ -4413,10 +4639,28 @@ struct HTMLGeneralAttributeChecker {
         "h1", "h2", "h3", "h4", "h5", "h6", "hgroup"
     ]
 
+    private static let rubyAnnotationElements: Set<String> = [
+        "rp", "rt", "rtc"
+    ]
+
+    private static let shadowRootSlotAssignmentValues: Set<String> = [
+        "manual", "named"
+    ]
+
     private static let headingProhibitedRoles: Set<String> = [
         "alert", "alertdialog", "application", "dialog", "document", "feed", "listbox", "log",
         "marquee", "math", "note", "status", "tabpanel", "timer", "toolbar"
     ]
+
+    private static func headingLevel(for name: String) -> Int? {
+        guard name.count == 2,
+              name.first == "h",
+              let digit = name.last?.wholeNumberValue,
+              (1...6).contains(digit) else {
+            return nil
+        }
+        return digit
+    }
 
     private static let zero = UInt8(ascii: "0")
     private static let plus = UInt8(ascii: "+")

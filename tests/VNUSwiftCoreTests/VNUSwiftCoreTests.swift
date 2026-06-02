@@ -128,10 +128,13 @@ import Testing
 }
 
 @Test func microdataAttributeCheckerEnforcesItemScopeDependencies() {
-    let result = checkHTML("<!doctype html><html lang=en><meta charset=utf-8><title>T</title><div itemtype=\"http://schema.org/Thing\"></div><div itemscope itemid=\"urn:uuid:12345\"></div><div itemref=x></div>")
+    let result = checkHTML("<!doctype html><html lang=en><meta charset=utf-8><title>T</title><div itemtype=\"http://schema.org/Thing\"></div><div itemscope itemid=\"urn:uuid:12345\"></div><div itemref=x></div><span itemprop=name>Orphan</span><div itemscope itemref=\"missing ref ref\"></div><div id=ref itemprop=name>Name</div>")
     #expect(result.messages.contains { $0.message == "The \u{201c}itemtype\u{201d} attribute must not be specified on elements that do not have an \u{201c}itemscope\u{201d} attribute specified." })
     #expect(result.messages.contains { $0.message == "The \u{201c}itemid\u{201d} attribute must not be specified on elements that do not have both an \u{201c}itemscope\u{201d} attribute and an \u{201c}itemtype\u{201d} attribute specified." })
     #expect(result.messages.contains { $0.message == "The \u{201c}itemref\u{201d} attribute must not be specified on elements that do not have an \u{201c}itemscope\u{201d} attribute specified." })
+    #expect(result.messages.contains { $0.message == "The \u{201c}itemprop\u{201d} attribute was specified, but the element is not a property of any item." })
+    #expect(result.messages.contains { $0.message == "The \u{201c}itemref\u{201d} attribute referenced \u{201c}missing\u{201d}, but there is no element with an \u{201c}id\u{201d} attribute with that value." })
+    #expect(result.messages.contains { $0.message == "The \u{201c}itemref\u{201d} attribute contained redundant references." })
 }
 
 @Test func generalAttributeCheckerCoversLinkAndHreflangConstraints() {
@@ -310,9 +313,12 @@ import Testing
 }
 
 @Test func htmlValidatorCoversObsoleteElementWordingAndProfile() {
-    let result = checkHTML("<!doctype html><html lang=en><head profile=\"http://example.test\"><title>T</title></head><body><center>x</center><dir><li>x</li></dir></body></html>")
+    let result = checkHTML("<!doctype html><html lang=en><head profile=\"http://example.test\"><title>T</title></head><body><center>x</center><dir><li>x</li></dir><blink>x</blink><menuitem label=x>x</menuitem><object data=x><param name=p value=v></object></body></html>")
     #expect(result.messages.contains { $0.message == "The \u{201c}center\u{201d} element is obsolete. Use CSS instead." })
     #expect(result.messages.contains { $0.message == "The \u{201c}dir\u{201d} element is obsolete. Use the \u{201c}ul\u{201d} element instead." })
+    #expect(result.messages.contains { $0.message == "The \u{201c}blink\u{201d} element is a completely-unknown element that is not allowed anywhere in any HTML content." })
+    #expect(result.messages.contains { $0.message == "The \u{201c}menuitem\u{201d} element is a completely-unknown element that is not allowed anywhere in any HTML content." })
+    #expect(result.messages.contains { $0.message == "The \u{201c}param\u{201d} element is obsolete. Use the \u{201c}data\u{201d} attribute of the \u{201c}object\u{201d} element to set the URL of the external resource." })
     #expect(result.messages.contains { $0.message == "The \u{201c}profile\u{201d} attribute on the \u{201c}head\u{201d} element is obsolete. To declare which \u{201c}meta\u{201d} terms are used in the document, instead register the names as meta extensions. To trigger specific UA behaviors, use a \u{201c}link\u{201d} element instead." && $0.subType == "warning" })
 }
 
@@ -382,6 +388,38 @@ import Testing
     #expect(result.messages.contains { $0.message == "The element \u{201c}audio\u{201d} with the attribute \u{201c}controls\u{201d} must not appear as a descendant of the \u{201c}button\u{201d} element." })
     #expect(result.messages.contains { $0.message == "The element \u{201c}footer\u{201d} must not appear as a descendant of the \u{201c}header\u{201d} element." })
     #expect(result.messages.contains { $0.message == "The element \u{201c}header\u{201d} must not appear as a descendant of the \u{201c}footer\u{201d} element." })
+}
+
+@Test func generalAttributeCheckerCoversHeadingsRubyAndSmallElementRules() {
+    let result = checkHTML("""
+        <!doctype html><html lang=en><meta charset=utf-8><title>T</title>
+        <h2></h2><h1>Main</h1><h3>Skipped</h3>
+        <ruby></ruby><ruby><rt></rt><rp></rp><rp></rp></ruby>
+        <ruby><rb>Base</rb><rt>Annotation</rt><rtc>Alt</rtc></ruby>
+        <form accept-charset=iso-8859-1></form>
+        <ol start=abc><li>Item</li></ol>
+        <select><optgroup><option>Alpha</option></optgroup></select>
+        <output aria-pressed=true>Result</output>
+        <video loading=auto></video>
+        <link rel=stylesheet href=x type="text/html ">
+        <template shadowrootmode=open shadowrootslotassignment=invalid></template>
+        """)
+    #expect(result.messages.contains { $0.message == "Empty heading." && $0.subType == "warning" })
+    #expect(result.messages.contains { $0.message == "The heading \u{201c}h3\u{201d} (with computed level 3) follows the heading \u{201c}h1\u{201d} (with computed level 1), skipping 1 heading level." })
+    #expect(result.messages.contains { $0.message == "Element \u{201c}ruby\u{201d} is missing a required instance of one or more of the following child elements: \u{201c}rp\u{201d}, \u{201c}rt\u{201d}, \u{201c}rtc\u{201d}." })
+    #expect(result.messages.contains { $0.message == "Element \u{201c}ruby\u{201d} is missing a required instance of child element \u{201c}rt\u{201d}." })
+    #expect(result.messages.contains { $0.message == "Not all browsers position items appropriately when \"tabular markup\" is used with the \u{201c}rb\u{201d} element. See https://www.w3.org/International/articles/ruby/markup.en.html#visual for more guidance." && $0.type == "info" })
+    #expect(result.messages.contains { $0.message == "Not all browsers position items appropriately when the \u{201c}rtc\u{201d} element is used. See https://www.w3.org/International/articles/ruby/markup.en.html#visual for more guidance." && $0.type == "info" })
+    #expect(result.messages.contains { $0.message == "The only allowed value for the \u{201c}accept-charset\u{201d} attribute for the \u{201c}form\u{201d} element is \u{201c}utf-8\u{201d}." })
+    #expect(result.messages.contains { $0.message == "Bad value \u{201c}abc\u{201d} for attribute \u{201c}start\u{201d} on element \u{201c}ol\u{201d}." })
+    #expect(result.messages.contains { $0.message == "An \u{201c}optgroup\u{201d} element with no child \u{201c}legend\u{201d} element must have a \u{201c}label\u{201d} attribute." })
+    #expect(result.messages.contains { $0.message == "Element \u{201c}output\u{201d} is missing required attribute \u{201c}role\u{201d}." })
+    #expect(result.messages.contains { $0.message == "Bad value \u{201c}auto\u{201d} for attribute \u{201c}loading\u{201d} on element \u{201c}video\u{201d}." })
+    #expect(result.messages.contains { $0.message == "Bad value \u{201c}text/html \u{201d} for attribute \u{201c}type\u{201d} on element \u{201c}link\u{201d}." })
+    #expect(result.messages.contains { $0.message == "Bad value \u{201c}invalid\u{201d} for attribute \u{201c}shadowrootslotassignment\u{201d} on element \u{201c}template\u{201d}." })
+
+    let noTopLevel = checkHTML("<!doctype html><html lang=en><meta charset=utf-8><title>T</title><h3>Only subheading</h3>")
+    #expect(noTopLevel.messages.contains { $0.message == "This document has heading elements but none of them has a computed heading level of 1." && $0.subType == "warning" })
 }
 
 @Test func metaCheckerCoversDocumentAndContentRules() {
@@ -673,6 +711,19 @@ import Testing
     #expect(result.messages.contains { $0.message == "Text not allowed in \u{201c}figure\u{201d} in this context." })
     #expect(result.messages.contains { $0.message == "The element \u{201c}footer\u{201d} must not appear as a descendant of the \u{201c}header\u{201d} element." })
     #expect(result.messages.contains { $0.message == "The element \u{201c}header\u{201d} must not appear as a descendant of the \u{201c}footer\u{201d} element." })
+}
+
+@Test func xmlValidatorCoversXHTMLRubyRules() {
+    let result = NuValidator().check(
+        input: DocumentInput(data: Data("""
+            <html xmlns="http://www.w3.org/1999/xhtml"><head><title>T</title></head><body>
+            <ruby></ruby><ruby><rt></rt><rp></rp><rp></rp></ruby>
+            </body></html>
+            """.utf8), contentType: "application/xhtml+xml; charset=utf-8"),
+        options: CheckerOptions(parameters: ["out": ["json"]])
+    )
+    #expect(result.messages.contains { $0.message == "Element \u{201c}ruby\u{201d} is missing a required instance of one or more of the following child elements: \u{201c}rp\u{201d}, \u{201c}rt\u{201d}, \u{201c}rtc\u{201d}." })
+    #expect(result.messages.contains { $0.message == "Element \u{201c}ruby\u{201d} is missing a required instance of child element \u{201c}rt\u{201d}." })
 }
 
 @Test func xmlValidatorCoversXHTMLGlobalAttributeValues() {

@@ -188,6 +188,8 @@ public final class HTMLValidator: Sendable {
             } else {
                 appendError("The \u{201c}\(name)\u{201d} element is obsolete. Use CSS instead.", offset: offset, length: length, locations: locations, messages: &messages)
             }
+        } else if name == "menuitem", stack.last?.name != "menu" {
+            appendError("The \u{201c}menuitem\u{201d} element is a completely-unknown element that is not allowed anywhere in any HTML content.", offset: offset, length: length, locations: locations, messages: &messages)
         } else if name.contains("-") {
             if !isValidAutonomousCustomElementName(name) {
                 appendError("Element \u{201c}\(name)\u{201d} not allowed.", offset: offset, length: length, locations: locations, messages: &messages)
@@ -343,8 +345,12 @@ public final class HTMLValidator: Sendable {
             return "The \u{201c}acronym\u{201d} element is obsolete. Use the \u{201c}abbr\u{201d} element instead."
         case "applet":
             return "The \u{201c}applet\u{201d} element is obsolete. Use \u{201c}embed\u{201d} or \u{201c}object\u{201d} element instead."
+        case "blink":
+            return "The \u{201c}blink\u{201d} element is a completely-unknown element that is not allowed anywhere in any HTML content."
         case "dir":
             return "The \u{201c}dir\u{201d} element is obsolete. Use the \u{201c}ul\u{201d} element instead."
+        case "param":
+            return "The \u{201c}param\u{201d} element is obsolete. Use the \u{201c}data\u{201d} attribute of the \u{201c}object\u{201d} element to set the URL of the external resource."
         case "frameset", "noframes":
             return "The \u{201c}\(name)\u{201d} element is obsolete. Use the \u{201c}iframe\u{201d} element and CSS instead, or use server-side includes."
         case "strike":
@@ -1447,7 +1453,7 @@ enum HTMLVocabulary {
     static let obsoleteElements: Set<String> = [
         "acronym", "applet", "basefont", "bgsound", "big", "blink", "center", "dir",
         "font", "frame", "frameset", "keygen", "marquee", "nobr", "noembed",
-        "noframes", "plaintext", "rb", "rtc", "strike", "tt", "xmp"
+        "noframes", "param", "plaintext", "rb", "rtc", "strike", "tt", "xmp"
     ]
 
     static let transparentElements: Set<String> = [

@@ -21,6 +21,12 @@ public final class XMLValidator: NSObject, XMLParserDelegate, @unchecked Sendabl
         var sawFigcaption = false
     }
 
+    private struct RubyContext {
+        var location: SourceLocation
+        var directChildNames: [String] = []
+        var sawBaseContent = false
+    }
+
     private var messages: [ValidationMessage] = []
     private var idElementNames: [String: String] = [:]
     private var pendingInputListReferences: [PendingInputListReference] = []
@@ -29,6 +35,7 @@ public final class XMLValidator: NSObject, XMLParserDelegate, @unchecked Sendabl
     private var definitionListContexts: [DefinitionListContext] = []
     private var dtCaptures: [DTCapture] = []
     private var figureContexts: [FigureContext] = []
+    private var rubyContexts: [RubyContext] = []
     private var tableChecker = HTMLTableModelChecker(mode: .xhtml)
 
     public func validate(data: Data, source: String) -> [ValidationMessage] {
@@ -40,6 +47,7 @@ public final class XMLValidator: NSObject, XMLParserDelegate, @unchecked Sendabl
         definitionListContexts = []
         dtCaptures = []
         figureContexts = []
+        rubyContexts = []
         tableChecker = HTMLTableModelChecker(mode: .xhtml)
         let parser = XMLParser(data: data)
         parser.delegate = self
@@ -89,6 +97,12 @@ public final class XMLValidator: NSObject, XMLParserDelegate, @unchecked Sendabl
             location: location,
             extract: nil
         ))
+        if elementStack.last == "ruby", let index = rubyContexts.indices.last {
+            rubyContexts[index].directChildNames.append(name)
+            if !Self.xhtmlRubyAnnotationElements.contains(name) {
+                rubyContexts[index].sawBaseContent = true
+            }
+        }
         appendXHTMLContentModelMessages(element: name, attributes: normalizedAttributes, location: location)
         appendGlobalAttributeMessages(element: name, attributes: attributeDict, location: location)
         if name == "base",
@@ -142,6 +156,9 @@ public final class XMLValidator: NSObject, XMLParserDelegate, @unchecked Sendabl
         if name == "figure" {
             figureContexts.append(FigureContext(depth: elementStack.count))
         }
+        if name == "ruby" {
+            rubyContexts.append(RubyContext(location: location))
+        }
         elementStack.append(name)
         anchorHrefStack.append(name == "a" && attributeDict["href"] != nil)
     }
@@ -165,6 +182,9 @@ public final class XMLValidator: NSObject, XMLParserDelegate, @unchecked Sendabl
         }
         if name == "figure", !figureContexts.isEmpty {
             _ = figureContexts.popLast()
+        }
+        if name == "ruby", let context = rubyContexts.popLast() {
+            appendXHTMLRubyMessages(context)
         }
         tableChecker.endElement(name)
         if let index = elementStack.lastIndex(of: name) {
@@ -256,6 +276,23 @@ public final class XMLValidator: NSObject, XMLParserDelegate, @unchecked Sendabl
            let index = figureContexts.indices.last,
            figureContexts[index].sawFigcaption {
             messages.append(.error("Text not allowed in \u{201c}figure\u{201d} in this context.", location: location))
+        }
+        if elementStack.last == "ruby", let index = rubyContexts.indices.last {
+            rubyContexts[index].sawBaseContent = true
+        }
+    }
+
+    private func appendXHTMLRubyMessages(_ context: RubyContext) {
+        if !context.sawBaseContent && context.directChildNames.isEmpty {
+            messages.append(.error(
+                "Element \u{201c}ruby\u{201d} is missing a required instance of one or more of the following child elements: \u{201c}rp\u{201d}, \u{201c}rt\u{201d}, \u{201c}rtc\u{201d}.",
+                location: context.location
+            ))
+        } else if !context.sawBaseContent && context.directChildNames.contains("rt") {
+            messages.append(.error(
+                "Element \u{201c}ruby\u{201d} is missing a required instance of child element \u{201c}rt\u{201d}.",
+                location: context.location
+            ))
         }
     }
 
@@ -500,6 +537,10 @@ public final class XMLValidator: NSObject, XMLParserDelegate, @unchecked Sendabl
 
     private static let xhtmlMenuChildElements: Set<String> = [
         "li", "script", "template"
+    ]
+
+    private static let xhtmlRubyAnnotationElements: Set<String> = [
+        "rp", "rt", "rtc"
     ]
 }
 
