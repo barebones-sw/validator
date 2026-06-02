@@ -325,7 +325,10 @@ struct HTMLGeneralAttributeChecker {
         var pictureStack: [PictureState] = []
         var mediaStack: [MediaState] = []
         var selectStack: [SelectState] = []
+        var optionStack: [OptionState] = []
         var figureStack: [FigureState] = []
+        var detailsStack: [DetailsState] = []
+        var sectioningStack: [SectioningState] = []
         var scriptContent: ScriptContentState?
         var styleContent: StyleContentState?
         var titleCapture: TitleCapture?
@@ -352,11 +355,17 @@ struct HTMLGeneralAttributeChecker {
                 if role == "tabpanel" {
                     sawRoleTabpanel = true
                 }
+                if Self.sectioningHeadingElements.contains(element.name) {
+                    for index in sectioningStack.indices {
+                        sectioningStack[index].hasHeading = true
+                    }
+                }
                 appendDisallowedAttributeMessages(for: element, parent: parent, locations: locations, messages: &messages)
                 appendDatatypeAttributeMessages(for: element, locations: locations, messages: &messages)
                 appendGlobalAttributeMessages(for: element, locations: locations, messages: &messages)
                 appendBaseMessages(for: element, sawBodyContentBeforeBase: sawBodyContentBeforeBase, sawBaseBlockingElement: sawBaseBlockingElement, locations: locations, messages: &messages)
                 appendStructuralAssertionMessages(for: element, stack: stack, mapNames: mapNames, locations: locations, messages: &messages)
+                appendElementSpecificMessages(for: element, stack: stack, locations: locations, messages: &messages)
                 appendLabelForReferenceMessages(for: element, idLabelableElementNames: idLabelableElementNames, locations: locations, messages: &messages)
                 appendAutofocusMessages(for: element, autofocusCount: &autofocusCount, locations: locations, messages: &messages)
                 appendARIAAttributeMessages(
@@ -395,6 +404,16 @@ struct HTMLGeneralAttributeChecker {
                         appendMessage("Element \u{201c}figcaption\u{201d} not allowed as child of \u{201c}figure\u{201d} in this context.", for: element, locations: locations, messages: &messages)
                     }
                     figureStack[figureIndex].figcaptionCount += 1
+                    figureStack[figureIndex].sawFigcaption = true
+                    if figureStack[figureIndex].hasRole, !figureStack[figureIndex].reportedRoleWithFigcaption {
+                        appendMessage("A \u{201c}figure\u{201d} element with a \u{201c}figcaption\u{201d} descendant must not have a \u{201c}role\u{201d} attribute.", for: figureStack[figureIndex].element, locations: locations, messages: &messages)
+                        figureStack[figureIndex].reportedRoleWithFigcaption = true
+                    }
+                } else if parent == "figure", let figureIndex = figureStack.indices.last, figureStack[figureIndex].sawFigcaption {
+                    appendMessage("Element \u{201c}\(element.name)\u{201d} not allowed as child of \u{201c}figure\u{201d} in this context.", for: element, locations: locations, messages: &messages)
+                }
+                if element.name == "caption", stack.contains("figure"), stack.contains("table") {
+                    appendWarningMessage("When a \u{201c}table\u{201d} element is the only content in a \u{201c}figure\u{201d} element other than the \u{201c}figcaption\u{201d}, the \u{201c}caption\u{201d} element should be omitted in favor of the \u{201c}figcaption\u{201d}.", for: element, locations: locations, messages: &messages)
                 }
                 if element.name == "audio" || element.name == "video" {
                     mediaStack.append(MediaState(element: element))
@@ -411,6 +430,22 @@ struct HTMLGeneralAttributeChecker {
                         selectStack[selectIndex].firstOptionValue = element.attributeValue("value")
                     }
                 }
+                if element.name == "option" {
+                    optionStack.append(OptionState(element: element, hasLabel: element.hasAttribute("label")))
+                }
+                if parent == "details", let detailsIndex = detailsStack.indices.last {
+                    if element.name == "summary" {
+                        if detailsStack[detailsIndex].sawSummary {
+                            appendMessage("Element \u{201c}summary\u{201d} not allowed as child of \u{201c}details\u{201d} in this context.", for: element, locations: locations, messages: &messages)
+                        } else if detailsStack[detailsIndex].sawNonSummaryChild, !detailsStack[detailsIndex].reportedMissingSummary {
+                            appendMessage("Element \u{201c}details\u{201d} is missing a required instance of child element \u{201c}summary\u{201d}.", for: detailsStack[detailsIndex].element, locations: locations, messages: &messages)
+                            detailsStack[detailsIndex].reportedMissingSummary = true
+                        }
+                        detailsStack[detailsIndex].sawSummary = true
+                    } else if !Self.metadataElements.contains(element.name) {
+                        detailsStack[detailsIndex].sawNonSummaryChild = true
+                    }
+                }
                 if element.name == "script" {
                     scriptContent = scriptContentState(for: element)
                 }
@@ -425,7 +460,13 @@ struct HTMLGeneralAttributeChecker {
                     pictureStack.append(PictureState(element: element))
                 }
                 if element.name == "figure" {
-                    figureStack.append(FigureState(element: element))
+                    figureStack.append(FigureState(element: element, hasRole: element.hasAttribute("role")))
+                }
+                if element.name == "details" {
+                    detailsStack.append(DetailsState(element: element))
+                }
+                if element.name == "article" || element.name == "section" {
+                    sectioningStack.append(SectioningState(element: element))
                 }
                 if element.name == "label" {
                     labelStack.append(LabelState(
@@ -452,6 +493,9 @@ struct HTMLGeneralAttributeChecker {
                 if name == "select", let state = selectStack.popLast() {
                     appendSelectMessages(state, locations: locations, messages: &messages)
                 }
+                if name == "option", let state = optionStack.popLast() {
+                    appendOptionMessages(state, locations: locations, messages: &messages)
+                }
                 if name == "picture", let state = pictureStack.popLast() {
                     appendPictureMessages(state, locations: locations, messages: &messages)
                 }
@@ -460,6 +504,12 @@ struct HTMLGeneralAttributeChecker {
                 }
                 if name == "audio" || name == "video", !mediaStack.isEmpty {
                     _ = mediaStack.popLast()
+                }
+                if name == "details", let state = detailsStack.popLast(), state.sawNonSummaryChild, !state.sawSummary, !state.reportedMissingSummary {
+                    appendMessage("Element \u{201c}details\u{201d} is missing a required instance of child element \u{201c}summary\u{201d}.", for: state.element, locations: locations, messages: &messages)
+                }
+                if (name == "article" || name == "section"), let state = sectioningStack.popLast(), !state.hasHeading {
+                    appendSectioningHeadingWarning(for: state.element, locations: locations, messages: &messages)
                 }
                 if name == "title", let capture = titleCapture {
                     appendTitleMessages(capture, locations: locations, messages: &messages)
@@ -485,9 +535,30 @@ struct HTMLGeneralAttributeChecker {
                    stack.contains("option") {
                     selectStack[selectIndex].firstOptionText += content
                 }
+                if let optionIndex = optionStack.indices.last {
+                    optionStack[optionIndex].text += content
+                }
                 if stack.last == "picture", pictureStack.indices.last != nil, !content.unicodeScalars.allSatisfy(isASCIIWhitespace) {
                     appendMessage(
                         "Text not allowed in \u{201c}picture\u{201d} in this context.",
+                        range: range,
+                        locations: locations,
+                        messages: &messages
+                    )
+                }
+                if stack.last == "figure", let figureIndex = figureStack.indices.last,
+                   figureStack[figureIndex].sawFigcaption,
+                   !content.unicodeScalars.allSatisfy(isASCIIWhitespace) {
+                    appendMessage(
+                        "Text not allowed in \u{201c}figure\u{201d} in this context.",
+                        range: range,
+                        locations: locations,
+                        messages: &messages
+                    )
+                }
+                if stack.contains("iframe"), !content.unicodeScalars.allSatisfy(isASCIIWhitespace) {
+                    appendMessage(
+                        "Text not allowed in \u{201c}iframe\u{201d} in this context.",
                         range: range,
                         locations: locations,
                         messages: &messages
@@ -574,9 +645,30 @@ struct HTMLGeneralAttributeChecker {
         var firstOptionText = ""
     }
 
+    private struct OptionState {
+        var element: HTMLStartElement
+        var hasLabel: Bool
+        var text = ""
+    }
+
     private struct FigureState {
         var element: HTMLStartElement
+        var hasRole: Bool
         var figcaptionCount = 0
+        var sawFigcaption = false
+        var reportedRoleWithFigcaption = false
+    }
+
+    private struct DetailsState {
+        var element: HTMLStartElement
+        var sawSummary = false
+        var sawNonSummaryChild = false
+        var reportedMissingSummary = false
+    }
+
+    private struct SectioningState {
+        var element: HTMLStartElement
+        var hasHeading = false
     }
 
     private struct LabelState {
@@ -724,6 +816,19 @@ struct HTMLGeneralAttributeChecker {
             disallowed = Self.pictureSourceDisallowedAttributes
         } else if element.name == "img" {
             disallowed = element.hasAttribute("type") ? ["type"] : []
+        } else if element.name == "a", element.hasAttribute("media") {
+            disallowed = ["media"]
+        } else if element.name == "area" {
+            var attributes: Set<String> = []
+            if element.hasAttribute("media") {
+                attributes.insert("media")
+            }
+            if normalizedAttributeValue("shape", for: element) == "default", element.hasAttribute("coords") {
+                attributes.insert("coords")
+            }
+            disallowed = attributes
+        } else if element.name == "iframe" {
+            disallowed = Set(["allowpaymentrequest", "seamless"].filter { element.hasAttribute($0) })
         } else if Self.srcsetDisallowedElements.contains(element.name), element.hasAttribute("srcset") {
             disallowed = ["srcset"]
         } else {
@@ -737,6 +842,51 @@ struct HTMLGeneralAttributeChecker {
                 locations: locations,
                 messages: &messages
             )
+        }
+    }
+
+    private func appendElementSpecificMessages(
+        for element: HTMLStartElement,
+        stack: [String],
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) {
+        if element.name == "a", element.hasAttribute("name") {
+            appendWarningMessage("The \u{201c}name\u{201d} attribute on the \u{201c}a\u{201d} element is obsolete. Consider putting an \u{201c}id\u{201d} attribute on the nearest container instead.", for: element, locations: locations, messages: &messages)
+        }
+        if element.name == "a", element.hasAttribute("href"), stack.contains("button") {
+            appendMessage("The element \u{201c}a\u{201d} with the attribute \u{201c}href\u{201d} must not appear as a descendant of the \u{201c}button\u{201d} element.", for: element, locations: locations, messages: &messages)
+        }
+        if element.name == "area", let type = element.attributeValue("type"), !isValidMIMEType(type) {
+            appendBadAttributeValue(type, attribute: "type", for: element, locations: locations, messages: &messages)
+        }
+        if element.name == "audio", let loading = element.attributeValue("loading"), loading.lowercased() != "lazy" {
+            appendBadAttributeValue(loading, attribute: "loading", for: element, locations: locations, messages: &messages)
+        }
+        if element.name == "audio", element.hasAttribute("controls"), stack.contains("button") {
+            appendMessage("The element \u{201c}audio\u{201d} with the attribute \u{201c}controls\u{201d} must not appear as a descendant of the \u{201c}button\u{201d} element.", for: element, locations: locations, messages: &messages)
+        }
+        if element.name == "address", stack.contains("address") {
+            appendMessage("The element \u{201c}address\u{201d} must not appear as a descendant of the \u{201c}address\u{201d} element.", for: element, locations: locations, messages: &messages)
+        }
+        if element.name.contains("-"), element.hasAttribute("is") {
+            appendMessage("Autonomous custom elements must not specify the \u{201c}is\u{201d} attribute.", for: element, locations: locations, messages: &messages)
+        }
+        if element.name == "footer" || element.name == "header",
+           let ancestor = stack.last(where: { $0 == "footer" || $0 == "header" }) {
+            appendMessage("The element \u{201c}\(element.name)\u{201d} must not appear as a descendant of the \u{201c}\(ancestor)\u{201d} element.", for: element, locations: locations, messages: &messages)
+        }
+    }
+
+    private func appendSectioningHeadingWarning(
+        for element: HTMLStartElement,
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) {
+        if element.name == "article" {
+            appendWarningMessage("Article lacks heading. Consider using \u{201c}h2\u{201d}-\u{201c}h6\u{201d} elements to add identifying headings to all articles.", for: element, locations: locations, messages: &messages)
+        } else if element.name == "section" {
+            appendWarningMessage("Section lacks heading. Consider using \u{201c}h2\u{201d}-\u{201c}h6\u{201d} elements to add identifying headings to all sections, or else use a \u{201c}div\u{201d} element instead for any cases where no heading is needed.", for: element, locations: locations, messages: &messages)
         }
     }
 
@@ -1366,8 +1516,12 @@ struct HTMLGeneralAttributeChecker {
         if element.hasAttribute("aria-readonly"), role == nil || !Self.ariaReadonlyRoles.contains(role ?? "") {
             appendAttributeNotAllowed("aria-readonly", for: element, locations: locations, messages: &messages)
         }
-        if element.hasAttribute("aria-selected"), role == nil || !Self.ariaSelectedRoles.contains(role ?? "") {
-            appendAttributeNotAllowed("aria-selected", for: element, locations: locations, messages: &messages)
+        if element.hasAttribute("aria-selected") {
+            if element.name == "option" {
+                appendWarningMessage("The \u{201c}aria-selected\u{201d} attribute should not be used on the \u{201c}option\u{201d} element.", for: element, locations: locations, messages: &messages)
+            } else if role == nil || !Self.ariaSelectedRoles.contains(role ?? "") {
+                appendAttributeNotAllowed("aria-selected", for: element, locations: locations, messages: &messages)
+            }
         }
         if element.hasAttribute("aria-multiselectable") {
             if element.name == "select" {
@@ -1987,6 +2141,19 @@ struct HTMLGeneralAttributeChecker {
             appendMessage("A \u{201c}select\u{201d} element with a \u{201c}required\u{201d} attribute, and without a \u{201c}multiple\u{201d} attribute, and without a \u{201c}size\u{201d} attribute whose value is greater than \u{201c}1\u{201d}, must have a child \u{201c}option\u{201d} element.", for: state.element, locations: locations, messages: &messages)
         } else if state.firstOptionValue != "" && !state.firstOptionText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             appendMessage("The first child \u{201c}option\u{201d} element of a \u{201c}select\u{201d} element with a \u{201c}required\u{201d} attribute, and without a \u{201c}multiple\u{201d} attribute, and without a \u{201c}size\u{201d} attribute whose value is greater than \u{201c}1\u{201d}, must have either an empty \u{201c}value\u{201d} attribute, or must have no text content. Consider either adding a placeholder option label, or adding a \u{201c}size\u{201d} attribute with a value equal to the number of \u{201c}option\u{201d} elements.", for: state.element, locations: locations, messages: &messages)
+        }
+    }
+
+    private func appendOptionMessages(
+        _ state: OptionState,
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) {
+        if let label = state.element.attributeValue("label"), label.isEmpty {
+            appendBadAttributeValue(label, attribute: "label", for: state.element, locations: locations, messages: &messages)
+        }
+        if !state.hasLabel, state.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            appendMessage("Element \u{201c}option\u{201d} without attribute \u{201c}label\u{201d} must not be empty.", for: state.element, locations: locations, messages: &messages)
         }
     }
 
@@ -4017,6 +4184,10 @@ struct HTMLGeneralAttributeChecker {
         "all", "print", "screen"
     ]
 
+    private static let metadataElements: Set<String> = [
+        "link", "meta", "noscript", "script", "style", "template"
+    ]
+
     private static let mainProhibitedAncestors: Set<String> = [
         "article", "aside", "footer", "header", "nav"
     ]
@@ -4236,6 +4407,10 @@ struct HTMLGeneralAttributeChecker {
 
     private static let headingElements: Set<String> = [
         "h1", "h2", "h3", "h4", "h5", "h6"
+    ]
+
+    private static let sectioningHeadingElements: Set<String> = [
+        "h1", "h2", "h3", "h4", "h5", "h6", "hgroup"
     ]
 
     private static let headingProhibitedRoles: Set<String> = [

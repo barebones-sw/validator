@@ -349,6 +349,41 @@ import Testing
     #expect(result.messages.contains { $0.message == "Start tag \u{201c}input\u{201d} seen in \u{201c}table\u{201d}." })
 }
 
+@Test func generalAttributeCheckerCoversElementSpecificContentRules() {
+    let result = checkHTML("""
+        <!doctype html><html lang=en><meta charset=utf-8><title>T</title>
+        <a media=all name=anchor>link</a><button><a href=/x>link</a></button>
+        <map name=m><area shape=default coords="1,2" media=all type="bad"></map>
+        <iframe allowpaymentrequest seamless>text</iframe>
+        <select><option aria-selected=true></option><option label=""></option></select>
+        <details><p>Before summary</p><summary>Late</summary><summary>Again</summary></details>
+        <figure role=img><img src=x alt><table><caption>Table</caption><tr><td>x</td></tr></table><figcaption>Caption</figcaption><img src=y alt></figure>
+        <address><address>Nested</address></address>
+        <article><p>No heading</p></article><section><p>No heading</p></section>
+        <button><audio controls loading=auto></audio></button>
+        <header><footer></footer></header><footer><header></header></footer>
+        """)
+    #expect(result.messages.contains { $0.message == "Attribute \u{201c}media\u{201d} not allowed on element \u{201c}a\u{201d} at this point." })
+    #expect(result.messages.contains { $0.message == "The \u{201c}name\u{201d} attribute on the \u{201c}a\u{201d} element is obsolete. Consider putting an \u{201c}id\u{201d} attribute on the nearest container instead." && $0.subType == "warning" })
+    #expect(result.messages.contains { $0.message == "The element \u{201c}a\u{201d} with the attribute \u{201c}href\u{201d} must not appear as a descendant of the \u{201c}button\u{201d} element." })
+    #expect(result.messages.contains { $0.message == "Attribute \u{201c}coords\u{201d} not allowed on element \u{201c}area\u{201d} at this point." })
+    #expect(result.messages.contains { $0.message == "Bad value \u{201c}bad\u{201d} for attribute \u{201c}type\u{201d} on element \u{201c}area\u{201d}." })
+    #expect(result.messages.contains { $0.message == "Text not allowed in \u{201c}iframe\u{201d} in this context." })
+    #expect(result.messages.contains { $0.message == "The \u{201c}aria-selected\u{201d} attribute should not be used on the \u{201c}option\u{201d} element." && $0.subType == "warning" })
+    #expect(result.messages.contains { $0.message == "Element \u{201c}option\u{201d} without attribute \u{201c}label\u{201d} must not be empty." })
+    #expect(result.messages.contains { $0.message == "Element \u{201c}details\u{201d} is missing a required instance of child element \u{201c}summary\u{201d}." })
+    #expect(result.messages.contains { $0.message == "Element \u{201c}summary\u{201d} not allowed as child of \u{201c}details\u{201d} in this context." })
+    #expect(result.messages.contains { $0.message == "A \u{201c}figure\u{201d} element with a \u{201c}figcaption\u{201d} descendant must not have a \u{201c}role\u{201d} attribute." })
+    #expect(result.messages.contains { $0.message == "When a \u{201c}table\u{201d} element is the only content in a \u{201c}figure\u{201d} element other than the \u{201c}figcaption\u{201d}, the \u{201c}caption\u{201d} element should be omitted in favor of the \u{201c}figcaption\u{201d}." && $0.subType == "warning" })
+    #expect(result.messages.contains { $0.message == "Element \u{201c}img\u{201d} not allowed as child of \u{201c}figure\u{201d} in this context." })
+    #expect(result.messages.contains { $0.message == "The element \u{201c}address\u{201d} must not appear as a descendant of the \u{201c}address\u{201d} element." })
+    #expect(result.messages.contains { $0.message == "Article lacks heading. Consider using \u{201c}h2\u{201d}-\u{201c}h6\u{201d} elements to add identifying headings to all articles." && $0.subType == "warning" })
+    #expect(result.messages.contains { $0.message == "Section lacks heading. Consider using \u{201c}h2\u{201d}-\u{201c}h6\u{201d} elements to add identifying headings to all sections, or else use a \u{201c}div\u{201d} element instead for any cases where no heading is needed." && $0.subType == "warning" })
+    #expect(result.messages.contains { $0.message == "The element \u{201c}audio\u{201d} with the attribute \u{201c}controls\u{201d} must not appear as a descendant of the \u{201c}button\u{201d} element." })
+    #expect(result.messages.contains { $0.message == "The element \u{201c}footer\u{201d} must not appear as a descendant of the \u{201c}header\u{201d} element." })
+    #expect(result.messages.contains { $0.message == "The element \u{201c}header\u{201d} must not appear as a descendant of the \u{201c}footer\u{201d} element." })
+}
+
 @Test func metaCheckerCoversDocumentAndContentRules() {
     let result = checkHTML("""
         <!doctype html><html lang=en><meta charset=iso-8859-1 content="text/html">
@@ -614,6 +649,30 @@ import Testing
         options: CheckerOptions(parameters: ["out": ["json"]])
     )
     #expect(rootResult.messages.contains { $0.message == "Element \u{201c}table\u{201d} not allowed in this context." })
+}
+
+@Test func xmlValidatorCoversXHTMLMenuFigureAndElementRules() {
+    let result = NuValidator().check(
+        input: DocumentInput(data: Data("""
+            <html xmlns="http://www.w3.org/1999/xhtml"><head><title>T</title></head><body>
+            <menu type="context"><hr/>Text<menuitem label="Command"/></menu>
+            <p contextmenu="m">p</p><a name="" href=""></a><iframe>text</iframe>
+            <figure><img src="x" alt="x"/><figcaption>Caption</figcaption><img src="y" alt="y"/>Text</figure>
+            <header><footer></footer></header><footer><header></header></footer>
+            </body></html>
+            """.utf8), contentType: "application/xhtml+xml; charset=utf-8"),
+        options: CheckerOptions(parameters: ["out": ["json"]])
+    )
+    #expect(result.messages.contains { $0.message == "The \u{201c}type\u{201d} attribute on the \u{201c}menu\u{201d} element is obsolete. Use script to handle \u{201c}contextmenu\u{201d} event instead." && $0.subType == "warning" })
+    #expect(result.messages.contains { $0.message == "Element \u{201c}hr\u{201d} not allowed as child of \u{201c}menu\u{201d} in this context." })
+    #expect(result.messages.contains { $0.message == "Text not allowed in \u{201c}menu\u{201d} in this context." })
+    #expect(result.messages.contains { $0.message == "The \u{201c}contextmenu\u{201d} attribute is obsolete. Use script to handle \u{201c}contextmenu\u{201d} event instead." && $0.subType == "warning" })
+    #expect(result.messages.contains { $0.message == "The \u{201c}name\u{201d} attribute on the \u{201c}a\u{201d} element is obsolete. Consider putting an \u{201c}id\u{201d} attribute on the nearest container instead." && $0.subType == "warning" })
+    #expect(result.messages.contains { $0.message == "Text not allowed in \u{201c}iframe\u{201d} in this context." })
+    #expect(result.messages.contains { $0.message == "Element \u{201c}img\u{201d} not allowed as child of \u{201c}figure\u{201d} in this context." })
+    #expect(result.messages.contains { $0.message == "Text not allowed in \u{201c}figure\u{201d} in this context." })
+    #expect(result.messages.contains { $0.message == "The element \u{201c}footer\u{201d} must not appear as a descendant of the \u{201c}header\u{201d} element." })
+    #expect(result.messages.contains { $0.message == "The element \u{201c}header\u{201d} must not appear as a descendant of the \u{201c}footer\u{201d} element." })
 }
 
 @Test func xmlValidatorCoversXHTMLGlobalAttributeValues() {

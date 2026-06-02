@@ -16,6 +16,11 @@ public final class XMLValidator: NSObject, XMLParserDelegate, @unchecked Sendabl
         var location: SourceLocation
     }
 
+    private struct FigureContext {
+        var depth: Int
+        var sawFigcaption = false
+    }
+
     private var messages: [ValidationMessage] = []
     private var idElementNames: [String: String] = [:]
     private var pendingInputListReferences: [PendingInputListReference] = []
@@ -23,6 +28,7 @@ public final class XMLValidator: NSObject, XMLParserDelegate, @unchecked Sendabl
     private var anchorHrefStack: [Bool] = []
     private var definitionListContexts: [DefinitionListContext] = []
     private var dtCaptures: [DTCapture] = []
+    private var figureContexts: [FigureContext] = []
     private var tableChecker = HTMLTableModelChecker(mode: .xhtml)
 
     public func validate(data: Data, source: String) -> [ValidationMessage] {
@@ -33,6 +39,7 @@ public final class XMLValidator: NSObject, XMLParserDelegate, @unchecked Sendabl
         anchorHrefStack = []
         definitionListContexts = []
         dtCaptures = []
+        figureContexts = []
         tableChecker = HTMLTableModelChecker(mode: .xhtml)
         let parser = XMLParser(data: data)
         parser.delegate = self
@@ -75,12 +82,14 @@ public final class XMLValidator: NSObject, XMLParserDelegate, @unchecked Sendabl
         if let id = attributeDict["id"], idElementNames[id] == nil {
             idElementNames[id] = name
         }
+        let normalizedAttributes = normalizedAttributes(attributeDict)
         tableChecker.startElement(HTMLTableElementInfo(
             name: name,
-            attributes: normalizedAttributes(attributeDict),
+            attributes: normalizedAttributes,
             location: location,
             extract: nil
         ))
+        appendXHTMLContentModelMessages(element: name, attributes: normalizedAttributes, location: location)
         appendGlobalAttributeMessages(element: name, attributes: attributeDict, location: location)
         if name == "base",
            attributeDict["href"] == nil,
@@ -130,6 +139,9 @@ public final class XMLValidator: NSObject, XMLParserDelegate, @unchecked Sendabl
         } else if name == "dt", let dlIndex = definitionListContexts.indices.last {
             dtCaptures.append(DTCapture(dlIndex: dlIndex, location: location))
         }
+        if name == "figure" {
+            figureContexts.append(FigureContext(depth: elementStack.count))
+        }
         elementStack.append(name)
         anchorHrefStack.append(name == "a" && attributeDict["href"] != nil)
     }
@@ -151,10 +163,60 @@ public final class XMLValidator: NSObject, XMLParserDelegate, @unchecked Sendabl
         if name == "dl", !definitionListContexts.isEmpty {
             _ = definitionListContexts.popLast()
         }
+        if name == "figure", !figureContexts.isEmpty {
+            _ = figureContexts.popLast()
+        }
         tableChecker.endElement(name)
         if let index = elementStack.lastIndex(of: name) {
             elementStack.removeSubrange(index...)
             anchorHrefStack.removeSubrange(index...)
+        }
+    }
+
+    private func appendXHTMLContentModelMessages(element name: String, attributes: [String: String], location: SourceLocation) {
+        if attributes["contextmenu"] != nil {
+            messages.append(.warning(
+                "The \u{201c}contextmenu\u{201d} attribute is obsolete. Use script to handle \u{201c}contextmenu\u{201d} event instead.",
+                location: location
+            ))
+        }
+        if name == "menu", attributes["type"] != nil {
+            messages.append(.warning(
+                "The \u{201c}type\u{201d} attribute on the \u{201c}menu\u{201d} element is obsolete. Use script to handle \u{201c}contextmenu\u{201d} event instead.",
+                location: location
+            ))
+        }
+        if name == "a", attributes["name"] != nil {
+            messages.append(.warning(
+                "The \u{201c}name\u{201d} attribute on the \u{201c}a\u{201d} element is obsolete. Consider putting an \u{201c}id\u{201d} attribute on the nearest container instead.",
+                location: location
+            ))
+        }
+        if name == "footer" || name == "header",
+           let ancestor = elementStack.last(where: { $0 == "footer" || $0 == "header" }) {
+            messages.append(.error(
+                "The element \u{201c}\(name)\u{201d} must not appear as a descendant of the \u{201c}\(ancestor)\u{201d} element.",
+                location: location
+            ))
+        }
+
+        if elementStack.last == "menu", !Self.xhtmlMenuChildElements.contains(name) {
+            messages.append(.error(
+                "Element \u{201c}\(name)\u{201d} not allowed as child of \u{201c}menu\u{201d} in this context.",
+                location: location
+            ))
+        }
+
+        if elementStack.last == "figure",
+           let index = figureContexts.indices.last {
+            if name == "figcaption" {
+                figureContexts[index].sawFigcaption = true
+            } else if figureContexts[index].sawFigcaption {
+                messages.append(.error(
+                    "Element \u{201c}\(name)\u{201d} not allowed as child of \u{201c}figure\u{201d} in this context.",
+                    location: location
+                ))
+            }
         }
     }
 
@@ -176,6 +238,24 @@ public final class XMLValidator: NSObject, XMLParserDelegate, @unchecked Sendabl
     public func parser(_ parser: XMLParser, foundCharacters string: String) {
         for index in dtCaptures.indices {
             dtCaptures[index].text += string
+        }
+        guard string.contains(where: { !$0.isWhitespace }) else { return }
+        let location = SourceLocation(
+            firstLine: parser.lineNumber,
+            firstColumn: parser.columnNumber,
+            lastLine: parser.lineNumber,
+            lastColumn: parser.columnNumber
+        )
+        if elementStack.last == "menu" {
+            messages.append(.error("Text not allowed in \u{201c}menu\u{201d} in this context.", location: location))
+        }
+        if elementStack.contains("iframe") {
+            messages.append(.error("Text not allowed in \u{201c}iframe\u{201d} in this context.", location: location))
+        }
+        if elementStack.last == "figure",
+           let index = figureContexts.indices.last,
+           figureContexts[index].sawFigcaption {
+            messages.append(.error("Text not allowed in \u{201c}figure\u{201d} in this context.", location: location))
         }
     }
 
@@ -417,6 +497,10 @@ public final class XMLValidator: NSObject, XMLParserDelegate, @unchecked Sendabl
     private func isASCIIDigit(_ byte: UInt8) -> Bool {
         byte >= UInt8(ascii: "0") && byte <= UInt8(ascii: "9")
     }
+
+    private static let xhtmlMenuChildElements: Set<String> = [
+        "li", "script", "template"
+    ]
 }
 
 public final class CSSValidator: Sendable {

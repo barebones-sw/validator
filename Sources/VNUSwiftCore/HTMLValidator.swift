@@ -188,8 +188,16 @@ public final class HTMLValidator: Sendable {
             } else {
                 appendError("The \u{201c}\(name)\u{201d} element is obsolete. Use CSS instead.", offset: offset, length: length, locations: locations, messages: &messages)
             }
-        } else if !HTMLVocabulary.elements.contains(name), !name.contains("-") {
-            let parent = stack.last?.name ?? "body"
+        } else if name.contains("-") {
+            if !isValidAutonomousCustomElementName(name) {
+                appendError("Element \u{201c}\(name)\u{201d} not allowed.", offset: offset, length: length, locations: locations, messages: &messages)
+            }
+            if attr["is"] != nil {
+                appendError("Autonomous custom elements must not specify the \u{201c}is\u{201d} attribute.", offset: offset, length: length, locations: locations, messages: &messages)
+            }
+        } else if !HTMLVocabulary.elements.contains(name) {
+            let currentParent = stack.last?.name
+            let parent = currentParent == nil || currentParent == "html" ? "body" : currentParent!
             appendError("Element \u{201c}\(name)\u{201d} not allowed as child of \u{201c}\(parent)\u{201d} in this context.", offset: offset, length: length, locations: locations, messages: &messages)
         }
 
@@ -320,6 +328,15 @@ public final class HTMLValidator: Sendable {
         return value.range(of: pattern, options: .regularExpression) != nil && !value.contains("--") && !value.hasSuffix("-") && !value.hasPrefix("-")
     }
 
+    private func isValidAutonomousCustomElementName(_ name: String) -> Bool {
+        let lowercased = name.lowercased()
+        guard lowercased.contains("-"), !Self.reservedCustomElementNames.contains(lowercased) else {
+            return false
+        }
+        let pattern = #"^[a-z][.0-9_a-z-]*-[.0-9_a-z-]*$"#
+        return lowercased.range(of: pattern, options: .regularExpression) != nil
+    }
+
     private func obsoleteElementMessage(for name: String) -> String? {
         switch name {
         case "acronym":
@@ -339,6 +356,11 @@ public final class HTMLValidator: Sendable {
 
     private static let invalidPictureParents: Set<String> = [
         "dl", "hgroup", "rp", "ul"
+    ]
+
+    private static let reservedCustomElementNames: Set<String> = [
+        "annotation-xml", "color-profile", "font-face", "font-face-src",
+        "font-face-uri", "font-face-format", "font-face-name", "missing-glyph"
     ]
 }
 
