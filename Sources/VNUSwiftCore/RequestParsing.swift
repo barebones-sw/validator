@@ -24,11 +24,21 @@ public struct MultipartResult: Sendable {
     public var parameters: [String: [String]]
     public var documentData: Data?
     public var documentContentType: String?
+    public var documentFieldName: String?
+    public var documentFilename: String?
 
-    public init(parameters: [String: [String]] = [:], documentData: Data? = nil, documentContentType: String? = nil) {
+    public init(
+        parameters: [String: [String]] = [:],
+        documentData: Data? = nil,
+        documentContentType: String? = nil,
+        documentFieldName: String? = nil,
+        documentFilename: String? = nil
+    ) {
         self.parameters = parameters
         self.documentData = documentData
         self.documentContentType = documentContentType
+        self.documentFieldName = documentFieldName
+        self.documentFilename = documentFilename
     }
 }
 
@@ -38,35 +48,67 @@ public enum MultipartParser {
         guard let boundary = parsed.parameters["boundary"], !boundary.isEmpty else {
             return MultipartResult()
         }
-        guard let text = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .isoLatin1) else {
-            return MultipartResult()
-        }
-        let delimiter = "--" + boundary
+        let delimiter = Data("--\(boundary)".utf8)
         var result = MultipartResult()
-        for rawPart in text.components(separatedBy: delimiter) {
-            let trimmed = rawPart.trimmingCharacters(in: CharacterSet(charactersIn: "\r\n"))
-            if trimmed.isEmpty || trimmed == "--" { continue }
-            let sections = trimmed.components(separatedBy: "\r\n\r\n")
-            guard sections.count >= 2 else { continue }
-            let headerText = sections[0]
-            var content = sections.dropFirst().joined(separator: "\r\n\r\n")
-            if content.hasSuffix("\r\n") {
-                content.removeLast(2)
-            }
+        for rawPart in split(data, by: delimiter) {
+            let part = normalizedPart(rawPart)
+            if part.isEmpty || String(data: part.prefix(2), encoding: .ascii) == "--" { continue }
+            guard let headerRange = part.range(of: Data("\r\n\r\n".utf8)) ?? part.range(of: Data("\n\n".utf8)) else { continue }
+            let separatorLength = part[headerRange].count
+            let headerData = part[..<headerRange.lowerBound]
+            let bodyStart = part.index(headerRange.lowerBound, offsetBy: separatorLength)
+            let content = Data(part[bodyStart...])
+            guard let headerText = String(data: headerData, encoding: .isoLatin1) else { continue }
             let headers = parsePartHeaders(headerText)
             guard let disposition = headers["content-disposition"],
                   let name = dispositionParameter("name", in: disposition) else {
                 continue
             }
+            let filename = dispositionParameter("filename", in: disposition)
             let partContentType = headers["content-type"] ?? "text/html; charset=utf-8"
-            if name == "content" || name == "uploaded_file" {
-                result.documentData = Data(content.utf8)
+            if name == "content" || name == "uploaded_file" || name == "file" {
+                result.documentData = content
                 result.documentContentType = partContentType
+                result.documentFieldName = name
+                result.documentFilename = filename?.nonEmpty
             } else {
-                result.parameters.appendParameter(name: name, value: content)
+                let value = String(data: content, encoding: .utf8) ?? String(data: content, encoding: .isoLatin1) ?? ""
+                result.parameters.appendParameter(name: name, value: value)
             }
         }
         return result
+    }
+
+    private static func split(_ data: Data, by delimiter: Data) -> [Data] {
+        var parts: [Data] = []
+        var searchStart = data.startIndex
+        var partStart: Data.Index?
+        while let range = data.range(of: delimiter, in: searchStart..<data.endIndex) {
+            if let start = partStart {
+                parts.append(Data(data[start..<range.lowerBound]))
+            }
+            partStart = range.upperBound
+            searchStart = range.upperBound
+        }
+        if let start = partStart, start < data.endIndex {
+            parts.append(Data(data[start..<data.endIndex]))
+        }
+        return parts
+    }
+
+    private static func normalizedPart(_ part: Data) -> Data {
+        var bytes = Array(part)
+        if bytes.starts(with: [13, 10]) {
+            bytes.removeFirst(2)
+        } else if bytes.first == 10 {
+            bytes.removeFirst()
+        }
+        if bytes.suffix(2) == [13, 10] {
+            bytes.removeLast(2)
+        } else if bytes.last == 10 {
+            bytes.removeLast()
+        }
+        return Data(bytes)
     }
 
     private static func parsePartHeaders(_ text: String) -> [String: String] {
@@ -92,4 +134,3 @@ public enum MultipartParser {
         return nil
     }
 }
-

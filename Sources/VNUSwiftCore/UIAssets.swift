@@ -14,7 +14,7 @@ enum UIAssets {
     <option value="textarea">Text Field</option>
     </select>
     <div id="address-input"><label for="doc-url">Address</label><input id="doc" name="doc" type="url"></div>
-    <div id="file-input" hidden><label for="doc-file">File</label><input id="doc-file" name="uploaded_file" type="file"></div>
+    <div id="file-input" hidden><label for="doc-file">File</label><input id="doc-file" name="file" type="file"></div>
     <div id="textarea-input" hidden><label for="doc-textarea">Document</label><textarea id="doc-textarea" name="content" rows="16"><!DOCTYPE html>
     <html lang="en">
     <head>
@@ -44,6 +44,7 @@ enum UIAssets {
     button { margin-top: 14px; font: inherit; padding: 7px 12px; border-radius: 5px; border: 1px solid color-mix(in srgb, CanvasText 30%, transparent); background: ButtonFace; color: ButtonText; }
     #results ol { padding-left: 22px; }
     #results li { margin: 10px 0; }
+    .checked-url { overflow-wrap: anywhere; }
     .error { color: #b00020; }
     .warning { color: #9a6500; }
     .info { color: #205493; }

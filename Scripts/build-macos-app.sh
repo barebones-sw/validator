@@ -11,8 +11,10 @@ swift build -c release --product vnu-swift
 
 APP="$ROOT/.build/NuValidator.app"
 rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/Base.lproj"
 cp "$ROOT/.build/release/vnu-swift" "$APP/Contents/MacOS/vnu-swift"
 cp "$ROOT/resources/NuValidator/Info.plist" "$APP/Contents/Info.plist"
+cp "$ROOT/resources/NuValidator/Credits.rtf" "$APP/Contents/Resources/Credits.rtf"
+xcrun ibtool --compile "$APP/Contents/Resources/Base.lproj/MainMenu.nib" "$ROOT/resources/NuValidator/Base.lproj/MainMenu.xib"
 
 echo "$APP"

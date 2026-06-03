@@ -107,6 +107,9 @@ public enum OutputRenderer {
         <section id="results">
         <p class="\(status)">\(failed ? "There were errors." : "The document validates.")</p>
         """
+        if let url = result.url {
+            html += #"<p class="checked-url">Checked <code>\#(escapeHTML(url))</code></p>"#
+        }
         if !result.messages.isEmpty {
             html += "<ol>\n"
             for (index, message) in result.messages.enumerated() {
@@ -229,4 +232,3 @@ public enum OutputRenderer {
         return value.range(of: #"^[A-Za-z_$][A-Za-z0-9_$]*(\.[A-Za-z_$][A-Za-z0-9_$]*)*$"#, options: .regularExpression) != nil
     }
 }
-

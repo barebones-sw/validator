@@ -36,6 +36,8 @@
 		60000000000000000000001B /* VNUSwiftCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 400000000000000000000001 /* VNUSwiftCore.framework */; };
 		60000000000000000000001C /* HTMLDocumentParser.swift in Sources */ = {isa = PBXBuildFile; fileRef = 500000000000000000000017 /* HTMLDocumentParser.swift */; };
 		60000000000000000000001D /* HTMLAttributeChecker.swift in Sources */ = {isa = PBXBuildFile; fileRef = 500000000000000000000018 /* HTMLAttributeChecker.swift */; };
+		60000000000000000000001E /* Credits.rtf in Resources */ = {isa = PBXBuildFile; fileRef = 500000000000000000000019 /* Credits.rtf */; };
+		60000000000000000000001F /* MainMenu.xib in Resources */ = {isa = PBXBuildFile; fileRef = 50000000000000000000001A /* MainMenu.xib */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -121,6 +123,8 @@
 		500000000000000000000016 /* parity-baseline.json */ = {isa = PBXFileReference; lastKnownFileType = text.json; path = "parity-baseline.json"; sourceTree = "<group>"; };
 		500000000000000000000017 /* HTMLDocumentParser.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HTMLDocumentParser.swift; sourceTree = "<group>"; };
 		500000000000000000000018 /* HTMLAttributeChecker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HTMLAttributeChecker.swift; sourceTree = "<group>"; };
+		500000000000000000000019 /* Credits.rtf */ = {isa = PBXFileReference; lastKnownFileType = text.rtf; path = Credits.rtf; sourceTree = "<group>"; };
+		50000000000000000000001A /* MainMenu.xib */ = {isa = PBXFileReference; lastKnownFileType = file.xib; path = MainMenu.xib; sourceTree = "<group>"; };
 		5668F70A2FCD1E7F00FB04EB /* NuValidator.xctestplan */ = {isa = PBXFileReference; lastKnownFileType = text; path = NuValidator.xctestplan; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -272,10 +276,20 @@
 		00000000000000000000000A /* NuValidator */ = {
 			isa = PBXGroup;
 			children = (
+				00000000000000000000000E /* Base.lproj */,
 				500000000000000000000011 /* Info.plist */,
+				500000000000000000000019 /* Credits.rtf */,
 				500000000000000000000016 /* parity-baseline.json */,
 			);
 			path = NuValidator;
+			sourceTree = "<group>";
+		};
+		00000000000000000000000E /* Base.lproj */ = {
+			isa = PBXGroup;
+			children = (
+				50000000000000000000001A /* MainMenu.xib */,
+			);
+			path = Base.lproj;
 			sourceTree = "<group>";
 		};
 		00000000000000000000000B /* VNUParityCore */ = {
@@ -304,6 +318,18 @@
 		};
 /* End PBXGroup section */
 
+/* Begin PBXResourcesBuildPhase section */
+		20000000000000000000000E /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				60000000000000000000001E /* Credits.rtf in Resources */,
+				60000000000000000000001F /* MainMenu.xib in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
 /* Begin PBXNativeTarget section */
 		100000000000000000000001 /* VNUSwiftCore */ = {
 			isa = PBXNativeTarget;
@@ -327,6 +353,7 @@
 			buildPhases = (
 				200000000000000000000003 /* Sources */,
 				200000000000000000000004 /* Frameworks */,
+				20000000000000000000000E /* Resources */,
 				200000000000000000000005 /* Copy Frameworks */,
 			);
 			buildRules = (
@@ -711,8 +738,24 @@
 		303000000000000000000001 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				CODE_SIGN_IDENTITY = "-";
-				CODE_SIGN_STYLE = Manual;
+				AUTOMATION_APPLE_EVENTS = NO;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = W52GZAXT98;
+				ENABLE_APP_SANDBOX = YES;
+				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_INCOMING_NETWORK_CONNECTIONS = YES;
+				ENABLE_OUTGOING_NETWORK_CONNECTIONS = NO;
+				ENABLE_RESOURCE_ACCESS_AUDIO_INPUT = NO;
+				ENABLE_RESOURCE_ACCESS_BLUETOOTH = NO;
+				ENABLE_RESOURCE_ACCESS_CALENDARS = NO;
+				ENABLE_RESOURCE_ACCESS_CAMERA = NO;
+				ENABLE_RESOURCE_ACCESS_CONTACTS = NO;
+				ENABLE_RESOURCE_ACCESS_LOCATION = NO;
+				ENABLE_RESOURCE_ACCESS_PHOTO_LIBRARY = NO;
+				ENABLE_RESOURCE_ACCESS_PRINTING = NO;
+				ENABLE_RESOURCE_ACCESS_USB = NO;
+				ENABLE_USER_SELECTED_FILES = readonly;
 				EXECUTABLE_NAME = "vnu-swift";
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = resources/NuValidator/Info.plist;
@@ -723,6 +766,13 @@
 				MARKETING_VERSION = 0.1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = "com.barebones.nu-validator-swift";
 				PRODUCT_NAME = NuValidator;
+				PROVISIONING_PROFILE_SPECIFIER = "";
+				RUNTIME_EXCEPTION_ALLOW_DYLD_ENVIRONMENT_VARIABLES = NO;
+				RUNTIME_EXCEPTION_ALLOW_JIT = NO;
+				RUNTIME_EXCEPTION_ALLOW_UNSIGNED_EXECUTABLE_MEMORY = NO;
+				RUNTIME_EXCEPTION_DEBUGGING_TOOL = NO;
+				RUNTIME_EXCEPTION_DISABLE_EXECUTABLE_PAGE_PROTECTION = NO;
+				RUNTIME_EXCEPTION_DISABLE_LIBRARY_VALIDATION = NO;
 				SWIFT_VERSION = 6.0;
 			};
 			name = Debug;
@@ -730,8 +780,24 @@
 		303000000000000000000002 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				CODE_SIGN_IDENTITY = "-";
-				CODE_SIGN_STYLE = Manual;
+				AUTOMATION_APPLE_EVENTS = NO;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = W52GZAXT98;
+				ENABLE_APP_SANDBOX = YES;
+				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_INCOMING_NETWORK_CONNECTIONS = YES;
+				ENABLE_OUTGOING_NETWORK_CONNECTIONS = NO;
+				ENABLE_RESOURCE_ACCESS_AUDIO_INPUT = NO;
+				ENABLE_RESOURCE_ACCESS_BLUETOOTH = NO;
+				ENABLE_RESOURCE_ACCESS_CALENDARS = NO;
+				ENABLE_RESOURCE_ACCESS_CAMERA = NO;
+				ENABLE_RESOURCE_ACCESS_CONTACTS = NO;
+				ENABLE_RESOURCE_ACCESS_LOCATION = NO;
+				ENABLE_RESOURCE_ACCESS_PHOTO_LIBRARY = NO;
+				ENABLE_RESOURCE_ACCESS_PRINTING = NO;
+				ENABLE_RESOURCE_ACCESS_USB = NO;
+				ENABLE_USER_SELECTED_FILES = readonly;
 				EXECUTABLE_NAME = "vnu-swift";
 				GENERATE_INFOPLIST_FILE = NO;
 				INFOPLIST_FILE = resources/NuValidator/Info.plist;
@@ -742,6 +808,13 @@
 				MARKETING_VERSION = 0.1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = "com.barebones.nu-validator-swift";
 				PRODUCT_NAME = NuValidator;
+				PROVISIONING_PROFILE_SPECIFIER = "";
+				RUNTIME_EXCEPTION_ALLOW_DYLD_ENVIRONMENT_VARIABLES = NO;
+				RUNTIME_EXCEPTION_ALLOW_JIT = NO;
+				RUNTIME_EXCEPTION_ALLOW_UNSIGNED_EXECUTABLE_MEMORY = NO;
+				RUNTIME_EXCEPTION_DEBUGGING_TOOL = NO;
+				RUNTIME_EXCEPTION_DISABLE_EXECUTABLE_PAGE_PROTECTION = NO;
+				RUNTIME_EXCEPTION_DISABLE_LIBRARY_VALIDATION = NO;
 				SWIFT_VERSION = 6.0;
 			};
 			name = Release;
@@ -859,8 +932,9 @@
 		307000000000000000000001 /* Debug */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				CODE_SIGN_IDENTITY = "-";
-				CODE_SIGN_STYLE = Manual;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = W52GZAXT98;
 				GENERATE_INFOPLIST_FILE = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -870,6 +944,7 @@
 				MARKETING_VERSION = 0.1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = "com.barebones.nu-validator-swift.parity-tests";
 				PRODUCT_NAME = "$(TARGET_NAME)";
+				PROVISIONING_PROFILE_SPECIFIER = "";
 				SWIFT_VERSION = 6.0;
 			};
 			name = Debug;
@@ -877,8 +952,9 @@
 		307000000000000000000002 /* Release */ = {
 			isa = XCBuildConfiguration;
 			buildSettings = {
-				CODE_SIGN_IDENTITY = "-";
-				CODE_SIGN_STYLE = Manual;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = W52GZAXT98;
 				GENERATE_INFOPLIST_FILE = YES;
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
@@ -888,6 +964,7 @@
 				MARKETING_VERSION = 0.1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = "com.barebones.nu-validator-swift.parity-tests";
 				PRODUCT_NAME = "$(TARGET_NAME)";
+				PROVISIONING_PROFILE_SPECIFIER = "";
 				SWIFT_VERSION = 6.0;
 			};
 			name = Release;

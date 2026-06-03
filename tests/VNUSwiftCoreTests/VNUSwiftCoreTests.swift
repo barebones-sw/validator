@@ -1,3 +1,4 @@
+import Darwin
 import Foundation
 import Testing
 @testable import VNUSwiftCore
@@ -48,6 +49,126 @@ import Testing
     #expect(response.statusCode == 200)
     #expect(response.headers["Content-Type"]?.contains("text/plain") == true)
     #expect(text.contains("error:"))
+}
+
+@Test func serviceHandlesHeadRequestsWithoutBodies() {
+    let service = NuHTTPService()
+    let response = service.response(for: HTTPRequest(
+        method: "HEAD",
+        target: "/",
+        headers: ["User-Agent": "swift-test"]
+    ))
+    #expect(response.statusCode == 200)
+    #expect(response.headers["Content-Type"]?.contains("text/html") == true)
+    #expect(response.body.isEmpty)
+}
+
+@Test func serviceHandlesDocumentedMultipartFileUploads() throws {
+    let service = NuHTTPService()
+    let body = multipartBody(boundary: "BOUNDARY", parts: [
+        MultipartPart(name: "out", content: Data("json".utf8)),
+        MultipartPart(name: "showsource", content: Data("yes".utf8)),
+        MultipartPart(
+            name: "file",
+            filename: "sample.xhtml",
+            contentType: "application/octet-stream",
+            content: Data("<html xmlns=\"http://www.w3.org/1999/xhtml\"><head><title>T</title></head><body/></html>".utf8)
+        )
+    ])
+    let response = service.response(for: HTTPRequest(
+        method: "POST",
+        target: "/",
+        headers: [
+            "User-Agent": "swift-test",
+            "Content-Type": "multipart/form-data; boundary=BOUNDARY"
+        ],
+        body: body
+    ))
+    let object = try #require(JSONSerialization.jsonObject(with: response.body) as? [String: Any])
+    let source = try #require(object["source"] as? [String: Any])
+    #expect(object["url"] as? String == "sample.xhtml")
+    #expect(source["type"] as? String == "application/xhtml+xml")
+}
+
+@Test func serviceKeepsCompatibilityWithExistingUploadedFileField() throws {
+    let service = NuHTTPService()
+    let body = multipartBody(boundary: "BOUNDARY", parts: [
+        MultipartPart(name: "out", content: Data("json".utf8)),
+        MultipartPart(name: "showsource", content: Data("yes".utf8)),
+        MultipartPart(
+            name: "uploaded_file",
+            filename: #"C:\fakepath\bad.html"#,
+            contentType: "application/octet-stream",
+            content: Data("<!doctype html><html lang=en><title>T</title></div>".utf8)
+        )
+    ])
+    let response = service.response(for: HTTPRequest(
+        method: "POST",
+        target: "/",
+        headers: [
+            "User-Agent": "swift-test",
+            "Content-Type": "multipart/form-data; boundary=BOUNDARY"
+        ],
+        body: body
+    ))
+    let object = try #require(JSONSerialization.jsonObject(with: response.body) as? [String: Any])
+    let source = try #require(object["source"] as? [String: Any])
+    #expect(object["url"] as? String == "bad.html")
+    #expect(source["type"] as? String == "text/html")
+}
+
+@Test func serviceReportsFetchInputErrors() throws {
+    let service = NuHTTPService()
+    let response = service.response(for: HTTPRequest(
+        method: "GET",
+        target: "/?out=json&doc=file%3A%2F%2F%2Ftmp%2Ftest.html",
+        headers: ["User-Agent": "swift-test"]
+    ))
+    let object = try #require(JSONSerialization.jsonObject(with: response.body) as? [String: Any])
+    let messages = try #require(object["messages"] as? [[String: Any]])
+    #expect(object["url"] as? String == "file:///tmp/test.html")
+    #expect(messages.contains { $0["type"] as? String == "non-document-error" && ($0["message"] as? String)?.contains("HTTP or HTTPS") == true })
+}
+
+@Test func serviceReportsRemoteHTTPStatusErrors() throws {
+    let server = try OneShotHTTPFixture(
+        statusCode: 404,
+        reason: "Not Found",
+        body: "<!doctype html><html lang=en><title>T</title><p>Missing</p>"
+    )
+    server.start()
+    defer { server.stop() }
+
+    let service = NuHTTPService()
+    let response = service.response(for: HTTPRequest(
+        method: "GET",
+        target: "/?out=json&doc=\(QueryParser.percentEncodeForTests("http://127.0.0.1:\(server.port)/missing"))",
+        headers: ["User-Agent": "swift-test"]
+    ))
+    let object = try #require(JSONSerialization.jsonObject(with: response.body) as? [String: Any])
+    let messages = try #require(object["messages"] as? [[String: Any]])
+    #expect(messages.contains { $0["type"] as? String == "non-document-error" && ($0["message"] as? String)?.contains("404") == true })
+}
+
+@Test func serviceCanCheckRemoteErrorPagesWhenRequested() throws {
+    let server = try OneShotHTTPFixture(
+        statusCode: 404,
+        reason: "Not Found",
+        body: "<!doctype html><html lang=en><title>T</title></div>"
+    )
+    server.start()
+    defer { server.stop() }
+
+    let service = NuHTTPService()
+    let response = service.response(for: HTTPRequest(
+        method: "GET",
+        target: "/?out=json&checkerrorpages=yes&doc=\(QueryParser.percentEncodeForTests("http://127.0.0.1:\(server.port)/missing"))",
+        headers: ["User-Agent": "swift-test"]
+    ))
+    let object = try #require(JSONSerialization.jsonObject(with: response.body) as? [String: Any])
+    let messages = try #require(object["messages"] as? [[String: Any]])
+    #expect(!messages.contains { $0["type"] as? String == "non-document-error" })
+    #expect(messages.contains { ($0["message"] as? String)?.contains("Stray end tag") == true })
 }
 
 @Test func sourceExtractRoundsUnicodeContextToCharacterBoundaries() {
@@ -897,4 +1018,133 @@ private func checkHTML(_ source: String) -> ValidationResult {
         input: DocumentInput(data: Data(source.utf8), contentType: "text/html; charset=utf-8"),
         options: CheckerOptions(parameters: ["out": ["json"]])
     )
+}
+
+private struct MultipartPart {
+    var name: String
+    var filename: String? = nil
+    var contentType: String? = nil
+    var content: Data
+}
+
+private func multipartBody(boundary: String, parts: [MultipartPart]) -> Data {
+    var body = Data()
+    for part in parts {
+        body.append(Data("--\(boundary)\r\n".utf8))
+        var disposition = #"Content-Disposition: form-data; name="\#(part.name)""#
+        if let filename = part.filename {
+            disposition += #"; filename="\#(filename)""#
+        }
+        body.append(Data("\(disposition)\r\n".utf8))
+        if let contentType = part.contentType {
+            body.append(Data("Content-Type: \(contentType)\r\n".utf8))
+        }
+        body.append(Data("\r\n".utf8))
+        body.append(part.content)
+        body.append(Data("\r\n".utf8))
+    }
+    body.append(Data("--\(boundary)--\r\n".utf8))
+    return body
+}
+
+private final class OneShotHTTPFixture: @unchecked Sendable {
+    let port: UInt16
+
+    private let fd: Int32
+    private let response: Data
+    private let closeLock = NSLock()
+    private var closed = false
+
+    init(statusCode: Int, reason: String, body: String) throws {
+        let fd = socket(AF_INET, SOCK_STREAM, 0)
+        guard fd >= 0 else {
+            throw POSIXError(.EIO)
+        }
+        self.fd = fd
+
+        var yes: Int32 = 1
+        setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, socklen_t(MemoryLayout<Int32>.size))
+
+        var address = sockaddr_in()
+        address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        address.sin_family = sa_family_t(AF_INET)
+        address.sin_port = UInt16(0).bigEndian
+        inet_pton(AF_INET, "127.0.0.1", &address.sin_addr)
+
+        let bindResult = withUnsafePointer(to: &address) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                Darwin.bind(fd, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+        guard bindResult == 0 else {
+            Darwin.close(fd)
+            throw POSIXError(.EIO)
+        }
+        guard listen(fd, 1) == 0 else {
+            Darwin.close(fd)
+            throw POSIXError(.EIO)
+        }
+
+        var boundAddress = sockaddr_in()
+        var boundLength = socklen_t(MemoryLayout<sockaddr_in>.size)
+        let nameResult = withUnsafeMutablePointer(to: &boundAddress) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                getsockname(fd, $0, &boundLength)
+            }
+        }
+        guard nameResult == 0 else {
+            Darwin.close(fd)
+            throw POSIXError(.EIO)
+        }
+        self.port = UInt16(bigEndian: boundAddress.sin_port)
+
+        let bodyData = Data(body.utf8)
+        let header = "HTTP/1.1 \(statusCode) \(reason)\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: \(bodyData.count)\r\nConnection: close\r\n\r\n"
+        var response = Data(header.utf8)
+        response.append(bodyData)
+        self.response = response
+    }
+
+    func start() {
+        DispatchQueue.global(qos: .userInitiated).async { [self] in
+            var clientAddress = sockaddr()
+            var length = socklen_t(MemoryLayout<sockaddr>.size)
+            let clientFD = accept(fd, &clientAddress, &length)
+            if clientFD >= 0 {
+                var buffer = [UInt8](repeating: 0, count: 1024)
+                _ = recv(clientFD, &buffer, buffer.count, 0)
+                response.withUnsafeBytes { rawBuffer in
+                    guard let base = rawBuffer.bindMemory(to: UInt8.self).baseAddress else { return }
+                    var sent = 0
+                    while sent < response.count {
+                        let count = Darwin.send(clientFD, base.advanced(by: sent), response.count - sent, 0)
+                        if count <= 0 { break }
+                        sent += count
+                    }
+                }
+                Darwin.close(clientFD)
+            }
+            closeServer()
+        }
+    }
+
+    func stop() {
+        closeServer()
+    }
+
+    private func closeServer() {
+        closeLock.lock()
+        defer { closeLock.unlock() }
+        guard !closed else { return }
+        closed = true
+        Darwin.close(fd)
+    }
+}
+
+private extension QueryParser {
+    static func percentEncodeForTests(_ value: String) -> String {
+        var allowed = CharacterSet.urlQueryAllowed
+        allowed.remove(charactersIn: "&=?")
+        return value.addingPercentEncoding(withAllowedCharacters: allowed) ?? value
+    }
 }

@@ -14,15 +14,42 @@ public enum HTTPServerError: Error, CustomStringConvertible {
     }
 }
 
+public struct HTTPRequestLog: Sendable, CustomStringConvertible {
+    public var method: String
+    public var target: String
+    public var statusCode: Int
+    public var bodyBytes: Int
+    public var elapsedMilliseconds: Double
+
+    public init(method: String, target: String, statusCode: Int, bodyBytes: Int, elapsedMilliseconds: Double) {
+        self.method = method
+        self.target = target
+        self.statusCode = statusCode
+        self.bodyBytes = bodyBytes
+        self.elapsedMilliseconds = elapsedMilliseconds
+    }
+
+    public var description: String {
+        String(format: "%@ %@ -> %d, %d bytes, %.1f ms", method, target, statusCode, bodyBytes, elapsedMilliseconds)
+    }
+}
+
 public final class HTTPServer {
     private let host: String
     private let port: UInt16
     private let service: NuHTTPService
+    private let requestLogger: (@Sendable (HTTPRequestLog) -> Void)?
 
-    public init(host: String = "127.0.0.1", port: UInt16 = 8888, service: NuHTTPService = NuHTTPService()) {
+    public init(
+        host: String = "127.0.0.1",
+        port: UInt16 = 8888,
+        service: NuHTTPService = NuHTTPService(),
+        requestLogger: (@Sendable (HTTPRequestLog) -> Void)? = nil
+    ) {
         self.host = host
         self.port = port
         self.service = service
+        self.requestLogger = requestLogger
     }
 
     public func start() throws -> Never {
@@ -73,9 +100,20 @@ public final class HTTPServer {
     }
 
     private func handleClient(_ fd: Int32) {
+        let start = DispatchTime.now()
         guard let request = readRequest(from: fd) else { return }
         let response = service.response(for: request)
         write(response: response, to: fd)
+        if let requestLogger {
+            let elapsed = DispatchTime.now().uptimeNanoseconds - start.uptimeNanoseconds
+            requestLogger(HTTPRequestLog(
+                method: request.method,
+                target: request.target,
+                statusCode: response.statusCode,
+                bodyBytes: response.body.count,
+                elapsedMilliseconds: Double(elapsed) / 1_000_000.0
+            ))
+        }
     }
 
     private func readRequest(from fd: Int32) -> HTTPRequest? {
@@ -143,4 +181,3 @@ public final class HTTPServer {
         }
     }
 }
-
