@@ -41,7 +41,7 @@ public struct CheckerOptions: Sendable {
     }
 }
 
-extension Dictionary where Key == String, Value == [String] {
+public extension Dictionary where Key == String, Value == [String] {
     func firstValue(_ key: String) -> String? {
         self[key]?.first ?? self[key.lowercased()]?.first
     }
@@ -62,4 +62,3 @@ public struct DocumentInput: Sendable {
         self.url = url
     }
 }
-

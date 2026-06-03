@@ -150,7 +150,7 @@ TEST_PATTERN='^tests/|^e2e/|^resources/NuValidator/parity-baseline\.json$'
 MESSAGE_PATTERN='^tests/messages\.json$'
 JAVA_CHECKER_PATTERN='^src/nu/validator/(checker|validation|htmlparser|xml|servlet|messages|io|client)/.*\.java$'
 DOC_PATTERN='^(docs/|README\.md|CONTRIBUTING\.md|IMPORTANT\.md)'
-SWIFT_PATTERN='^(Sources/|Package\.swift|NuValidator\.xcodeproj|NuValidator\.xctestplan|Scripts/|resources/NuValidator/)'
+SWIFT_PATTERN='^(Sources/|NuValidator\.xcodeproj|NuValidator\.xctestplan|Scripts/|resources/NuValidator/)'
 
 SCHEMA_COUNT="$(count_matching "$SCHEMA_PATTERN")"
 LOCAL_ENTITY_COUNT="$(count_matching "$LOCAL_ENTITY_PATTERN")"
@@ -164,9 +164,14 @@ DIRTY_STATUS="$(git status --short)"
 
 PARITY_STATUS=0
 if [[ "$RUN_PARITY" -eq 1 ]]; then
-    if [[ ! -x ".build/debug/vnu-parity" ]]; then
-        swift build --product vnu-parity
-    fi
+    PARITY_DERIVED_DATA=".build/parity-xcode"
+    xcodebuild -quiet \
+        -project NuValidator.xcodeproj \
+        -scheme VNUParity \
+        -configuration Debug \
+        -derivedDataPath "$PARITY_DERIVED_DATA" \
+        build
+    PARITY_EXECUTABLE="$PARITY_DERIVED_DATA/Build/Products/Debug/vnu-parity"
     PARITY_ARGS=(--allow-regression)
     if [[ "$PARITY_STRICT" -eq 1 ]]; then
         PARITY_ARGS+=(--strict)
@@ -178,7 +183,7 @@ if [[ "$RUN_PARITY" -eq 1 ]]; then
         PARITY_ARGS+=(--update-baseline)
     fi
     set +e
-    ".build/debug/vnu-parity" "${PARITY_ARGS[@]}" > "$PARITY_FILE" 2>&1
+    "$PARITY_EXECUTABLE" "${PARITY_ARGS[@]}" > "$PARITY_FILE" 2>&1
     PARITY_STATUS=$?
     set -e
 else
@@ -209,7 +214,7 @@ cat > "$REPORT" <<EOF
 
 ## Parity
 
-- Command: \`.build/debug/vnu-parity $(printf '%q ' "${PARITY_ARGS[@]:-}")\`
+- Command: \`${PARITY_EXECUTABLE:-vnu-parity} $(printf '%q ' "${PARITY_ARGS[@]:-}")\`
 - Exit status: $PARITY_STATUS
 
 \`\`\`text
@@ -222,7 +227,7 @@ $(cat "$PARITY_FILE")
 2. If \`tests/messages.json\` or fixtures changed, run focused parity filters for those paths before running the full corpus.
 3. If Java checker code changed, inspect the changed classes and decide whether the change is algorithmic, message wording, or vocabulary data.
 4. Refresh \`resources/NuValidator/parity-baseline.json\` only after the Swift implementation matches the intended new behavior.
-5. Run \`swift test\`, full parity, Xcode tests, and \`Scripts/build-macos-app.sh\` before shipping a refreshed macOS app.
+5. Run full parity, Xcode tests, and \`Scripts/build-macos-app.sh\` before shipping a refreshed macOS app.
 EOF
 
 write_list "Schema And Preset Changes" "$SCHEMA_PATTERN"
@@ -237,9 +242,9 @@ cat >> "$REPORT" <<'EOF'
 ## Useful Follow-Up Commands
 
 ```sh
-swift test
-.build/debug/vnu-parity --strict --allow-regression
-.build/debug/vnu-parity --update-baseline --allow-regression
+xcodebuild -project NuValidator.xcodeproj -scheme VNUParity -configuration Debug -derivedDataPath .build/parity-xcode build
+.build/parity-xcode/Build/Products/Debug/vnu-parity --strict --allow-regression
+.build/parity-xcode/Build/Products/Debug/vnu-parity --update-baseline --allow-regression
 xcodebuild -project NuValidator.xcodeproj -scheme NuValidator -destination 'platform=macOS' test
 Scripts/build-macos-app.sh
 ```

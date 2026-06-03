@@ -23,8 +23,6 @@
 		60000000000000000000000E /* XMLValidator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 50000000000000000000000E /* XMLValidator.swift */; };
 		60000000000000000000000F /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = 50000000000000000000000F /* main.swift */; };
 		600000000000000000000010 /* VNUSwiftCoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 500000000000000000000010 /* VNUSwiftCoreTests.swift */; };
-		600000000000000000000011 /* VNUSwiftCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 400000000000000000000001 /* VNUSwiftCore.framework */; };
-		600000000000000000000012 /* VNUSwiftCore.framework in Copy Frameworks */ = {isa = PBXBuildFile; fileRef = 400000000000000000000001 /* VNUSwiftCore.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		600000000000000000000013 /* VNUSwiftCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 400000000000000000000001 /* VNUSwiftCore.framework */; };
 		600000000000000000000014 /* ParityHarness.swift in Sources */ = {isa = PBXBuildFile; fileRef = 500000000000000000000013 /* ParityHarness.swift */; };
 		600000000000000000000015 /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = 500000000000000000000014 /* main.swift */; };
@@ -46,6 +44,21 @@
 		600000000000000000000025 /* VNUSwiftCore.framework in Copy Frameworks */ = {isa = PBXBuildFile; fileRef = 400000000000000000000001 /* VNUSwiftCore.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 		600000000000000000000026 /* NuValidatorXPC.xpc in Embed XPC Services */ = {isa = PBXBuildFile; fileRef = 400000000000000000000007 /* NuValidatorXPC.xpc */; settings = {ATTRIBUTES = (CodeSignOnCopy, ); }; };
 		600000000000000000000027 /* NuValidatorXPCObjCClientSmokeTests.mm in Sources */ = {isa = PBXBuildFile; fileRef = 500000000000000000000020 /* NuValidatorXPCObjCClientSmokeTests.mm */; };
+		600000000000000000000029 /* VNUServiceCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 400000000000000000000009 /* VNUServiceCore.framework */; };
+		60000000000000000000002A /* VNUServiceCore.framework in Copy Frameworks */ = {isa = PBXBuildFile; fileRef = 400000000000000000000009 /* VNUServiceCore.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		60000000000000000000002B /* VNUServiceCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 400000000000000000000009 /* VNUServiceCore.framework */; };
+		600000000000000000000031 /* ValidatorChecking.swift in Sources */ = {isa = PBXBuildFile; fileRef = 500000000000000000000022 /* ValidatorChecking.swift */; };
+		600000000000000000000032 /* ValidationJSON.swift in Sources */ = {isa = PBXBuildFile; fileRef = 500000000000000000000023 /* ValidationJSON.swift */; };
+		600000000000000000000033 /* VNUCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 40000000000000000000000A /* VNUCore.framework */; };
+		600000000000000000000034 /* VNUCore.framework in Copy Frameworks */ = {isa = PBXBuildFile; fileRef = 40000000000000000000000A /* VNUCore.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		600000000000000000000035 /* VNUCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 40000000000000000000000A /* VNUCore.framework */; };
+		600000000000000000000036 /* VNUCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 40000000000000000000000A /* VNUCore.framework */; };
+		600000000000000000000037 /* VNUCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 40000000000000000000000A /* VNUCore.framework */; };
+		600000000000000000000038 /* VNUCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 40000000000000000000000A /* VNUCore.framework */; };
+		600000000000000000000039 /* VNUCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 40000000000000000000000A /* VNUCore.framework */; };
+		60000000000000000000003A /* VNUCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 40000000000000000000000A /* VNUCore.framework */; };
+		60000000000000000000003B /* VNUCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 40000000000000000000000A /* VNUCore.framework */; };
+		60000000000000000000003C /* VNUCore.framework in Copy Frameworks */ = {isa = PBXBuildFile; fileRef = 40000000000000000000000A /* VNUCore.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -114,7 +127,8 @@
 			dstPath = "";
 			dstSubfolderSpec = 10;
 			files = (
-				600000000000000000000012 /* VNUSwiftCore.framework in Copy Frameworks */,
+				60000000000000000000002A /* VNUServiceCore.framework in Copy Frameworks */,
+				600000000000000000000034 /* VNUCore.framework in Copy Frameworks */,
 			);
 			name = "Copy Frameworks";
 			runOnlyForDeploymentPostprocessing = 0;
@@ -137,6 +151,7 @@
 			dstSubfolderSpec = 10;
 			files = (
 				600000000000000000000025 /* VNUSwiftCore.framework in Copy Frameworks */,
+				60000000000000000000003C /* VNUCore.framework in Copy Frameworks */,
 			);
 			name = "Copy Frameworks";
 			runOnlyForDeploymentPostprocessing = 0;
@@ -152,6 +167,8 @@
 		400000000000000000000006 /* vnu-parity */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = "vnu-parity"; sourceTree = BUILT_PRODUCTS_DIR; };
 		400000000000000000000007 /* NuValidatorXPC.xpc */ = {isa = PBXFileReference; explicitFileType = "wrapper.xpc-service"; includeInIndex = 0; path = NuValidatorXPC.xpc; sourceTree = BUILT_PRODUCTS_DIR; };
 		400000000000000000000008 /* NuValidatorXPCTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = NuValidatorXPCTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
+		400000000000000000000009 /* VNUServiceCore.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = VNUServiceCore.framework; sourceTree = BUILT_PRODUCTS_DIR; };
+		40000000000000000000000A /* VNUCore.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = VNUCore.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		500000000000000000000001 /* CheckerOptions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CheckerOptions.swift; sourceTree = "<group>"; };
 		500000000000000000000002 /* ContentType.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentType.swift; sourceTree = "<group>"; };
 		500000000000000000000003 /* HTMLTokenizer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HTMLTokenizer.swift; sourceTree = "<group>"; };
@@ -169,7 +186,6 @@
 		50000000000000000000000F /* main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
 		500000000000000000000010 /* VNUSwiftCoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VNUSwiftCoreTests.swift; sourceTree = "<group>"; };
 		500000000000000000000011 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
-		500000000000000000000012 /* Package.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Package.swift; sourceTree = SOURCE_ROOT; };
 		500000000000000000000013 /* ParityHarness.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ParityHarness.swift; sourceTree = "<group>"; };
 		500000000000000000000014 /* main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
 		500000000000000000000015 /* VNUParityCoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VNUParityCoreTests.swift; sourceTree = "<group>"; };
@@ -185,6 +201,8 @@
 		50000000000000000000001F /* VNUValidatorXPC.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = VNUValidatorXPC.h; sourceTree = "<group>"; };
 		500000000000000000000020 /* NuValidatorXPCObjCClientSmokeTests.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = NuValidatorXPCObjCClientSmokeTests.mm; sourceTree = "<group>"; };
 		500000000000000000000021 /* README.md */ = {isa = PBXFileReference; lastKnownFileType = net.daringfireball.markdown; path = README.md; sourceTree = "<group>"; };
+		500000000000000000000022 /* ValidatorChecking.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ValidatorChecking.swift; sourceTree = "<group>"; };
+		500000000000000000000023 /* ValidationJSON.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ValidationJSON.swift; sourceTree = "<group>"; };
 		5668F70A2FCD1E7F00FB04EB /* NuValidator.xctestplan */ = {isa = PBXFileReference; lastKnownFileType = text; path = NuValidator.xctestplan; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -193,6 +211,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				600000000000000000000036 /* VNUCore.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -200,7 +219,8 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
-				600000000000000000000011 /* VNUSwiftCore.framework in Frameworks */,
+				600000000000000000000029 /* VNUServiceCore.framework in Frameworks */,
+				600000000000000000000033 /* VNUCore.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -209,6 +229,8 @@
 			buildActionMask = 2147483647;
 			files = (
 				600000000000000000000013 /* VNUSwiftCore.framework in Frameworks */,
+				60000000000000000000002B /* VNUServiceCore.framework in Frameworks */,
+				600000000000000000000037 /* VNUCore.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -217,6 +239,7 @@
 			buildActionMask = 2147483647;
 			files = (
 				600000000000000000000017 /* VNUSwiftCore.framework in Frameworks */,
+				600000000000000000000038 /* VNUCore.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -226,6 +249,7 @@
 			files = (
 				600000000000000000000018 /* VNUParityCore.framework in Frameworks */,
 				600000000000000000000019 /* VNUSwiftCore.framework in Frameworks */,
+				600000000000000000000039 /* VNUCore.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -235,6 +259,7 @@
 			files = (
 				60000000000000000000001A /* VNUParityCore.framework in Frameworks */,
 				60000000000000000000001B /* VNUSwiftCore.framework in Frameworks */,
+				60000000000000000000003A /* VNUCore.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -243,10 +268,26 @@
 			buildActionMask = 2147483647;
 			files = (
 				600000000000000000000024 /* VNUSwiftCore.framework in Frameworks */,
+				60000000000000000000003B /* VNUCore.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		200000000000000000000016 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				600000000000000000000035 /* VNUCore.framework in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 		200000000000000000000014 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		200000000000000000000018 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -260,7 +301,6 @@
 			isa = PBXGroup;
 			children = (
 				5668F70A2FCD1E7F00FB04EB /* NuValidator.xctestplan */,
-				500000000000000000000012 /* Package.swift */,
 				000000000000000000000011 /* Integration */,
 				000000000000000000000004 /* Sources */,
 				000000000000000000000007 /* tests */,
@@ -272,6 +312,8 @@
 		000000000000000000000003 /* Products */ = {
 			isa = PBXGroup;
 			children = (
+				40000000000000000000000A /* VNUCore.framework */,
+				400000000000000000000009 /* VNUServiceCore.framework */,
 				400000000000000000000001 /* VNUSwiftCore.framework */,
 				400000000000000000000004 /* VNUParityCore.framework */,
 				400000000000000000000002 /* NuValidator.app */,
@@ -287,6 +329,8 @@
 		000000000000000000000004 /* Sources */ = {
 			isa = PBXGroup;
 			children = (
+				000000000000000000000015 /* VNUCore */,
+				000000000000000000000014 /* VNUServiceCore */,
 				000000000000000000000005 /* VNUSwiftCore */,
 				000000000000000000000006 /* VNUServer */,
 				00000000000000000000000F /* VNUXPCService */,
@@ -299,21 +343,11 @@
 		000000000000000000000005 /* VNUSwiftCore */ = {
 			isa = PBXGroup;
 			children = (
-				500000000000000000000001 /* CheckerOptions.swift */,
-				500000000000000000000002 /* ContentType.swift */,
 				500000000000000000000018 /* HTMLAttributeChecker.swift */,
 				500000000000000000000017 /* HTMLDocumentParser.swift */,
 				500000000000000000000003 /* HTMLTokenizer.swift */,
 				500000000000000000000004 /* HTMLValidator.swift */,
-				500000000000000000000005 /* HTTPServer.swift */,
-				500000000000000000000006 /* HTTPTypes.swift */,
-				500000000000000000000007 /* NuHTTPService.swift */,
 				500000000000000000000008 /* NuValidator.swift */,
-				500000000000000000000009 /* OutputRenderer.swift */,
-				50000000000000000000000A /* RequestParsing.swift */,
-				50000000000000000000000B /* SourceLocation.swift */,
-				50000000000000000000000C /* UIAssets.swift */,
-				50000000000000000000000D /* ValidationMessage.swift */,
 				50000000000000000000000E /* XMLValidator.swift */,
 			);
 			path = VNUSwiftCore;
@@ -440,6 +474,32 @@
 			path = NuValidatorXPCTests;
 			sourceTree = "<group>";
 		};
+		000000000000000000000014 /* VNUServiceCore */ = {
+			isa = PBXGroup;
+			children = (
+				500000000000000000000005 /* HTTPServer.swift */,
+				500000000000000000000006 /* HTTPTypes.swift */,
+				500000000000000000000007 /* NuHTTPService.swift */,
+				500000000000000000000009 /* OutputRenderer.swift */,
+				50000000000000000000000A /* RequestParsing.swift */,
+				50000000000000000000000C /* UIAssets.swift */,
+			);
+			path = VNUServiceCore;
+			sourceTree = "<group>";
+		};
+		000000000000000000000015 /* VNUCore */ = {
+			isa = PBXGroup;
+			children = (
+				500000000000000000000001 /* CheckerOptions.swift */,
+				500000000000000000000002 /* ContentType.swift */,
+				50000000000000000000000B /* SourceLocation.swift */,
+				500000000000000000000023 /* ValidationJSON.swift */,
+				50000000000000000000000D /* ValidationMessage.swift */,
+				500000000000000000000022 /* ValidatorChecking.swift */,
+			);
+			path = VNUCore;
+			sourceTree = "<group>";
+		};
 /* End PBXGroup section */
 
 /* Begin PBXResourcesBuildPhase section */
@@ -455,6 +515,38 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXNativeTarget section */
+		10000000000000000000000A /* VNUCore */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 30000000000000000000000B /* Build configuration list for PBXNativeTarget "VNUCore" */;
+			buildPhases = (
+				200000000000000000000017 /* Sources */,
+				200000000000000000000018 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = VNUCore;
+			productName = VNUCore;
+			productReference = 40000000000000000000000A /* VNUCore.framework */;
+			productType = "com.apple.product-type.framework";
+		};
+		100000000000000000000009 /* VNUServiceCore */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 30000000000000000000000A /* Build configuration list for PBXNativeTarget "VNUServiceCore" */;
+			buildPhases = (
+				200000000000000000000015 /* Sources */,
+				200000000000000000000016 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = VNUServiceCore;
+			productName = VNUServiceCore;
+			productReference = 400000000000000000000009 /* VNUServiceCore.framework */;
+			productType = "com.apple.product-type.framework";
+		};
 		100000000000000000000001 /* VNUSwiftCore */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = 300000000000000000000002 /* Build configuration list for PBXNativeTarget "VNUSwiftCore" */;
@@ -484,7 +576,6 @@
 			buildRules = (
 			);
 			dependencies = (
-				700000000000000000000001 /* PBXTargetDependency */,
 				700000000000000000000006 /* PBXTargetDependency */,
 			);
 			name = NuValidator;
@@ -632,6 +723,12 @@
 						CreatedOnToolsVersion = 26.0;
 						TestTargetID = 100000000000000000000002;
 					};
+					100000000000000000000009 = {
+						CreatedOnToolsVersion = 26.0;
+					};
+					10000000000000000000000A = {
+						CreatedOnToolsVersion = 26.0;
+					};
 				};
 			};
 			buildConfigurationList = 300000000000000000000001 /* Build configuration list for PBXProject "NuValidator" */;
@@ -649,6 +746,8 @@
 			targets = (
 				100000000000000000000002 /* NuValidator */,
 				100000000000000000000007 /* NuValidatorXPC */,
+				10000000000000000000000A /* VNUCore */,
+				100000000000000000000009 /* VNUServiceCore */,
 				100000000000000000000001 /* VNUSwiftCore */,
 				100000000000000000000004 /* VNUParityCore */,
 				100000000000000000000005 /* VNUParity */,
@@ -660,25 +759,41 @@
 /* End PBXProject section */
 
 /* Begin PBXSourcesBuildPhase section */
-		200000000000000000000001 /* Sources */ = {
+		200000000000000000000017 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
 				600000000000000000000001 /* CheckerOptions.swift in Sources */,
 				600000000000000000000002 /* ContentType.swift in Sources */,
+				60000000000000000000000B /* SourceLocation.swift in Sources */,
+				600000000000000000000032 /* ValidationJSON.swift in Sources */,
+				60000000000000000000000D /* ValidationMessage.swift in Sources */,
+				600000000000000000000031 /* ValidatorChecking.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		200000000000000000000015 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				600000000000000000000005 /* HTTPServer.swift in Sources */,
+				600000000000000000000006 /* HTTPTypes.swift in Sources */,
+				600000000000000000000007 /* NuHTTPService.swift in Sources */,
+				600000000000000000000009 /* OutputRenderer.swift in Sources */,
+				60000000000000000000000A /* RequestParsing.swift in Sources */,
+				60000000000000000000000C /* UIAssets.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		200000000000000000000001 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
 				60000000000000000000001D /* HTMLAttributeChecker.swift in Sources */,
 				60000000000000000000001C /* HTMLDocumentParser.swift in Sources */,
 				600000000000000000000003 /* HTMLTokenizer.swift in Sources */,
 				600000000000000000000004 /* HTMLValidator.swift in Sources */,
-				600000000000000000000005 /* HTTPServer.swift in Sources */,
-				600000000000000000000006 /* HTTPTypes.swift in Sources */,
-				600000000000000000000007 /* NuHTTPService.swift in Sources */,
 				600000000000000000000008 /* NuValidator.swift in Sources */,
-				600000000000000000000009 /* OutputRenderer.swift in Sources */,
-				60000000000000000000000A /* RequestParsing.swift in Sources */,
-				60000000000000000000000B /* SourceLocation.swift in Sources */,
-				60000000000000000000000C /* UIAssets.swift in Sources */,
-				60000000000000000000000D /* ValidationMessage.swift in Sources */,
 				60000000000000000000000E /* XMLValidator.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
@@ -899,6 +1014,78 @@
 				SDKROOT = macosx;
 				SWIFT_COMPILATION_MODE = wholemodule;
 				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				SWIFT_VERSION = 6.0;
+			};
+			name = Release;
+		};
+		310000000000000000000001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Manual;
+				DEFINES_MODULE = YES;
+				DYLIB_COMPATIBILITY_VERSION = 1;
+				DYLIB_CURRENT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				INSTALL_PATH = "@rpath";
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "com.barebones.nu-validator-swift.service-core";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SWIFT_VERSION = 6.0;
+			};
+			name = Debug;
+		};
+		310000000000000000000002 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Manual;
+				DEFINES_MODULE = YES;
+				DYLIB_COMPATIBILITY_VERSION = 1;
+				DYLIB_CURRENT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				INSTALL_PATH = "@rpath";
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "com.barebones.nu-validator-swift.service-core";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SWIFT_VERSION = 6.0;
+			};
+			name = Release;
+		};
+		311000000000000000000001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Manual;
+				DEFINES_MODULE = YES;
+				DYLIB_COMPATIBILITY_VERSION = 1;
+				DYLIB_CURRENT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				INSTALL_PATH = "@rpath";
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "com.barebones.nu-validator-swift.shared-core";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SWIFT_VERSION = 6.0;
+			};
+			name = Debug;
+		};
+		311000000000000000000002 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Manual;
+				DEFINES_MODULE = YES;
+				DYLIB_COMPATIBILITY_VERSION = 1;
+				DYLIB_CURRENT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				INSTALL_PATH = "@rpath";
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "com.barebones.nu-validator-swift.shared-core";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
 				SWIFT_VERSION = 6.0;
 			};
 			name = Release;
@@ -1324,6 +1511,24 @@
 			buildConfigurations = (
 				302000000000000000000001 /* Debug */,
 				302000000000000000000002 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		30000000000000000000000A /* Build configuration list for PBXNativeTarget "VNUServiceCore" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				310000000000000000000001 /* Debug */,
+				310000000000000000000002 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		30000000000000000000000B /* Build configuration list for PBXNativeTarget "VNUCore" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				311000000000000000000001 /* Debug */,
+				311000000000000000000002 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

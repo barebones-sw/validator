@@ -1,5 +1,6 @@
 import Foundation
-import VNUSwiftCore
+import VNUCore
+import VNUServiceCore
 #if canImport(AppKit)
 import AppKit
 #endif
@@ -96,7 +97,8 @@ func runCommandLineServer(_ configuration: ServerConfiguration) -> Never {
         requestLogger = nil
     }
 
-    let server = HTTPServer(host: configuration.host, port: configuration.port, requestLogger: requestLogger)
+    let service = NuHTTPService(validator: XPCValidatorClient())
+    let server = HTTPServer(host: configuration.host, port: configuration.port, service: service, requestLogger: requestLogger)
     do {
         try server.start()
     } catch {

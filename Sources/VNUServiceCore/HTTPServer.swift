@@ -43,7 +43,7 @@ public final class HTTPServer {
     public init(
         host: String = "127.0.0.1",
         port: UInt16 = 8888,
-        service: NuHTTPService = NuHTTPService(),
+        service: NuHTTPService,
         requestLogger: (@Sendable (HTTPRequestLog) -> Void)? = nil
     ) {
         self.host = host

@@ -1,4 +1,5 @@
 import Foundation
+import VNUCore
 
 public final class HTMLValidator: Sendable {
     public init() {}

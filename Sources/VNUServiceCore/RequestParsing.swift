@@ -1,4 +1,5 @@
 import Foundation
+import VNUCore
 
 public enum QueryParser {
     public static func parse(_ query: String) -> [String: [String]] {

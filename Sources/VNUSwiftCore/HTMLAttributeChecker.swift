@@ -1,4 +1,5 @@
 import Foundation
+import VNUCore
 
 struct HTMLURLAttributeChecker {
     private struct URLAttributeRule {

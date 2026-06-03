@@ -1,4 +1,5 @@
 import Foundation
+import VNUCore
 #if canImport(FoundationNetworking)
 import FoundationNetworking
 #endif
@@ -6,7 +7,7 @@ import FoundationNetworking
 public final class NuHTTPService: Sendable {
     private let validator: any ValidatorChecking
 
-    public init(validator: any ValidatorChecking = NuValidator()) {
+    public init(validator: any ValidatorChecking) {
         self.validator = validator
     }
 

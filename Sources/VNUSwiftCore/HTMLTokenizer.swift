@@ -1,4 +1,5 @@
 import Foundation
+import VNUCore
 
 struct HTMLAttribute: Equatable, Sendable {
     var name: String

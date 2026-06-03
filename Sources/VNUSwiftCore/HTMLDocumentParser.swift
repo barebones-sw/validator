@@ -1,4 +1,5 @@
 import Foundation
+import VNUCore
 
 struct HTMLSourceRange: Equatable, Sendable {
     var offset: Int

@@ -1,5 +1,5 @@
 import Foundation
-import VNUSwiftCore
+import VNUCore
 
 final class XPCValidatorClient: ValidatorChecking, @unchecked Sendable {
     private let lock = NSLock()

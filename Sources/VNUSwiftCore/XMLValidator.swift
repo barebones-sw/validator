@@ -1,4 +1,5 @@
 import Foundation
+import VNUCore
 
 public final class XMLValidator: NSObject, XMLParserDelegate, @unchecked Sendable {
     private struct PendingInputListReference {

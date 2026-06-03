@@ -1,4 +1,5 @@
 import Foundation
+import VNUCore
 import VNUSwiftCore
 
 final class ValidatorXPCService: NSObject, ValidatorXPCChecking {
@@ -18,8 +19,7 @@ final class ValidatorXPCService: NSObject, ValidatorXPCChecking {
             url: filename as String?
         )
         let result = validator.check(input: input, options: CheckerOptions(parameters: parameters))
-        let rendered = OutputRenderer.render(result: result, format: .json)
-        guard let json = String(data: rendered.body, encoding: .utf8) else {
+        guard let json = String(data: ValidationJSON.encode(result), encoding: .utf8) else {
             let error = NSError(
                 domain: ValidatorXPC.errorDomain,
                 code: 1,

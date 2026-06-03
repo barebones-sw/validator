@@ -1,6 +1,8 @@
 import Darwin
 import Foundation
 import Testing
+@testable import VNUCore
+@testable import VNUServiceCore
 @testable import VNUSwiftCore
 
 @Test func validHTMLProducesNoErrors() {
@@ -34,7 +36,7 @@ import Testing
 }
 
 @Test func serviceHandlesPostBodyAPI() throws {
-    let service = NuHTTPService()
+    let service = NuHTTPService(validator: NuValidator())
     let request = HTTPRequest(
         method: "POST",
         target: "/?out=gnu",
@@ -52,7 +54,7 @@ import Testing
 }
 
 @Test func serviceHandlesHeadRequestsWithoutBodies() {
-    let service = NuHTTPService()
+    let service = NuHTTPService(validator: NuValidator())
     let response = service.response(for: HTTPRequest(
         method: "HEAD",
         target: "/",
@@ -64,7 +66,7 @@ import Testing
 }
 
 @Test func serviceHandlesDocumentedMultipartFileUploads() throws {
-    let service = NuHTTPService()
+    let service = NuHTTPService(validator: NuValidator())
     let body = multipartBody(boundary: "BOUNDARY", parts: [
         MultipartPart(name: "out", content: Data("json".utf8)),
         MultipartPart(name: "showsource", content: Data("yes".utf8)),
@@ -91,7 +93,7 @@ import Testing
 }
 
 @Test func serviceKeepsCompatibilityWithExistingUploadedFileField() throws {
-    let service = NuHTTPService()
+    let service = NuHTTPService(validator: NuValidator())
     let body = multipartBody(boundary: "BOUNDARY", parts: [
         MultipartPart(name: "out", content: Data("json".utf8)),
         MultipartPart(name: "showsource", content: Data("yes".utf8)),
@@ -118,7 +120,7 @@ import Testing
 }
 
 @Test func serviceReportsFetchInputErrors() throws {
-    let service = NuHTTPService()
+    let service = NuHTTPService(validator: NuValidator())
     let response = service.response(for: HTTPRequest(
         method: "GET",
         target: "/?out=json&doc=file%3A%2F%2F%2Ftmp%2Ftest.html",
@@ -139,7 +141,7 @@ import Testing
     server.start()
     defer { server.stop() }
 
-    let service = NuHTTPService()
+    let service = NuHTTPService(validator: NuValidator())
     let response = service.response(for: HTTPRequest(
         method: "GET",
         target: "/?out=json&doc=\(QueryParser.percentEncodeForTests("http://127.0.0.1:\(server.port)/missing"))",
@@ -159,7 +161,7 @@ import Testing
     server.start()
     defer { server.stop() }
 
-    let service = NuHTTPService()
+    let service = NuHTTPService(validator: NuValidator())
     let response = service.response(for: HTTPRequest(
         method: "GET",
         target: "/?out=json&checkerrorpages=yes&doc=\(QueryParser.percentEncodeForTests("http://127.0.0.1:\(server.port)/missing"))",

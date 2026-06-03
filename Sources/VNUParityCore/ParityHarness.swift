@@ -1,4 +1,5 @@
 import Foundation
+import VNUCore
 import VNUSwiftCore
 
 public struct ParityConfiguration: Sendable {

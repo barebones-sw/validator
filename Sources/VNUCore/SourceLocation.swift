@@ -5,12 +5,25 @@ public struct SourceLocation: Codable, Equatable, Sendable {
     public var firstColumn: Int
     public var lastLine: Int
     public var lastColumn: Int
+
+    public init(firstLine: Int, firstColumn: Int, lastLine: Int, lastColumn: Int) {
+        self.firstLine = firstLine
+        self.firstColumn = firstColumn
+        self.lastLine = lastLine
+        self.lastColumn = lastColumn
+    }
 }
 
 public struct SourceExtract: Codable, Equatable, Sendable {
     public var text: String
     public var hiliteStart: Int
     public var hiliteLength: Int
+
+    public init(text: String, hiliteStart: Int, hiliteLength: Int) {
+        self.text = text
+        self.hiliteStart = hiliteStart
+        self.hiliteLength = hiliteLength
+    }
 }
 
 public final class SourceLocationMap: @unchecked Sendable {

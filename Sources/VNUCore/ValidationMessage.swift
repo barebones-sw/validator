@@ -59,6 +59,12 @@ public struct ValidationSource: Codable, Equatable, Sendable {
     public var code: String
     public var type: String?
     public var encoding: String?
+
+    public init(code: String, type: String? = nil, encoding: String? = nil) {
+        self.code = code
+        self.type = type
+        self.encoding = encoding
+    }
 }
 
 public struct ValidationResult: Codable, Equatable, Sendable {
@@ -76,4 +82,3 @@ public struct ValidationResult: Codable, Equatable, Sendable {
         self.language = language
     }
 }
-

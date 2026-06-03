@@ -1,8 +1,5 @@
 import Foundation
-
-public protocol ValidatorChecking: Sendable {
-    func check(input: DocumentInput, options: CheckerOptions) -> ValidationResult
-}
+import VNUCore
 
 public final class NuValidator: ValidatorChecking {
     private let htmlValidator = HTMLValidator()

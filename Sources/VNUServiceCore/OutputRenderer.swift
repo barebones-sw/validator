@@ -1,4 +1,5 @@
 import Foundation
+import VNUCore
 
 public struct RenderedOutput: Sendable {
     public var contentType: String
@@ -29,9 +30,7 @@ public enum OutputRenderer {
     }
 
     public static func renderJSON(result: ValidationResult, callback: String?) -> RenderedOutput {
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        let data = (try? encoder.encode(result)) ?? Data(#"{"messages":[]}"#.utf8)
+        let data = ValidationJSON.encode(result)
         if let callback, isValidJavaScriptCallback(callback), let json = String(data: data, encoding: .utf8) {
             return RenderedOutput(contentType: "application/javascript; charset=utf-8", body: Data("\(callback)(\(json));".utf8))
         }
