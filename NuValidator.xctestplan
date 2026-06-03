@@ -35,6 +35,13 @@
         "identifier" : "100000000000000000000006",
         "name" : "VNUParityCoreTests"
       }
+    },
+    {
+      "target" : {
+        "containerPath" : "container:NuValidator.xcodeproj",
+        "identifier" : "100000000000000000000008",
+        "name" : "NuValidatorXPCTests"
+      }
     }
   ],
   "version" : 1

@@ -55,6 +55,16 @@
                ReferencedContainer = "container:NuValidator.xcodeproj">
             </BuildableReference>
          </TestableReference>
+         <TestableReference
+            skipped = "NO">
+            <BuildableReference
+               BuildableIdentifier = "primary"
+               BlueprintIdentifier = "100000000000000000000008"
+               BuildableName = "NuValidatorXPCTests.xctest"
+               BlueprintName = "NuValidatorXPCTests"
+               ReferencedContainer = "container:NuValidator.xcodeproj">
+            </BuildableReference>
+         </TestableReference>
       </Testables>
    </TestAction>
    <LaunchAction
