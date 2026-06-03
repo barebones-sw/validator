@@ -35,6 +35,9 @@ Options:
 
 Typical workflow:
   git remote add upstream https://github.com/validator/validator.git   # once
+  Scripts/stage-upstream-update.sh                                    # isolated worktree
+
+Manual workflow:
   git fetch upstream
   git merge upstream/main                                             # or cherry-pick
   Scripts/audit-upstream-update.sh --base <pre-merge-rev> --head HEAD
@@ -112,7 +115,7 @@ git diff --name-status "$BASE" "$HEAD_REV" > "$CHANGES_FILE"
 
 changed_matching() {
     local pattern="$1"
-    awk '{ print $2 }' "$CHANGES_FILE" | grep -E "$pattern" || true
+    awk '{ print $NF }' "$CHANGES_FILE" | grep -E "$pattern" || true
 }
 
 count_matching() {
@@ -163,6 +166,7 @@ TOTAL_COUNT="$(wc -l < "$CHANGES_FILE" | tr -d ' ')"
 DIRTY_STATUS="$(git status --short)"
 
 PARITY_STATUS=0
+PARITY_COMMAND="parity skipped"
 if [[ "$RUN_PARITY" -eq 1 ]]; then
     PARITY_DERIVED_DATA=".build/parity-xcode"
     xcodebuild -quiet \
@@ -182,6 +186,8 @@ if [[ "$RUN_PARITY" -eq 1 ]]; then
     if [[ "$UPDATE_BASELINE" -eq 1 ]]; then
         PARITY_ARGS+=(--update-baseline)
     fi
+    PARITY_COMMAND="$(printf '%q ' "$PARITY_EXECUTABLE" "${PARITY_ARGS[@]}")"
+    PARITY_COMMAND="${PARITY_COMMAND% }"
     set +e
     "$PARITY_EXECUTABLE" "${PARITY_ARGS[@]}" > "$PARITY_FILE" 2>&1
     PARITY_STATUS=$?
@@ -214,7 +220,7 @@ cat > "$REPORT" <<EOF
 
 ## Parity
 
-- Command: \`${PARITY_EXECUTABLE:-vnu-parity} $(printf '%q ' "${PARITY_ARGS[@]:-}")\`
+- Command: \`$PARITY_COMMAND\`
 - Exit status: $PARITY_STATUS
 
 \`\`\`text
@@ -242,6 +248,7 @@ cat >> "$REPORT" <<'EOF'
 ## Useful Follow-Up Commands
 
 ```sh
+Scripts/stage-upstream-update.sh
 xcodebuild -project NuValidator.xcodeproj -scheme VNUParity -configuration Debug -derivedDataPath .build/parity-xcode build
 .build/parity-xcode/Build/Products/Debug/vnu-parity --strict --allow-regression
 .build/parity-xcode/Build/Products/Debug/vnu-parity --update-baseline --allow-regression
@@ -255,6 +262,12 @@ Relax NG and Schematron files are upstream source material, not runtime tables
 for the Swift port today. The intended maintenance path is to use these files
 as inputs for generated, typed Swift resources where practical, while keeping
 algorithmic checks in Swift code with parity tests around them.
+
+The local Xcode project deliberately splits the port into three framework
+layers: `VNUCore` for shared validator contract types, `VNUServiceCore` for
+the app HTTP API, and `VNUSwiftCore` for checker behavior. Upstream changes
+should usually land in `VNUSwiftCore`, generated resources, or parity fixtures;
+only HTTP API changes should need `VNUServiceCore`.
 EOF
 
 echo "Wrote $REPORT"

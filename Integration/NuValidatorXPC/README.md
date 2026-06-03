@@ -16,7 +16,7 @@ For an app-hosted client, build the `NuValidatorXPC` target and embed the result
 Host.app/Contents/XPCServices/NuValidatorXPC.xpc
 ```
 
-The service target embeds `VNUSwiftCore.framework` in its own `Contents/Frameworks` directory, so the host app does not need to link the validator framework.
+The service target embeds `VNUSwiftCore.framework` and the small shared `VNUCore.framework` in its own `Contents/Frameworks` directory, so the host app does not need to link either validator framework. `VNUServiceCore.framework` is only needed by apps that vend the HTTP API; BBEdit-style XPC clients do not need it.
 
 In Xcode, add a Copy Files phase to the host app target:
 
