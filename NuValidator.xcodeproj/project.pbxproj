@@ -38,6 +38,13 @@
 		60000000000000000000001D /* HTMLAttributeChecker.swift in Sources */ = {isa = PBXBuildFile; fileRef = 500000000000000000000018 /* HTMLAttributeChecker.swift */; };
 		60000000000000000000001E /* Credits.rtf in Resources */ = {isa = PBXBuildFile; fileRef = 500000000000000000000019 /* Credits.rtf */; };
 		60000000000000000000001F /* MainMenu.xib in Resources */ = {isa = PBXBuildFile; fileRef = 50000000000000000000001A /* MainMenu.xib */; };
+		600000000000000000000020 /* ValidatorXPCProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = 50000000000000000000001B /* ValidatorXPCProtocol.swift */; };
+		600000000000000000000021 /* XPCValidatorClient.swift in Sources */ = {isa = PBXBuildFile; fileRef = 50000000000000000000001C /* XPCValidatorClient.swift */; };
+		600000000000000000000022 /* ValidatorXPCProtocol.swift in Sources */ = {isa = PBXBuildFile; fileRef = 50000000000000000000001B /* ValidatorXPCProtocol.swift */; };
+		600000000000000000000023 /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = 50000000000000000000001D /* main.swift */; };
+		600000000000000000000024 /* VNUSwiftCore.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 400000000000000000000001 /* VNUSwiftCore.framework */; };
+		600000000000000000000025 /* VNUSwiftCore.framework in Copy Frameworks */ = {isa = PBXBuildFile; fileRef = 400000000000000000000001 /* VNUSwiftCore.framework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		600000000000000000000026 /* NuValidatorXPC.xpc in Embed XPC Services */ = {isa = PBXBuildFile; fileRef = 400000000000000000000007 /* NuValidatorXPC.xpc */; settings = {ATTRIBUTES = (CodeSignOnCopy, ); }; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -76,6 +83,20 @@
 			remoteGlobalIDString = 100000000000000000000004;
 			remoteInfo = VNUParityCore;
 		};
+		701000000000000000000006 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 000000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 100000000000000000000007;
+			remoteInfo = NuValidatorXPC;
+		};
+		701000000000000000000007 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 000000000000000000000001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 100000000000000000000001;
+			remoteInfo = VNUSwiftCore;
+		};
 /* End PBXContainerItemProxy section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -90,6 +111,28 @@
 			name = "Copy Frameworks";
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		20000000000000000000000F /* Embed XPC Services */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "$(CONTENTS_FOLDER_PATH)/XPCServices";
+			dstSubfolderSpec = 16;
+			files = (
+				600000000000000000000026 /* NuValidatorXPC.xpc in Embed XPC Services */,
+			);
+			name = "Embed XPC Services";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		200000000000000000000010 /* Copy Frameworks */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 10;
+			files = (
+				600000000000000000000025 /* VNUSwiftCore.framework in Copy Frameworks */,
+			);
+			name = "Copy Frameworks";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
@@ -99,6 +142,7 @@
 		400000000000000000000004 /* VNUParityCore.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = VNUParityCore.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		400000000000000000000005 /* VNUParityCoreTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = VNUParityCoreTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		400000000000000000000006 /* vnu-parity */ = {isa = PBXFileReference; explicitFileType = "compiled.mach-o.executable"; includeInIndex = 0; path = "vnu-parity"; sourceTree = BUILT_PRODUCTS_DIR; };
+		400000000000000000000007 /* NuValidatorXPC.xpc */ = {isa = PBXFileReference; explicitFileType = "wrapper.xpc-service"; includeInIndex = 0; path = NuValidatorXPC.xpc; sourceTree = BUILT_PRODUCTS_DIR; };
 		500000000000000000000001 /* CheckerOptions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CheckerOptions.swift; sourceTree = "<group>"; };
 		500000000000000000000002 /* ContentType.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentType.swift; sourceTree = "<group>"; };
 		500000000000000000000003 /* HTMLTokenizer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HTMLTokenizer.swift; sourceTree = "<group>"; };
@@ -125,6 +169,10 @@
 		500000000000000000000018 /* HTMLAttributeChecker.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = HTMLAttributeChecker.swift; sourceTree = "<group>"; };
 		500000000000000000000019 /* Credits.rtf */ = {isa = PBXFileReference; lastKnownFileType = text.rtf; path = Credits.rtf; sourceTree = "<group>"; };
 		50000000000000000000001A /* MainMenu.xib */ = {isa = PBXFileReference; lastKnownFileType = file.xib; path = MainMenu.xib; sourceTree = "<group>"; };
+		50000000000000000000001B /* ValidatorXPCProtocol.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ValidatorXPCProtocol.swift; sourceTree = "<group>"; };
+		50000000000000000000001C /* XPCValidatorClient.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = XPCValidatorClient.swift; sourceTree = "<group>"; };
+		50000000000000000000001D /* main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
+		50000000000000000000001E /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		5668F70A2FCD1E7F00FB04EB /* NuValidator.xctestplan */ = {isa = PBXFileReference; lastKnownFileType = text; path = NuValidator.xctestplan; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -178,6 +226,14 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		200000000000000000000011 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				600000000000000000000024 /* VNUSwiftCore.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXGroup section */
@@ -199,6 +255,7 @@
 				400000000000000000000001 /* VNUSwiftCore.framework */,
 				400000000000000000000004 /* VNUParityCore.framework */,
 				400000000000000000000002 /* NuValidator.app */,
+				400000000000000000000007 /* NuValidatorXPC.xpc */,
 				400000000000000000000003 /* VNUSwiftCoreTests.xctest */,
 				400000000000000000000005 /* VNUParityCoreTests.xctest */,
 				400000000000000000000006 /* vnu-parity */,
@@ -211,6 +268,7 @@
 			children = (
 				000000000000000000000005 /* VNUSwiftCore */,
 				000000000000000000000006 /* VNUServer */,
+				00000000000000000000000F /* VNUXPCService */,
 				00000000000000000000000B /* VNUParityCore */,
 				00000000000000000000000C /* VNUParity */,
 			);
@@ -244,6 +302,8 @@
 			isa = PBXGroup;
 			children = (
 				50000000000000000000000F /* main.swift */,
+				50000000000000000000001B /* ValidatorXPCProtocol.swift */,
+				50000000000000000000001C /* XPCValidatorClient.swift */,
 			);
 			path = VNUServer;
 			sourceTree = "<group>";
@@ -269,6 +329,7 @@
 			isa = PBXGroup;
 			children = (
 				00000000000000000000000A /* NuValidator */,
+				000000000000000000000010 /* NuValidatorXPC */,
 			);
 			path = resources;
 			sourceTree = "<group>";
@@ -316,6 +377,22 @@
 			path = VNUParityCoreTests;
 			sourceTree = "<group>";
 		};
+		00000000000000000000000F /* VNUXPCService */ = {
+			isa = PBXGroup;
+			children = (
+				50000000000000000000001D /* main.swift */,
+			);
+			path = VNUXPCService;
+			sourceTree = "<group>";
+		};
+		000000000000000000000010 /* NuValidatorXPC */ = {
+			isa = PBXGroup;
+			children = (
+				50000000000000000000001E /* Info.plist */,
+			);
+			path = NuValidatorXPC;
+			sourceTree = "<group>";
+		};
 /* End PBXGroup section */
 
 /* Begin PBXResourcesBuildPhase section */
@@ -355,16 +432,36 @@
 				200000000000000000000004 /* Frameworks */,
 				20000000000000000000000E /* Resources */,
 				200000000000000000000005 /* Copy Frameworks */,
+				20000000000000000000000F /* Embed XPC Services */,
 			);
 			buildRules = (
 			);
 			dependencies = (
 				700000000000000000000001 /* PBXTargetDependency */,
+				700000000000000000000006 /* PBXTargetDependency */,
 			);
 			name = NuValidator;
 			productName = NuValidator;
 			productReference = 400000000000000000000002 /* NuValidator.app */;
 			productType = "com.apple.product-type.application";
+		};
+		100000000000000000000007 /* NuValidatorXPC */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 300000000000000000000008 /* Build configuration list for PBXNativeTarget "NuValidatorXPC" */;
+			buildPhases = (
+				200000000000000000000012 /* Sources */,
+				200000000000000000000011 /* Frameworks */,
+				200000000000000000000010 /* Copy Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				700000000000000000000007 /* PBXTargetDependency */,
+			);
+			name = NuValidatorXPC;
+			productName = NuValidatorXPC;
+			productReference = 400000000000000000000007 /* NuValidatorXPC.xpc */;
+			productType = "com.apple.product-type.xpc-service";
 		};
 		100000000000000000000003 /* VNUSwiftCoreTests */ = {
 			isa = PBXNativeTarget;
@@ -464,6 +561,9 @@
 						CreatedOnToolsVersion = 26.0;
 						TestTargetID = 100000000000000000000004;
 					};
+					100000000000000000000007 = {
+						CreatedOnToolsVersion = 26.0;
+					};
 				};
 			};
 			buildConfigurationList = 300000000000000000000001 /* Build configuration list for PBXProject "NuValidator" */;
@@ -480,6 +580,7 @@
 			projectRoot = "";
 			targets = (
 				100000000000000000000002 /* NuValidator */,
+				100000000000000000000007 /* NuValidatorXPC */,
 				100000000000000000000001 /* VNUSwiftCore */,
 				100000000000000000000004 /* VNUParityCore */,
 				100000000000000000000005 /* VNUParity */,
@@ -518,6 +619,8 @@
 			buildActionMask = 2147483647;
 			files = (
 				60000000000000000000000F /* main.swift in Sources */,
+				600000000000000000000020 /* ValidatorXPCProtocol.swift in Sources */,
+				600000000000000000000021 /* XPCValidatorClient.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -553,6 +656,15 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		200000000000000000000012 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				600000000000000000000022 /* ValidatorXPCProtocol.swift in Sources */,
+				600000000000000000000023 /* main.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
@@ -580,6 +692,16 @@
 			isa = PBXTargetDependency;
 			target = 100000000000000000000004 /* VNUParityCore */;
 			targetProxy = 701000000000000000000005 /* PBXContainerItemProxy */;
+		};
+		700000000000000000000006 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 100000000000000000000007 /* NuValidatorXPC */;
+			targetProxy = 701000000000000000000006 /* PBXContainerItemProxy */;
+		};
+		700000000000000000000007 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 100000000000000000000001 /* VNUSwiftCore */;
+			targetProxy = 701000000000000000000007 /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -969,6 +1091,78 @@
 			};
 			name = Release;
 		};
+		308000000000000000000001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				AUTOMATION_APPLE_EVENTS = NO;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = W52GZAXT98;
+				ENABLE_APP_SANDBOX = YES;
+				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_INCOMING_NETWORK_CONNECTIONS = NO;
+				ENABLE_OUTGOING_NETWORK_CONNECTIONS = NO;
+				ENABLE_RESOURCE_ACCESS_AUDIO_INPUT = NO;
+				ENABLE_RESOURCE_ACCESS_BLUETOOTH = NO;
+				ENABLE_RESOURCE_ACCESS_CALENDARS = NO;
+				ENABLE_RESOURCE_ACCESS_CAMERA = NO;
+				ENABLE_RESOURCE_ACCESS_CONTACTS = NO;
+				ENABLE_RESOURCE_ACCESS_LOCATION = NO;
+				ENABLE_RESOURCE_ACCESS_PHOTO_LIBRARY = NO;
+				ENABLE_RESOURCE_ACCESS_PRINTING = NO;
+				ENABLE_RESOURCE_ACCESS_USB = NO;
+				ENABLE_USER_SELECTED_FILES = readonly;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = resources/NuValidatorXPC/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "com.barebones.nu-validator-swift.xpc";
+				PRODUCT_NAME = NuValidatorXPC;
+				PROVISIONING_PROFILE_SPECIFIER = "";
+				SKIP_INSTALL = YES;
+				SWIFT_VERSION = 6.0;
+			};
+			name = Debug;
+		};
+		308000000000000000000002 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				AUTOMATION_APPLE_EVENTS = NO;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = W52GZAXT98;
+				ENABLE_APP_SANDBOX = YES;
+				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_INCOMING_NETWORK_CONNECTIONS = NO;
+				ENABLE_OUTGOING_NETWORK_CONNECTIONS = NO;
+				ENABLE_RESOURCE_ACCESS_AUDIO_INPUT = NO;
+				ENABLE_RESOURCE_ACCESS_BLUETOOTH = NO;
+				ENABLE_RESOURCE_ACCESS_CALENDARS = NO;
+				ENABLE_RESOURCE_ACCESS_CAMERA = NO;
+				ENABLE_RESOURCE_ACCESS_CONTACTS = NO;
+				ENABLE_RESOURCE_ACCESS_LOCATION = NO;
+				ENABLE_RESOURCE_ACCESS_PHOTO_LIBRARY = NO;
+				ENABLE_RESOURCE_ACCESS_PRINTING = NO;
+				ENABLE_RESOURCE_ACCESS_USB = NO;
+				ENABLE_USER_SELECTED_FILES = readonly;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = resources/NuValidatorXPC/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "com.barebones.nu-validator-swift.xpc";
+				PRODUCT_NAME = NuValidatorXPC;
+				PROVISIONING_PROFILE_SPECIFIER = "";
+				SKIP_INSTALL = YES;
+				SWIFT_VERSION = 6.0;
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -1031,6 +1225,15 @@
 			buildConfigurations = (
 				307000000000000000000001 /* Debug */,
 				307000000000000000000002 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		300000000000000000000008 /* Build configuration list for PBXNativeTarget "NuValidatorXPC" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				308000000000000000000001 /* Debug */,
+				308000000000000000000002 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

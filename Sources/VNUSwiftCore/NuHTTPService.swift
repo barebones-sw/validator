@@ -4,9 +4,11 @@ import FoundationNetworking
 #endif
 
 public final class NuHTTPService: Sendable {
-    private let validator = NuValidator()
+    private let validator: any ValidatorChecking
 
-    public init() {}
+    public init(validator: any ValidatorChecking = NuValidator()) {
+        self.validator = validator
+    }
 
     public func response(for request: HTTPRequest) -> HTTPResponse {
         let isHead = request.method == "HEAD"

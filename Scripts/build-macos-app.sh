@@ -4,17 +4,16 @@ set -eu
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-CLANG_MODULE_CACHE_PATH="${CLANG_MODULE_CACHE_PATH:-/private/tmp/vnu-swift-module-cache}"
-export CLANG_MODULE_CACHE_PATH
-
-swift build -c release --product vnu-swift
+DERIVED_DATA="$ROOT/.build/xcode-derived"
+xcodebuild \
+    -project "$ROOT/NuValidator.xcodeproj" \
+    -scheme NuValidator \
+    -configuration Release \
+    -derivedDataPath "$DERIVED_DATA" \
+    build
 
 APP="$ROOT/.build/NuValidator.app"
 rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources/Base.lproj"
-cp "$ROOT/.build/release/vnu-swift" "$APP/Contents/MacOS/vnu-swift"
-cp "$ROOT/resources/NuValidator/Info.plist" "$APP/Contents/Info.plist"
-cp "$ROOT/resources/NuValidator/Credits.rtf" "$APP/Contents/Resources/Credits.rtf"
-xcrun ibtool --compile "$APP/Contents/Resources/Base.lproj/MainMenu.nib" "$ROOT/resources/NuValidator/Base.lproj/MainMenu.xib"
+cp -R "$DERIVED_DATA/Build/Products/Release/NuValidator.app" "$APP"
 
 echo "$APP"

@@ -1,6 +1,10 @@
 import Foundation
 
-public final class NuValidator: Sendable {
+public protocol ValidatorChecking: Sendable {
+    func check(input: DocumentInput, options: CheckerOptions) -> ValidationResult
+}
+
+public final class NuValidator: ValidatorChecking {
     private let htmlValidator = HTMLValidator()
     private let xmlValidator = XMLValidator()
     private let cssValidator = CSSValidator()
@@ -40,4 +44,3 @@ public final class NuValidator: Sendable {
         }
     }
 }
-

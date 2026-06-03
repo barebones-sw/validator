@@ -123,6 +123,7 @@ final class ValidatorApplicationDelegate: NSObject, NSApplicationDelegate {
     private var configuration: ServerConfiguration
     private let defaults = UserDefaults.standard
     private let logSink: RequestLogSink
+    private let validatorClient = XPCValidatorClient()
     private var nibTopLevelObjects: NSArray?
 
     @IBOutlet var mainMenu: NSMenu!
@@ -209,10 +210,13 @@ final class ValidatorApplicationDelegate: NSObject, NSApplicationDelegate {
     private func startServer() {
         let configuration = self.configuration
         let logSink = self.logSink
+        let validatorClient = self.validatorClient
         DispatchQueue.global(qos: .userInitiated).async {
+            let service = NuHTTPService(validator: validatorClient)
             let server = HTTPServer(
                 host: configuration.host,
                 port: configuration.port,
+                service: service,
                 requestLogger: { logSink.emit($0) }
             )
             do {
@@ -226,6 +230,7 @@ final class ValidatorApplicationDelegate: NSObject, NSApplicationDelegate {
         }
         statusLabel.stringValue = "Checker service running"
         appendSystemLog("Checker service started at \(configuration.baseURL)")
+        appendSystemLog("Validation requests are routed through \(ValidatorXPC.serviceIdentifier).")
     }
 
     @IBAction func showWindow(_ sender: Any?) {
