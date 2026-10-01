@@ -62,13 +62,6 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
-		701000000000000000000001 /* PBXContainerItemProxy */ = {
-			isa = PBXContainerItemProxy;
-			containerPortal = 000000000000000000000001 /* Project object */;
-			proxyType = 1;
-			remoteGlobalIDString = 100000000000000000000001;
-			remoteInfo = VNUSwiftCore;
-		};
 		701000000000000000000002 /* PBXContainerItemProxy */ = {
 			isa = PBXContainerItemProxy;
 			containerPortal = 000000000000000000000001 /* Project object */;
@@ -272,18 +265,18 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		200000000000000000000014 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		200000000000000000000016 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
 				600000000000000000000035 /* VNUCore.framework in Frameworks */,
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
-		200000000000000000000014 /* Frameworks */ = {
-			isa = PBXFrameworksBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -401,14 +394,6 @@
 			path = NuValidator;
 			sourceTree = "<group>";
 		};
-		00000000000000000000000E /* Base.lproj */ = {
-			isa = PBXGroup;
-			children = (
-				50000000000000000000001A /* MainMenu.xib */,
-			);
-			path = Base.lproj;
-			sourceTree = "<group>";
-		};
 		00000000000000000000000B /* VNUParityCore */ = {
 			isa = PBXGroup;
 			children = (
@@ -431,6 +416,14 @@
 				500000000000000000000015 /* VNUParityCoreTests.swift */,
 			);
 			path = VNUParityCoreTests;
+			sourceTree = "<group>";
+		};
+		00000000000000000000000E /* Base.lproj */ = {
+			isa = PBXGroup;
+			children = (
+				50000000000000000000001A /* MainMenu.xib */,
+			);
+			path = Base.lproj;
 			sourceTree = "<group>";
 		};
 		00000000000000000000000F /* VNUXPCService */ = {
@@ -502,51 +495,7 @@
 		};
 /* End PBXGroup section */
 
-/* Begin PBXResourcesBuildPhase section */
-		20000000000000000000000E /* Resources */ = {
-			isa = PBXResourcesBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-				60000000000000000000001E /* Credits.rtf in Resources */,
-				60000000000000000000001F /* MainMenu.xib in Resources */,
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
-/* End PBXResourcesBuildPhase section */
-
 /* Begin PBXNativeTarget section */
-		10000000000000000000000A /* VNUCore */ = {
-			isa = PBXNativeTarget;
-			buildConfigurationList = 30000000000000000000000B /* Build configuration list for PBXNativeTarget "VNUCore" */;
-			buildPhases = (
-				200000000000000000000017 /* Sources */,
-				200000000000000000000018 /* Frameworks */,
-			);
-			buildRules = (
-			);
-			dependencies = (
-			);
-			name = VNUCore;
-			productName = VNUCore;
-			productReference = 40000000000000000000000A /* VNUCore.framework */;
-			productType = "com.apple.product-type.framework";
-		};
-		100000000000000000000009 /* VNUServiceCore */ = {
-			isa = PBXNativeTarget;
-			buildConfigurationList = 30000000000000000000000A /* Build configuration list for PBXNativeTarget "VNUServiceCore" */;
-			buildPhases = (
-				200000000000000000000015 /* Sources */,
-				200000000000000000000016 /* Frameworks */,
-			);
-			buildRules = (
-			);
-			dependencies = (
-			);
-			name = VNUServiceCore;
-			productName = VNUServiceCore;
-			productReference = 400000000000000000000009 /* VNUServiceCore.framework */;
-			productType = "com.apple.product-type.framework";
-		};
 		100000000000000000000001 /* VNUSwiftCore */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = 300000000000000000000002 /* Build configuration list for PBXNativeTarget "VNUSwiftCore" */;
@@ -582,24 +531,6 @@
 			productName = NuValidator;
 			productReference = 400000000000000000000002 /* NuValidator.app */;
 			productType = "com.apple.product-type.application";
-		};
-		100000000000000000000007 /* NuValidatorXPC */ = {
-			isa = PBXNativeTarget;
-			buildConfigurationList = 300000000000000000000008 /* Build configuration list for PBXNativeTarget "NuValidatorXPC" */;
-			buildPhases = (
-				200000000000000000000012 /* Sources */,
-				200000000000000000000011 /* Frameworks */,
-				200000000000000000000010 /* Copy Frameworks */,
-			);
-			buildRules = (
-			);
-			dependencies = (
-				700000000000000000000007 /* PBXTargetDependency */,
-			);
-			name = NuValidatorXPC;
-			productName = NuValidatorXPC;
-			productReference = 400000000000000000000007 /* NuValidatorXPC.xpc */;
-			productType = "com.apple.product-type.xpc-service";
 		};
 		100000000000000000000003 /* VNUSwiftCoreTests */ = {
 			isa = PBXNativeTarget;
@@ -669,6 +600,24 @@
 			productReference = 400000000000000000000005 /* VNUParityCoreTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
 		};
+		100000000000000000000007 /* NuValidatorXPC */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 300000000000000000000008 /* Build configuration list for PBXNativeTarget "NuValidatorXPC" */;
+			buildPhases = (
+				200000000000000000000012 /* Sources */,
+				200000000000000000000011 /* Frameworks */,
+				200000000000000000000010 /* Copy Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				700000000000000000000007 /* PBXTargetDependency */,
+			);
+			name = NuValidatorXPC;
+			productName = NuValidatorXPC;
+			productReference = 400000000000000000000007 /* NuValidatorXPC.xpc */;
+			productType = "com.apple.product-type.xpc-service";
+		};
 		100000000000000000000008 /* NuValidatorXPCTests */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = 300000000000000000000009 /* Build configuration list for PBXNativeTarget "NuValidatorXPCTests" */;
@@ -686,6 +635,38 @@
 			productReference = 400000000000000000000008 /* NuValidatorXPCTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
 		};
+		100000000000000000000009 /* VNUServiceCore */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 30000000000000000000000A /* Build configuration list for PBXNativeTarget "VNUServiceCore" */;
+			buildPhases = (
+				200000000000000000000015 /* Sources */,
+				200000000000000000000016 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = VNUServiceCore;
+			productName = VNUServiceCore;
+			productReference = 400000000000000000000009 /* VNUServiceCore.framework */;
+			productType = "com.apple.product-type.framework";
+		};
+		10000000000000000000000A /* VNUCore */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 30000000000000000000000B /* Build configuration list for PBXNativeTarget "VNUCore" */;
+			buildPhases = (
+				200000000000000000000017 /* Sources */,
+				200000000000000000000018 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = VNUCore;
+			productName = VNUCore;
+			productReference = 40000000000000000000000A /* VNUCore.framework */;
+			productType = "com.apple.product-type.framework";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -694,7 +675,7 @@
 			attributes = {
 				BuildIndependentTargetsInParallel = 1;
 				LastSwiftUpdateCheck = 2600;
-				LastUpgradeCheck = 2600;
+				LastUpgradeCheck = 2700;
 				TargetAttributes = {
 					100000000000000000000001 = {
 						CreatedOnToolsVersion = 26.0;
@@ -758,33 +739,19 @@
 		};
 /* End PBXProject section */
 
+/* Begin PBXResourcesBuildPhase section */
+		20000000000000000000000E /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				60000000000000000000001E /* Credits.rtf in Resources */,
+				60000000000000000000001F /* MainMenu.xib in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
 /* Begin PBXSourcesBuildPhase section */
-		200000000000000000000017 /* Sources */ = {
-			isa = PBXSourcesBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-				600000000000000000000001 /* CheckerOptions.swift in Sources */,
-				600000000000000000000002 /* ContentType.swift in Sources */,
-				60000000000000000000000B /* SourceLocation.swift in Sources */,
-				600000000000000000000032 /* ValidationJSON.swift in Sources */,
-				60000000000000000000000D /* ValidationMessage.swift in Sources */,
-				600000000000000000000031 /* ValidatorChecking.swift in Sources */,
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
-		200000000000000000000015 /* Sources */ = {
-			isa = PBXSourcesBuildPhase;
-			buildActionMask = 2147483647;
-			files = (
-				600000000000000000000005 /* HTTPServer.swift in Sources */,
-				600000000000000000000006 /* HTTPTypes.swift in Sources */,
-				600000000000000000000007 /* NuHTTPService.swift in Sources */,
-				600000000000000000000009 /* OutputRenderer.swift in Sources */,
-				60000000000000000000000A /* RequestParsing.swift in Sources */,
-				60000000000000000000000C /* UIAssets.swift in Sources */,
-			);
-			runOnlyForDeploymentPostprocessing = 0;
-		};
 		200000000000000000000001 /* Sources */ = {
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
@@ -857,14 +824,35 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		200000000000000000000015 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				600000000000000000000005 /* HTTPServer.swift in Sources */,
+				600000000000000000000006 /* HTTPTypes.swift in Sources */,
+				600000000000000000000007 /* NuHTTPService.swift in Sources */,
+				600000000000000000000009 /* OutputRenderer.swift in Sources */,
+				60000000000000000000000A /* RequestParsing.swift in Sources */,
+				60000000000000000000000C /* UIAssets.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		200000000000000000000017 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				600000000000000000000001 /* CheckerOptions.swift in Sources */,
+				600000000000000000000002 /* ContentType.swift in Sources */,
+				60000000000000000000000B /* SourceLocation.swift in Sources */,
+				600000000000000000000032 /* ValidationJSON.swift in Sources */,
+				60000000000000000000000D /* ValidationMessage.swift in Sources */,
+				600000000000000000000031 /* ValidatorChecking.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
 
 /* Begin PBXTargetDependency section */
-		700000000000000000000001 /* PBXTargetDependency */ = {
-			isa = PBXTargetDependency;
-			target = 100000000000000000000001 /* VNUSwiftCore */;
-			targetProxy = 701000000000000000000001 /* PBXContainerItemProxy */;
-		};
 		700000000000000000000002 /* PBXTargetDependency */ = {
 			isa = PBXTargetDependency;
 			target = 100000000000000000000001 /* VNUSwiftCore */;
@@ -1014,78 +1002,6 @@
 				SDKROOT = macosx;
 				SWIFT_COMPILATION_MODE = wholemodule;
 				SWIFT_OPTIMIZATION_LEVEL = "-O";
-				SWIFT_VERSION = 6.0;
-			};
-			name = Release;
-		};
-		310000000000000000000001 /* Debug */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				CODE_SIGN_IDENTITY = "-";
-				CODE_SIGN_STYLE = Manual;
-				DEFINES_MODULE = YES;
-				DYLIB_COMPATIBILITY_VERSION = 1;
-				DYLIB_CURRENT_VERSION = 1;
-				GENERATE_INFOPLIST_FILE = YES;
-				INSTALL_PATH = "@rpath";
-				MARKETING_VERSION = 0.1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = "com.barebones.nu-validator-swift.service-core";
-				PRODUCT_NAME = "$(TARGET_NAME)";
-				SKIP_INSTALL = YES;
-				SWIFT_VERSION = 6.0;
-			};
-			name = Debug;
-		};
-		310000000000000000000002 /* Release */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				CODE_SIGN_IDENTITY = "-";
-				CODE_SIGN_STYLE = Manual;
-				DEFINES_MODULE = YES;
-				DYLIB_COMPATIBILITY_VERSION = 1;
-				DYLIB_CURRENT_VERSION = 1;
-				GENERATE_INFOPLIST_FILE = YES;
-				INSTALL_PATH = "@rpath";
-				MARKETING_VERSION = 0.1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = "com.barebones.nu-validator-swift.service-core";
-				PRODUCT_NAME = "$(TARGET_NAME)";
-				SKIP_INSTALL = YES;
-				SWIFT_VERSION = 6.0;
-			};
-			name = Release;
-		};
-		311000000000000000000001 /* Debug */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				CODE_SIGN_IDENTITY = "-";
-				CODE_SIGN_STYLE = Manual;
-				DEFINES_MODULE = YES;
-				DYLIB_COMPATIBILITY_VERSION = 1;
-				DYLIB_CURRENT_VERSION = 1;
-				GENERATE_INFOPLIST_FILE = YES;
-				INSTALL_PATH = "@rpath";
-				MARKETING_VERSION = 0.1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = "com.barebones.nu-validator-swift.shared-core";
-				PRODUCT_NAME = "$(TARGET_NAME)";
-				SKIP_INSTALL = YES;
-				SWIFT_VERSION = 6.0;
-			};
-			name = Debug;
-		};
-		311000000000000000000002 /* Release */ = {
-			isa = XCBuildConfiguration;
-			buildSettings = {
-				CODE_SIGN_IDENTITY = "-";
-				CODE_SIGN_STYLE = Manual;
-				DEFINES_MODULE = YES;
-				DYLIB_COMPATIBILITY_VERSION = 1;
-				DYLIB_CURRENT_VERSION = 1;
-				GENERATE_INFOPLIST_FILE = YES;
-				INSTALL_PATH = "@rpath";
-				MARKETING_VERSION = 0.1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = "com.barebones.nu-validator-swift.shared-core";
-				PRODUCT_NAME = "$(TARGET_NAME)";
-				SKIP_INSTALL = YES;
 				SWIFT_VERSION = 6.0;
 			};
 			name = Release;
@@ -1494,6 +1410,78 @@
 			};
 			name = Release;
 		};
+		310000000000000000000001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Manual;
+				DEFINES_MODULE = YES;
+				DYLIB_COMPATIBILITY_VERSION = 1;
+				DYLIB_CURRENT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				INSTALL_PATH = "@rpath";
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "com.barebones.nu-validator-swift.service-core";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SWIFT_VERSION = 6.0;
+			};
+			name = Debug;
+		};
+		310000000000000000000002 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Manual;
+				DEFINES_MODULE = YES;
+				DYLIB_COMPATIBILITY_VERSION = 1;
+				DYLIB_CURRENT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				INSTALL_PATH = "@rpath";
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "com.barebones.nu-validator-swift.service-core";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SWIFT_VERSION = 6.0;
+			};
+			name = Release;
+		};
+		311000000000000000000001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Manual;
+				DEFINES_MODULE = YES;
+				DYLIB_COMPATIBILITY_VERSION = 1;
+				DYLIB_CURRENT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				INSTALL_PATH = "@rpath";
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "com.barebones.nu-validator-swift.shared-core";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SWIFT_VERSION = 6.0;
+			};
+			name = Debug;
+		};
+		311000000000000000000002 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_IDENTITY = "-";
+				CODE_SIGN_STYLE = Manual;
+				DEFINES_MODULE = YES;
+				DYLIB_COMPATIBILITY_VERSION = 1;
+				DYLIB_CURRENT_VERSION = 1;
+				GENERATE_INFOPLIST_FILE = YES;
+				INSTALL_PATH = "@rpath";
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = "com.barebones.nu-validator-swift.shared-core";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SWIFT_VERSION = 6.0;
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -1511,24 +1499,6 @@
 			buildConfigurations = (
 				302000000000000000000001 /* Debug */,
 				302000000000000000000002 /* Release */,
-			);
-			defaultConfigurationIsVisible = 0;
-			defaultConfigurationName = Release;
-		};
-		30000000000000000000000A /* Build configuration list for PBXNativeTarget "VNUServiceCore" */ = {
-			isa = XCConfigurationList;
-			buildConfigurations = (
-				310000000000000000000001 /* Debug */,
-				310000000000000000000002 /* Release */,
-			);
-			defaultConfigurationIsVisible = 0;
-			defaultConfigurationName = Release;
-		};
-		30000000000000000000000B /* Build configuration list for PBXNativeTarget "VNUCore" */ = {
-			isa = XCConfigurationList;
-			buildConfigurations = (
-				311000000000000000000001 /* Debug */,
-				311000000000000000000002 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
@@ -1592,6 +1562,24 @@
 			buildConfigurations = (
 				309000000000000000000001 /* Debug */,
 				309000000000000000000002 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		30000000000000000000000A /* Build configuration list for PBXNativeTarget "VNUServiceCore" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				310000000000000000000001 /* Debug */,
+				310000000000000000000002 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		30000000000000000000000B /* Build configuration list for PBXNativeTarget "VNUCore" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				311000000000000000000001 /* Debug */,
+				311000000000000000000002 /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
