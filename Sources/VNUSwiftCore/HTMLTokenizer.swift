@@ -178,10 +178,27 @@ final class HTMLTokenizer {
             var attributes: [HTMLAttribute] = []
             var selfClosing = false
             var tagClosed = false
+            // True when the previous attribute had a quoted value, so this
+            // iteration starts exactly where upstream's "after attribute
+            // value (quoted)" state starts: just past the closing quote.
+            var afterQuotedValue = false
             while index < source.endIndex {
                 let whitespaceStart = index
                 skipWhitespace(from: &index)
                 let hadWhitespace = whitespaceStart != index
+                // "No space between attributes." is only an error right after
+                // a quoted value's closing quote: upstream raises
+                // errNoSpaceBetweenAttributes in AFTER_ATTRIBUTE_VALUE_QUOTED
+                // and nowhere else. It used to be reported whenever this
+                // iteration found no whitespace, but after a valueless
+                // attribute (async, required, controls, x-cloak...) the
+                // whitespace has already been skipped while looking for "=",
+                // so every boolean attribute that wasn't last on its tag was
+                // reported, e.g. `<script async src="a.js">`. The attributes
+                // themselves were still recorded, so this was only the bogus
+                // error.
+                let missingSpaceAfterQuotedValue = afterQuotedValue && !hadWhitespace
+                afterQuotedValue = false
                 guard index < source.endIndex else { break }
                 if source[index] == ">" {
                     source.formIndex(after: &index)
@@ -189,22 +206,31 @@ final class HTMLTokenizer {
                     break
                 }
                 if source[index] == "/" {
-                    let slash = index
                     source.formIndex(after: &index)
-                    let afterSlash = index
-                    skipWhitespace(from: &index)
                     if index < source.endIndex, source[index] == ">" {
-                        if afterSlash != index {
-                            appendError("A slash was not immediately followed by \u{201c}>\u{201d}.", at: slash, length: max(1, locations.offset(of: index) - locations.offset(of: slash)), to: &tokens)
-                        }
                         selfClosing = true
                         source.formIndex(after: &index)
                         tagClosed = true
                         break
                     }
-                    index = slash
+                    // Upstream's self-closing start tag state: anything other
+                    // than ">" right after the slash is errSlashNotFollowedByGt,
+                    // and that character is reconsumed as if it began the next
+                    // attribute (whitespace included). So "<br / >" isn't
+                    // self-closing, and `id="a"/class="b"` has a slash error but
+                    // no missing-space error. This used to skip whitespace
+                    // after the slash and treat "/ >" as self-closing; for
+                    // anything else it never reported the slash error, just
+                    // nothing (e.g. `<br//>`, or no attribute before the
+                    // slash) or one or two bogus missing-space errors. At end
+                    // of file upstream reports no slash error either, only
+                    // the unclosed-tag error below.
+                    if index < source.endIndex {
+                        appendError("A slash was not immediately followed by \u{201c}>\u{201d}.", at: index, length: 1, to: &tokens)
+                    }
+                    continue
                 }
-                if !attributes.isEmpty, !hadWhitespace {
+                if missingSpaceAfterQuotedValue {
                     appendError("No space between attributes.", at: index, length: 1, to: &tokens)
                 }
                 if source[index] == "=" {
@@ -242,6 +268,11 @@ final class HTMLTokenizer {
                 if index < source.endIndex, source[index] == "=" {
                     source.formIndex(after: &index)
                     skipWhitespace(from: &index)
+                    // Remember whether the value is quoted for the next
+                    // iteration's missing-space check (see above). An unquoted
+                    // value always ends at whitespace or ">", so it can't run
+                    // into the next attribute.
+                    afterQuotedValue = index < source.endIndex && ("\"" == source[index] || "'" == source[index])
                     value = parseAttributeValue(from: &index, tokens: &tokens)
                 }
                 attributes.append(HTMLAttribute(name: attrName, value: value, offset: attrOffset))

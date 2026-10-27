@@ -1247,6 +1247,54 @@ func endTagsThatDoNotImplyEndTagsStillReportOpenElements(_ body: String) {
     #expect(errors.contains("Element \u{201c}table\u{201d} not allowed as child of \u{201c}p\u{201d} in this context."))
 }
 
+// "No space between attributes." is only an error when a quoted value's
+// closing quote runs straight into the next attribute. It used to be reported
+// after every valueless (boolean) attribute that wasn't last on its tag,
+// including the standard Google tag snippet `<script async src=...>`. Each of
+// these documents gives no errors in vnu.jar.
+private let valuelessAttributeDocuments: [String] = [
+    validDocument(head: "<script async src=\"a.js\"></script>\n", body: "<p>x</p>"),
+    validDocument(body: "<form action=\"x\"><input required name=\"q\"></form>"),
+    validDocument(body: "<video controls muted src=\"v.mp4\"></video>"),
+    // The whitespace after the valueless attribute is a newline or a tab.
+    validDocument(body: "<form action=\"x\"><input disabled\nname=\"q\"></form>"),
+    validDocument(body: "<form action=\"x\"><input required\tname='q'></form>"),
+    validDocument(body: "<details open class=\"d\"><summary>S</summary>x</details>"),
+    // Followed by an unquoted value, mixed with quoted values, and unquoted
+    // values followed by another attribute.
+    validDocument(body: "<form action=\"x\"><button disabled type=submit>Go</button></form>"),
+    validDocument(body: "<form action=\"x\"><input disabled name=\"a\" readonly value=\"b\"></form>"),
+    validDocument(body: "<div id=a class=b>x</div>"),
+]
+
+@Test(arguments: valuelessAttributeDocuments)
+func valuelessAttributesFollowedByAnotherAttributeAreNotErrors(_ document: String) {
+    #expect([] == errorMessages(checkHTML(document)))
+}
+
+// The missing-space error is still reported where upstream reports it. A
+// slash that isn't immediately followed by ">" gets upstream's slash error,
+// which the port used to omit or replace with bogus missing-space errors.
+// The expectations are vnu.jar's error lists.
+@Test(arguments: [
+    ("<div id=\"a\"class=\"b\">x</div>", ["No space between attributes."]),
+    ("<div id='a'class='b'>x</div>", ["No space between attributes."]),
+    ("<div id=\"a\"/class=\"b\">x</div>", ["A slash was not immediately followed by \u{201c}>\u{201d}."]),
+    ("<form action=\"x\"><input disabled/required></form>", ["A slash was not immediately followed by \u{201c}>\u{201d}."]),
+    ("<p>a<br //>b</p>", ["A slash was not immediately followed by \u{201c}>\u{201d}."]),
+])
+func missingSpaceAndStraySlashErrorsMatchUpstream(_ body: String, _ expected: [String]) {
+    #expect(expected == errorMessages(checkHTML(validDocument(body: body))))
+}
+
+/// "<br / >" isn't self-closing upstream: the slash error is reported, but
+/// not the trailing-slash message, which only applies to a real "/>".
+@Test func slashFollowedBySpaceIsNotSelfClosing() {
+    let result = checkHTML(validDocument(body: "<p>a<br / >b</p>"))
+    #expect(["A slash was not immediately followed by \u{201c}>\u{201d}."] == errorMessages(result))
+    #expect(!result.messages.contains { $0.message.hasPrefix("Trailing slash on void elements") })
+}
+
 private func checkHTML(_ source: String) -> ValidationResult {
     NuValidator().check(
         input: DocumentInput(data: Data(source.utf8), contentType: "text/html; charset=utf-8"),
