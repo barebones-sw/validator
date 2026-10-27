@@ -1762,7 +1762,7 @@ struct HTMLGeneralAttributeChecker {
         appendRoleTokenMessages(for: element, locations: locations, messages: &messages)
         appendRoleEffectMessages(for: element, role: role, locations: locations, messages: &messages)
         appendUnnecessaryRoleMessages(for: element, role: role, locations: locations, messages: &messages)
-        appendARIANamingMessages(for: element, role: role, locations: locations, messages: &messages)
+        appendARIANamingMessages(for: element, locations: locations, messages: &messages)
         appendSelectRoleMessages(for: element, role: role, locations: locations, messages: &messages)
         appendSummaryARIAMessages(for: element, stack: stack, locations: locations, messages: &messages)
         appendARIAPropertyMessages(for: element, role: role, idElementNames: idElementNames, locations: locations, messages: &messages)
@@ -1871,14 +1871,35 @@ struct HTMLGeneralAttributeChecker {
 
     private func appendARIANamingMessages(
         for element: HTMLStartElement,
-        role: String?,
         locations: SourceLocationMap,
         messages: inout [ValidationMessage]
     ) {
-        let isNameProhibitedElement = Self.ariaNamingProhibitedElements.contains(element.name) || element.name.contains("-")
+        // Review item A3: this mirrors upstream's isProhibitedFromBeingNamed
+        // (Assertions.java). Links and image-map areas with an href are
+        // interactive, so ARIA lets authors name them; upstream prohibits a
+        // name on "a" and "area" only when there's no href. The port used to
+        // prohibit them unconditionally, so every icon, logo, social or
+        // pagination link with an aria-label was reported as an error (15
+        // errors in 8 of 50 real-world pages). "body" and "rt" were missing
+        // from the port's list; they're in upstream's.
+        let isNameProhibitedElement: Bool
+        switch element.name {
+        case "a", "area":
+            isNameProhibitedElement = !element.hasAttribute("href")
+        default:
+            isNameProhibitedElement = Self.ariaNamingProhibitedElements.contains(element.name) || element.name.contains("-")
+        }
         guard isNameProhibitedElement else { return }
-        if let role, !Self.ariaNamingProhibitedRoles.contains(role) {
-            return
+        // Upstream splits the whole role attribute into lowercase tokens and
+        // keeps the prohibition only if ANY token is a role that can't be
+        // named; a role attribute with no such token (including an empty one)
+        // lifts it. The port used to look only at the first token, and
+        // treated an empty role as no role at all, so `role="none
+        // presentation"` escaped the error and `role=""` drew one.
+        if element.hasAttribute("role") {
+            guard roleTokens(for: element).contains(where: { Self.ariaNamingProhibitedRoles.contains($0) }) else {
+                return
+            }
         }
         for attribute in ["aria-label", "aria-labelledby", "aria-braillelabel"] where element.hasAttribute(attribute) {
             appendMessage(
@@ -5063,10 +5084,12 @@ struct HTMLGeneralAttributeChecker {
         "term", "textbox", "timer", "toolbar", "tree", "treegrid", "treeitem"
     ]
 
+    // Upstream's isProhibitedFromBeingNamed list, less "a" and "area", which
+    // are prohibited only without an href (see appendARIANamingMessages).
     private static let ariaNamingProhibitedElements: Set<String> = [
-        "a", "abbr", "area", "b", "bdi", "bdo", "caption", "cite", "code", "data", "del",
+        "abbr", "b", "bdi", "bdo", "body", "caption", "cite", "code", "data", "del",
         "div", "em", "figcaption", "i", "ins", "kbd", "legend", "mark", "p", "pre", "q",
-        "rp", "s", "samp", "small", "span", "strong", "sub", "sup", "time", "u", "var"
+        "rp", "rt", "s", "samp", "small", "span", "strong", "sub", "sup", "time", "u", "var"
     ]
 
     private static let ariaNamingProhibitedRoles: Set<String> = [

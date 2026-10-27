@@ -60,22 +60,6 @@
       "category" : "haswarn",
       "failure" : "Expected a warning only but encountered error “An element that is a child of an element with “role=rowgroup” must have “role=row”.”."
     },
-    "html-aria/name-computation-general/603.html" : {
-      "category" : "valid",
-      "failure" : "Expected no errors or warnings but encountered error “The “aria-labelledby” attribute must not be specified on any “a” element unless the element has a “role” value other than “caption”, “code”, “deletion”, “emphasis”, “generic”, “insertion”, “paragraph”, “presentation”, “strong”, “subscript”, or “superscript”.”."
-    },
-    "html-aria/name-computation-general/604.html" : {
-      "category" : "valid",
-      "failure" : "Expected no errors or warnings but encountered error “The “aria-label” attribute must not be specified on any “a” element unless the element has a “role” value other than “caption”, “code”, “deletion”, “emphasis”, “generic”, “insertion”, “paragraph”, “presentation”, “strong”, “subscript”, or “superscript”.”."
-    },
-    "html-aria/name-computation-general/605.html" : {
-      "category" : "valid",
-      "failure" : "Expected no errors or warnings but encountered error “The “aria-label” attribute must not be specified on any “a” element unless the element has a “role” value other than “caption”, “code”, “deletion”, “emphasis”, “generic”, “insertion”, “paragraph”, “presentation”, “strong”, “subscript”, or “superscript”.”."
-    },
-    "html-aria/name-computation-general/606.html" : {
-      "category" : "valid",
-      "failure" : "Expected no errors or warnings but encountered error “The “aria-label” attribute must not be specified on any “a” element unless the element has a “role” value other than “caption”, “code”, “deletion”, “emphasis”, “generic”, “insertion”, “paragraph”, “presentation”, “strong”, “subscript”, or “superscript”.”."
-    },
     "html-aria/roles-plain-concrete/roles-plain-concrete-heading.html" : {
       "category" : "valid",
       "failure" : "Expected no errors or warnings but encountered error “Discarding unrecognized token “heading” from value of attribute “role”. Browsers ignore any token that is not a defined ARIA non-abstract role.”."
@@ -3243,7 +3227,7 @@
     "hasinfo" : 5,
     "haswarn" : 132,
     "invalid" : 3523,
-    "valid" : 1152
+    "valid" : 1156
   },
   "version" : 2
 }

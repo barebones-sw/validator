@@ -718,6 +718,39 @@ import Testing
     #expect(result.messages.contains { $0.message == "The \u{201c}aria-label\u{201d} attribute must not be used on a \u{201c}button\u{201d} element that is a child of a \u{201c}select\u{201d} element." })
 }
 
+// Review item A3: which elements may carry aria-label, aria-labelledby or
+// aria-braillelabel follows upstream's isProhibitedFromBeingNamed. Each case
+// is its own document, and every expectation here was confirmed against
+// vnu.jar.
+@Test(arguments: [
+    // Links and areas with an href may be named (the false errors A3 fixed).
+    ("<a href=/ aria-label=Home>H</a>", "a", false),
+    ("<a href=test.html aria-labelledby=ID1>ABC</a><div id=ID1>Nifty</div>", "a", false),
+    ("<a href=x aria-braillelabel=Home>H</a>", "a", false),
+    ("<map name=m><area href=/ alt=Home aria-label=Home></map><img src=x alt=y usemap=#m>", "area", false),
+    // An href lifts the prohibition whatever the role.
+    ("<a href=/ role=presentation aria-label=Home>H</a>", "a", false),
+    // Without an href, they still may not be named.
+    ("<a aria-label=Home>H</a>", "a", true),
+    ("<map name=m><area alt=Home aria-label=Home></map><img src=x alt=y usemap=#m>", "area", true),
+    // body and rt were missing from the port's list.
+    ("<body aria-label=Page><p>x</p></body>", "body", true),
+    ("<ruby>a<rt aria-label=Reading>b</rt></ruby>", "rt", true),
+    // Any role token that can't be named keeps the prohibition; a role with
+    // none of those tokens, even an empty one, lifts it.
+    ("<span role=\"none presentation\" aria-label=x>s</span>", "span", true),
+    ("<span role=\"button\" aria-label=x tabindex=0>s</span>", "span", false),
+    ("<span role=\"\" aria-label=x>s</span>", "span", false),
+    ("<span aria-label=x>s</span>", "span", true),
+])
+func ariaNamingProhibitionMatchesUpstream(markup: String, element: String, prohibited: Bool) {
+    let result = checkHTML("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\(markup)")
+    let namingErrors = result.messages.filter {
+        $0.type == "error" && $0.message.contains("attribute must not be specified on any \u{201c}\(element)\u{201d} element unless")
+    }
+    #expect(namingErrors.isEmpty != prohibited, "\(markup): \(namingErrors.map(\.message))")
+}
+
 @Test func generalAttributeCheckerCoversARIAMiscRoleRules() {
     let result = checkHTML("""
         <!doctype html><html lang=en><meta charset=utf-8><title>T</title>
