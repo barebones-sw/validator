@@ -1077,9 +1077,17 @@ struct HTMLTableModelChecker {
     }
 
     mutating func endElement(_ name: String) {
-        if name == "tr" {
+        // Review item A9: </tr>, </tbody>, </thead> and </tfoot> used to
+        // finish the current row or row group even with no table open, and
+        // currentTable traps on an empty stack. That crashed the XPC service
+        // (and hung BBEdit, A10) on valid markup such as MDN's
+        // <template><tr>...</tr></template> example, and on fragments like
+        // <tr><td>x</td></tr> or <div><tbody></div>. Upstream's TableChecker
+        // ignores every table end tag while no table is open (current ==
+        // null), with no special case for <template>, so do the same.
+        if name == "tr", !tableStack.isEmpty {
             finishCurrentRow()
-        } else if Self.rowGroupElements.contains(name) {
+        } else if Self.rowGroupElements.contains(name), !tableStack.isEmpty {
             finishCurrentRow()
             finishCurrentRowGroup()
         } else if name == "colgroup", !tableStack.isEmpty {
@@ -1235,7 +1243,10 @@ struct HTMLTableModelChecker {
     }
 
     private mutating func finishCurrentRow() {
-        guard var row = currentTable.row else { return }
+        // Every caller checks for an open table first; this guard is a second
+        // line of defense, because currentTable traps on an empty stack and a
+        // trap in the checker is a crashed XPC service (A9).
+        guard !tableStack.isEmpty, var row = currentTable.row else { return }
         if let group = currentTable.rowGroup {
             let activeSpans = group.openSpans.filter { span in
                 span.endRow == nil || row.globalNumber < span.endRow!
@@ -1265,7 +1276,8 @@ struct HTMLTableModelChecker {
     }
 
     private mutating func finishCurrentRowGroup() {
-        guard let group = currentTable.rowGroup else { return }
+        // See finishCurrentRow.
+        guard !tableStack.isEmpty, let group = currentTable.rowGroup else { return }
         let rowCount = currentTable.globalRowCount
         for span in group.openSpans {
             if let endRow = span.endRow, endRow > rowCount {

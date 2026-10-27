@@ -1295,6 +1295,36 @@ func missingSpaceAndStraySlashErrorsMatchUpstream(_ body: String, _ expected: [S
     #expect(!result.messages.contains { $0.message.hasPrefix("Trailing slash on void elements") })
 }
 
+// Review item A9: table end tags with no table open used to trap in
+// HTMLTableModelChecker (an empty table stack), crashing the XPC service,
+// which hung BBEdit (A10). Template contents are the common valid case
+// (MDN's product-row example); vnu.jar reports no errors for any of these.
+private let tableMarkupWithoutATableDocuments: [String] = [
+    validDocument(body: "<template><tr><td>x</td></tr></template>"),
+    validDocument(body: "<template><thead><tr><th>h</th></tr></thead></template>"),
+    validDocument(body: "<template><tbody><tr><td>x</td></tr></tbody></template>"),
+    validDocument(body: "<template><tfoot><tr><td>x</td></tr></tfoot></template>"),
+    validDocument(body: "<table><tr><td><template><tbody><tr><td>x</td></tr></tbody></template></td></tr></table>"),
+    validDocument(body: "<table id=\"producttable\"><thead><tr><td>UPC_Code</td><td>Product_Name</td></tr></thead><tbody></tbody></table>\n<template id=\"productrow\"><tr><td class=\"record\"></td><td></td></tr></template>"),
+]
+
+@Test(arguments: tableMarkupWithoutATableDocuments)
+func tableMarkupInsideTemplateDoesNotCrashAndIsValid(_ document: String) {
+    #expect([] == errorMessages(checkHTML(document)))
+}
+
+/// Stray table end tags outside any table: a parity check that these report
+/// exactly what vnu.jar does. (Unmatched end tags are dropped by the tree
+/// builder before they reach the table checker, so these never took the
+/// crashing path; the template documents above do.)
+@Test(arguments: [
+    ("<p>a</p></tfoot><p>b</p>", ["Stray end tag \u{201c}tfoot\u{201d}."]),
+    ("<table><tr><td>x</td></tr></table></tr></tbody>", ["Stray end tag \u{201c}tr\u{201d}.", "Stray end tag \u{201c}tbody\u{201d}."]),
+])
+func strayTableEndTagsOutsideATableDoNotCrash(_ body: String, _ expected: [String]) {
+    #expect(expected == errorMessages(checkHTML(validDocument(body: body))))
+}
+
 private func checkHTML(_ source: String) -> ValidationResult {
     NuValidator().check(
         input: DocumentInput(data: Data(source.utf8), contentType: "text/html; charset=utf-8"),
