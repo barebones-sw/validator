@@ -27,7 +27,16 @@ final class HTMLTokenizer {
     }
 
     func tokenize() -> [HTMLToken] {
-        var tokens = sourceDiagnostics()
+        // Case 554591: the whole-source diagnostics (character references and
+        // forbidden code points) are now computed after the main loop, which
+        // collects the ranges where the HTML tokenizer never parses character
+        // references: raw text and script contents, comments and CDATA
+        // sections. "&#" in JavaScript or "&nbsp" in CSS used to be errors.
+        var tokens: [HTMLToken] = []
+        var noCharacterReferenceRanges: [Range<String.Index>] = []
+        // Which namespace the tree builder is in (HTML, or inline SVG/MathML);
+        // see ForeignContentTracker.
+        var foreignContent = ForeignContentTracker()
         var index = source.startIndex
         while index < source.endIndex {
             guard source[index] == "<" else {
@@ -52,12 +61,26 @@ final class HTMLTokenizer {
                         )
                     }
                     appendComment(from: commentStart, to: endRange.lowerBound, to: &tokens)
+                    noCharacterReferenceRanges.append(commentStart..<endRange.lowerBound)
                     index = endRange.upperBound
                 } else {
                     appendError("End of file inside comment.", at: start, length: source.utf16.distance(from: start.samePosition(in: source.utf16) ?? source.utf16.startIndex, to: source.utf16.endIndex), to: &tokens)
                     appendComment(from: commentStart, to: source.endIndex, to: &tokens)
+                    noCharacterReferenceRanges.append(commentStart..<source.endIndex)
                     index = source.endIndex
                 }
+                continue
+            }
+            // Case 554591: in SVG/MathML, "<![CDATA[...]]>" is a CDATA section
+            // (text), e.g. the CSS in an exported SVG's <style>. It used to be
+            // reported as a bogus comment. (In HTML content it still is one.)
+            if foreignContent.isInForeignContent, consumePrefix("<![CDATA[", from: &index) {
+                let contentStart = index
+                let contentEnd = source[index...].range(of: "]]>")
+                appendText(from: contentStart, to: contentEnd?.lowerBound ?? source.endIndex, to: &tokens)
+                noCharacterReferenceRanges.append(contentStart..<(contentEnd?.lowerBound ?? source.endIndex))
+                // Upstream's tokenizer reports nothing for EOF in a CDATA section.
+                index = contentEnd?.upperBound ?? source.endIndex
                 continue
             }
             if consumePrefix("<!DOCTYPE", from: &index, caseInsensitive: true) {
@@ -112,6 +135,7 @@ final class HTMLTokenizer {
                     tokens.append(.bogusMarkup(offset: offset, length: max(1, locations.offset(of: index) - offset)))
                 } else {
                     tokens.append(.endTag(name: name, offset: offset, length: max(1, locations.offset(of: index) - offset)))
+                    foreignContent.endTag(name)
                 }
                 continue
             }
@@ -228,8 +252,210 @@ final class HTMLTokenizer {
             }
             let offset = locations.offset(of: start)
             tokens.append(.startTag(name: name, attributes: attributes, selfClosing: selfClosing, offset: offset, length: max(1, locations.offset(of: index) - offset)))
+
+            // Case 554591: the contents of <script>, <style>, <title>,
+            // <textarea> and a few obsolete elements aren't markup; the HTML
+            // tokenizer switches to its script data / RAWTEXT / RCDATA state
+            // and reads text up to the matching end tag. This tokenizer used
+            // to keep parsing markup there, so "i<3" in a script or "<b>" in a
+            // <title> became bogus tags and errors.
+            //
+            // This only applies to HTML elements. In inline SVG or MathML,
+            // <script>, <style> and <title> are foreign elements whose
+            // contents are ordinary markup; upstream's tree builder never
+            // switches the tokenizer state for them.
+            //
+            // A self-closing tag is left alone: in HTML the slash is ignored
+            // and the contents would still be text, but HTMLValidator doesn't
+            // put self-closing elements on its stack, so its end tag would
+            // then be reported as stray. (The self-closing error itself is
+            // reported elsewhere.)
+            let isHTMLElement = foreignContent.startTag(name, attributes: attributes, selfClosing: selfClosing)
+            if tagClosed, !selfClosing, isHTMLElement, let kind = TextContentKind(elementName: name) {
+                consumeTextContent(of: name, kind: kind, from: &index, to: &tokens, noCharacterReferenceRanges: &noCharacterReferenceRanges)
+            }
         }
-        return tokens
+        return sourceDiagnostics(skippingCharacterReferencesIn: noCharacterReferenceRanges) + tokens
+    }
+
+    /// Which tokenizer state an element's contents are read in.
+    private enum TextContentKind {
+        /// title, textarea: text (character references are still recognized).
+        case rcdata
+        /// style, xmp, iframe, noembed, noframes: raw text.
+        case rawText
+        /// script: raw text, with the "<!-- ... <script> ... -->" escaping rules.
+        case scriptData
+        /// plaintext: everything to the end of the file.
+        case plaintext
+
+        /// Nu parses with scripting disabled, so <noscript> contents are
+        /// markup, not raw text, and aren't listed here.
+        init?(elementName: String) {
+            switch elementName {
+            case "title", "textarea":
+                self = .rcdata
+            case "style", "xmp", "iframe", "noembed", "noframes":
+                self = .rawText
+            case "script":
+                self = .scriptData
+            case "plaintext":
+                self = .plaintext
+            default:
+                return nil
+            }
+        }
+    }
+
+    /// Emits the contents of a text-only element as a single text token and
+    /// leaves `index` at the "<" of its end tag, which the main loop then
+    /// tokenizes normally.
+    private func consumeTextContent(
+        of name: String,
+        kind: TextContentKind,
+        from index: inout String.Index,
+        to tokens: inout [HTMLToken],
+        noCharacterReferenceRanges: inout [Range<String.Index>]
+    ) {
+        let contentStart = index
+        let contentEnd: String.Index?
+        switch kind {
+        case .rcdata, .rawText:
+            contentEnd = nextEndTag(named: name, from: index)
+        case .scriptData:
+            contentEnd = endOfScriptData(from: index)
+        case .plaintext:
+            contentEnd = nil
+        }
+
+        // Only RCDATA (<title>, <textarea>) recognizes character references;
+        // raw text, script data and plaintext contents are taken literally.
+        if .rcdata != kind {
+            noCharacterReferenceRanges.append(contentStart..<(contentEnd ?? source.endIndex))
+        }
+
+        guard let contentEnd else {
+            appendText(from: contentStart, to: source.endIndex, to: &tokens)
+            // Upstream's tree builder reports this when the file ends while it
+            // is still expecting an element's text ("text" insertion mode).
+            // Case 554591: this replaces a heuristic that reported it for any
+            // document merely containing both "</style>" and "<script".
+            // (<plaintext> can't be closed at all; it's reported as obsolete.)
+            if .plaintext != kind {
+                appendError("End of file seen when expecting text or an end tag.", at: source.endIndex, length: 1, to: &tokens)
+            }
+            index = source.endIndex
+            return
+        }
+
+        appendText(from: contentStart, to: contentEnd, to: &tokens)
+        index = contentEnd
+    }
+
+    /// The "<" of the next "</name" end tag (RCDATA/RAWTEXT "appropriate end
+    /// tag" rule), or nil if the file ends first.
+    private func nextEndTag(named name: String, from start: String.Index) -> String.Index? {
+        var cursor = start
+        while cursor < source.endIndex {
+            if "<" == source[cursor], matchesTagOpen("</", name, at: cursor) {
+                return cursor
+            }
+            source.formIndex(after: &cursor)
+        }
+        return nil
+    }
+
+    /// The "<" of the "</script" end tag that actually closes a script, or nil
+    /// if the file ends first. This follows the tokenizer's script data
+    /// states: inside "<!--", a "<script" starts a "double escaped" section in
+    /// which "</script>" does *not* end the element (that's how the old
+    /// document.write("<script ...></script>") idiom works), and "-->" goes
+    /// back to plain script data.
+    private func endOfScriptData(from start: String.Index) -> String.Index? {
+        enum Mode {
+            case data
+            case escaped
+            case doubleEscaped
+        }
+
+        var mode = Mode.data
+        // Consecutive "-" characters just seen in the escaped modes; "-->"
+        // (two or more dashes, then ">") returns to plain script data.
+        var dashes = 0
+        var cursor = start
+        while cursor < source.endIndex {
+            let character = source[cursor]
+            switch mode {
+            case .data:
+                if "<" == character {
+                    if matchesTagOpen("</", "script", at: cursor) {
+                        return cursor
+                    }
+                    if source[cursor...].hasPrefix("<!--") {
+                        // "script data escape start" through "escaped dash
+                        // dash": the "--" of "<!--" counts toward "-->", so
+                        // "<!-->" escapes and immediately unescapes.
+                        mode = .escaped
+                        dashes = 2
+                        cursor = source.index(cursor, offsetBy: 4)
+                        continue
+                    }
+                }
+            case .escaped, .doubleEscaped:
+                if "-" == character {
+                    dashes += 1
+                } else if ">" == character, dashes >= 2 {
+                    mode = .data
+                    dashes = 0
+                } else {
+                    dashes = 0
+                    if "<" == character {
+                        if .escaped == mode {
+                            if matchesTagOpen("</", "script", at: cursor) {
+                                return cursor
+                            }
+                            if matchesTagOpen("<", "script", at: cursor) {
+                                mode = .doubleEscaped
+                            }
+                        } else if matchesTagOpen("</", "script", at: cursor) {
+                            // "script data double escape end": back to
+                            // escaped; this end tag doesn't close the script.
+                            mode = .escaped
+                        }
+                    }
+                }
+            }
+            source.formIndex(after: &cursor)
+        }
+        return nil
+    }
+
+    /// Whether `opener` followed by `name` (ASCII case-insensitively; `name`
+    /// is lowercase) starts at `index` and is followed by a character that
+    /// ends a tag name: tab, LF, FF, CR, space, "/" or ">". The trailing
+    /// character matters: "</scripts>" doesn't close a <script>, and neither
+    /// does "</script" at the very end of the file.
+    private func matchesTagOpen(_ opener: String, _ name: String, at index: String.Index) -> Bool {
+        var cursor = index
+        for expected in (opener + name).utf8 {
+            guard cursor < source.endIndex,
+                  let actual = source[cursor].asciiValue,
+                  expected == ((65...90).contains(actual) ? actual + 32 : actual) else {
+                return false
+            }
+            source.formIndex(after: &cursor)
+        }
+        guard cursor < source.endIndex else {
+            return false
+        }
+        let terminator = source[cursor]
+        if "/" == terminator || ">" == terminator {
+            return true
+        }
+        // Check scalars rather than Character.isWhitespace, which is broader
+        // than HTML's definition (it includes e.g. U+00A0). "\r\n" is a
+        // single Character, hence allSatisfy.
+        return terminator.unicodeScalars.allSatisfy { [0x09, 0x0A, 0x0C, 0x0D, 0x20].contains($0.value) }
     }
 
     private func parseAttributeValue(from index: inout String.Index, tokens: inout [HTMLToken]) -> String {
@@ -337,12 +563,24 @@ final class HTMLTokenizer {
         !(character.isWhitespace || character == "=" || character == ">" || character == "/" || character == "\"" || character == "'" || character == "<")
     }
 
-    private func sourceDiagnostics() -> [HTMLToken] {
+    /// Whole-source diagnostics. `noCharacterReferenceRanges` (ascending, from
+    /// tokenize()) are the places where "&" is just a character.
+    private func sourceDiagnostics(skippingCharacterReferencesIn noCharacterReferenceRanges: [Range<String.Index>]) -> [HTMLToken] {
         var tokens: [HTMLToken] = []
         var index = source.startIndex
+        var rangeIndex = 0
         while index < source.endIndex {
             if source[index] == "&" {
-                appendCharacterReferenceDiagnostics(at: index, to: &tokens)
+                // Case 554591: skip "&" inside script/style contents,
+                // comments and CDATA sections, which upstream never parses
+                // for character references.
+                while rangeIndex < noCharacterReferenceRanges.count, noCharacterReferenceRanges[rangeIndex].upperBound <= index {
+                    rangeIndex += 1
+                }
+                let isLiteral = rangeIndex < noCharacterReferenceRanges.count && noCharacterReferenceRanges[rangeIndex].contains(index)
+                if !isLiteral {
+                    appendCharacterReferenceDiagnostics(at: index, to: &tokens)
+                }
             }
             if let scalar = source[index].unicodeScalars.first {
                 appendCodePointDiagnostics(scalar, at: index, to: &tokens)
@@ -350,11 +588,11 @@ final class HTMLTokenizer {
             source.formIndex(after: &index)
         }
 
-        if source.localizedCaseInsensitiveContains("</src>") || source.localizedCaseInsensitiveContains("</style>") && source.localizedCaseInsensitiveContains("<script") {
-            if let script = source.range(of: "<script", options: [.caseInsensitive]) {
-                appendError("End of file seen when expecting text or an end tag.", at: script.lowerBound, length: 1, to: &tokens)
-            }
-        }
+        // Case 554591: a heuristic here reported "End of file seen when
+        // expecting text or an end tag." for *any* document containing both
+        // "</style>" and "<script" (or "</src>"), which is most real pages.
+        // The error is now reported by consumeTextContent(), when a script or
+        // other text-only element actually runs to the end of the file.
         return tokens
     }
 
@@ -531,5 +769,121 @@ private extension String {
     func leftPadded(to width: Int, with character: Character) -> String {
         if count >= width { return self }
         return String(repeating: String(character), count: width - count) + self
+    }
+}
+
+/// Case 554591: a minimal model of which namespace the tree builder is in, so
+/// the tokenizer can tell HTML content from inline SVG/MathML ("foreign
+/// content") without a full tree builder. It matters in two places:
+/// <script>, <style>, <title>, <textarea> etc. are text-only elements only
+/// in HTML (in SVG they're foreign elements with ordinary markup inside),
+/// and "<![CDATA[" starts a CDATA section only in foreign content.
+///
+/// Tracked: open svg/math subtrees, the HTML integration points inside them
+/// (whose children are HTML again), the start tags that break out of foreign
+/// content, and the </p> and </br> end tags that do the same. Valid documents
+/// always close their <svg>/<math> elements explicitly, which is what keeps
+/// this simple model in step with the real tree.
+private struct ForeignContentTracker {
+    private enum Namespace {
+        case svg
+        case math
+    }
+
+    private struct Entry {
+        var name: String
+        var namespace: Namespace
+        /// HTML integration points (svg foreignObject/desc/title, MathML
+        /// annotation-xml with an HTML encoding) and MathML text integration
+        /// points (mi, mo, mn, ms, mtext) have HTML children.
+        var childrenAreHTML: Bool
+    }
+
+    private var entries: [Entry] = []
+
+    /// Start tags that end foreign content (TreeBuilder's "breakout" list);
+    /// upstream reports them as HTML start tags in a foreign context and pops
+    /// back to the nearest HTML context. (<font> only with color/face/size.)
+    private static let breakoutStartTags: Set<String> = [
+        "b", "big", "blockquote", "body", "br", "center", "code", "dd", "div",
+        "dl", "dt", "em", "embed", "h1", "h2", "h3", "h4", "h5", "h6", "head",
+        "hr", "i", "img", "li", "listing", "menu", "meta", "nobr", "ol", "p",
+        "pre", "ruby", "s", "small", "span", "strike", "strong", "sub", "sup",
+        "table", "tt", "u", "ul", "var"
+    ]
+
+    /// Whether the next token is parsed as foreign content.
+    var isInForeignContent: Bool {
+        guard let last = entries.last else {
+            return false
+        }
+        return !last.childrenAreHTML
+    }
+
+    /// Records a start tag (tag names arrive lowercased) and returns whether
+    /// the element it starts is in the HTML namespace.
+    mutating func startTag(_ name: String, attributes: [HTMLAttribute], selfClosing: Bool) -> Bool {
+        if let current = entries.last, !current.childrenAreHTML {
+            if Self.breaksOutOfForeignContent(name, attributes: attributes) {
+                popToHTMLContext()
+            } else {
+                // A foreign element in the current namespace, except that
+                // <svg> inside MathML annotation-xml starts SVG.
+                let namespace: Namespace = ("svg" == name && "annotation-xml" == current.name) ? .svg : current.namespace
+                if !selfClosing {
+                    entries.append(Entry(name: name, namespace: namespace, childrenAreHTML: Self.isIntegrationPoint(name, namespace: namespace, attributes: attributes)))
+                }
+                return false
+            }
+        }
+
+        // HTML content: top level, or inside an integration point.
+        if "svg" == name || "math" == name {
+            if !selfClosing {
+                entries.append(Entry(name: name, namespace: ("svg" == name) ? .svg : .math, childrenAreHTML: false))
+            }
+            return false
+        }
+        return true
+    }
+
+    /// Records an end tag (name lowercased).
+    mutating func endTag(_ name: String) {
+        guard !entries.isEmpty else {
+            return
+        }
+        if isInForeignContent, "p" == name || "br" == name {
+            popToHTMLContext()
+            return
+        }
+        if let index = entries.lastIndex(where: { name == $0.name }) {
+            entries.removeSubrange(index...)
+        }
+    }
+
+    private mutating func popToHTMLContext() {
+        while let last = entries.last, !last.childrenAreHTML {
+            entries.removeLast()
+        }
+    }
+
+    private static func breaksOutOfForeignContent(_ name: String, attributes: [HTMLAttribute]) -> Bool {
+        if breakoutStartTags.contains(name) {
+            return true
+        }
+        return "font" == name && attributes.contains { "color" == $0.name || "face" == $0.name || "size" == $0.name }
+    }
+
+    private static func isIntegrationPoint(_ name: String, namespace: Namespace, attributes: [HTMLAttribute]) -> Bool {
+        switch namespace {
+        case .svg:
+            return "foreignobject" == name || "desc" == name || "title" == name
+        case .math:
+            if "annotation-xml" == name {
+                let encoding = attributes.first { "encoding" == $0.name }?.value?.lowercased()
+                return "text/html" == encoding || "application/xhtml+xml" == encoding
+            }
+            return ["mi", "mo", "mn", "ms", "mtext"].contains(name)
+        }
     }
 }

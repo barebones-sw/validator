@@ -1015,6 +1015,238 @@ import Testing
     #expect(result.messages.contains { $0.message == "The \u{201c}applet\u{201d} element is obsolete. Use \u{201c}embed\u{201d} or \u{201c}object\u{201d} element instead." })
 }
 
+// MARK: Case 554591: optional end tags and text-only element contents
+//
+// These documents are all valid (the W3C's checker reports no errors for
+// them), but the Swift port reported errors for every one: list items,
+// paragraphs, table parts, options and ruby text were closed by the wrong
+// rules, and the contents of <script>/<style>/<title>/<textarea> were parsed
+// as markup. The parity harness didn't notice because it only runs invalid
+// fixtures, so these pin down the valid side.
+
+/// Wraps body markup in a minimal valid document.
+private func validDocument(head: String = "", body: String) -> String {
+    "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<title>T</title>\n\(head)</head>\n<body>\n\(body)\n</body>\n</html>\n"
+}
+
+private func errorMessages(_ result: ValidationResult) -> [String] {
+    result.messages.filter { "error" == $0.type }.map(\.message)
+}
+
+private let optionalEndTagBodies: [String] = [
+    // Nested list, every end tag present: the inner <li> used to close the outer one.
+    "<ul>\n<li>A\n<ul>\n<li>B</li>\n</ul>\n</li>\n<li>C</li>\n</ul>",
+    // Nested list relying on the optional </li> (the case 554591 navigation menu).
+    "<ul>\n<li>A\n<ul>\n<li>B</li>\n</ul>\n<li>C</li>\n</ul>",
+    // Flat list relying on the optional </li>, closed by </ul>.
+    "<ul>\n<li>A\n<li>B\n<li>C\n</ul>",
+    // Ordered lists nested in a nav, three levels, optional </li> throughout.
+    "<nav>\n<ol>\n<li><a href=\"a\">A</a>\n<ol>\n<li><a href=\"b\">B</a>\n<ol>\n<li><a href=\"c\">C</a>\n</ol>\n<li><a href=\"d\">D</a>\n</ol>\n<li><a href=\"e\">E</a>\n</ol>\n</nav>",
+    "<menu>\n<li><button type=\"button\">One</button>\n<li><button type=\"button\">Two</button>\n</menu>",
+    "<ul>\n<li><details><summary>S</summary><ul><li>x</ul></details>\n<li>y\n</ul>",
+    "<ul>\n<li><p>One\n<li><p>Two\n</ul>",
+    // Description lists: nested in a <dd>, and grouped in <div>s.
+    "<dl>\n<dt>A</dt>\n<dd>\n<dl>\n<dt>B</dt>\n<dd>C</dd>\n</dl>\n</dd>\n<dt>D</dt>\n<dd>E</dd>\n</dl>",
+    "<dl>\n<div><dt>A<dd>B</div>\n<div><dt>C<dd>D</div>\n</dl>",
+    // Paragraphs closed by the next block, the next <p>, or the parent's end tag.
+    "<p>Intro\n<ul>\n<li>x\n</ul>\n<p>One\n<p>Two\n<div>D</div>",
+    "<div><p>Text</div>\n<article><h2>H</h2><p>A<p>B</article>",
+    // Table parts with optional end tags.
+    "<table>\n<tr><th>A<th>B\n<tr><td>1<td>2\n</table>",
+    "<table>\n<thead>\n<tr><th>A\n<tbody>\n<tr><td>1\n<tfoot>\n<tr><td>F\n</table>",
+    "<table>\n<caption>C\n<thead><tr><th>A\n<tbody><tr><td>1\n</table>",
+    // Options, option groups and ruby text.
+    "<select name=\"s\">\n<option>A\n<option>B\n<optgroup label=\"G\">\n<option>C\n</select>",
+    "<p><ruby>\u{6f22}<rp>(<rt>kan<rp>)</ruby></p>",
+]
+
+@Test(arguments: optionalEndTagBodies)
+func validDocumentsUsingOptionalEndTagsHaveNoErrors(_ body: String) {
+    #expect([] == errorMessages(checkHTML(validDocument(body: body))))
+}
+
+private let textContentDocuments: [String] = [
+    // The removed heuristic reported an end-of-file error for any document
+    // containing both "</style>" and "<script".
+    validDocument(head: "<style>\np { color: red; }\n</style>\n", body: "<p>x</p>\n<script src=\"a.js\"></script>"),
+    validDocument(head: "<style>ul > li { margin: 0 }</style>\n", body: "<p>x</p>"),
+    validDocument(body: "<script>\nfor (var i = 0; i<3; i++) {}\n</script>"),
+    validDocument(body: "<div id=\"d\"></div>\n<script>\ndocument.getElementById(\"d\").innerHTML = \"<li>one</li>\";\n</script>"),
+    // Inside "<!--", "<script>...</script>" doesn't end the script ("double escaped").
+    validDocument(body: "<script>\n<!--\ndocument.write(\"<script src=\\\"a.js\\\"></script>\");\n//-->\n</script>"),
+    validDocument(body: "<form action=\"x\"><textarea name=\"t\"><b>not bold</b></textarea></form>"),
+    "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<title>a <b> c</title>\n</head>\n<body>\n<p>x</p>\n</body>\n</html>\n",
+]
+
+@Test(arguments: textContentDocuments)
+func textOnlyElementContentsAreNotParsedAsMarkup(_ document: String) {
+    #expect([] == errorMessages(checkHTML(document)))
+}
+
+/// The shape of the customer's page: a multi-level drop-down navigation menu
+/// built from nested lists with optional </li> tags, plus an (empty) style
+/// element and trailing scripts. It got 70 errors; the W3C's checker gives none.
+@Test func case554591NavigationMenuHasNoErrors() {
+    let document = validDocument(
+        head: "<link href=\"/css/menus.css\" rel=\"stylesheet\">\n<style>\n</style>\n",
+        body: """
+        <nav>
+        <ul>
+            <li><a href="a/">Section A</a>
+                <ul>
+                <li><a href="a/1/">A1</a></li>
+                <li><a href="a/2/">A2</a></li>
+                </ul>
+            <li><a href="b/">Section B</a>
+                <ul>
+                <li><a href="b/1/">B1</a>
+                    <ul>
+                    <li><a href="b/1/x/">B1x</a></li>
+                    <li><a href="b/1/y/">B1y</a></li>
+                    </ul>
+                </li>
+                <li><a href="b/2/">B2</a></li>
+                </ul>
+            </li>
+            <li><a href="c/">Section C</a>
+                <ul>
+                <li><a href="c/1/">C1</a>
+                    <ul>
+                    <li><a href="c/1/x/">C1x</a></li>
+                    </ul>
+                <li><a href="c/2/">C2</a>
+                    <ul>
+                    <li><a href="c/2/x/">C2x</a></li>
+                    </ul>
+                </li>
+                </ul>
+            <li><a href="d/">Section D</a></li>
+        </ul>
+        </nav>
+        <script src="js/menu.js"></script>
+        <script src="js/date.js"></script>
+        """
+    )
+    #expect([] == errorMessages(checkHTML(document)))
+}
+
+/// Invalid documents still get the parse errors upstream's TreeBuilder reports
+/// when an implied end tag finds non-optional elements still open, or a
+/// text-only element runs to the end of the file.
+@Test(arguments: [
+    ("<ul><li><div>x<li>y</ul>", ["End tag \u{201c}li\u{201d} implied, but there were open elements."]),
+    ("<dl><dt><span>a<dd>b</dl>", ["End tag \u{201c}dd\u{201d} implied, but there were open elements."]),
+    // The <p> and <span> are both closed, so the <div> lands in the body and
+    // there's no "not allowed as child of span" error (as upstream).
+    ("<p><span>x<div>y</div>", ["End tag \u{201c}p\u{201d} implied, but there were open elements."]),
+    ("<table><tr><td><div>x<td>y</table>", ["A table cell was implicitly closed, but there were open elements."]),
+    ("<p><ruby>a<span>b<rt>c</ruby></p>", [
+        "Unclosed children in \u{201c}ruby\u{201d}.",
+        "End tag \u{201c}ruby\u{201d} seen, but there were open elements.",
+    ]),
+    ("<div><span>x</div>", ["End tag \u{201c}div\u{201d} seen, but there were open elements."]),
+])
+func impliedEndTagsWithOpenElementsAreStillErrors(_ body: String, _ expected: [String]) {
+    #expect(expected == errorMessages(checkHTML(validDocument(body: body))))
+}
+
+@Test(arguments: [
+    "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<title>T</title>\n</head>\n<body>\n<script>var a = 1;\n",
+    // The "</script>" inside the escaped section doesn't close the element.
+    "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<title>T</title>\n</head>\n<body>\n<script><!-- <script> </script> -->\n",
+    "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<title>T\n",
+])
+func textOnlyElementRunningToEndOfFileIsAnError(_ document: String) {
+    #expect(["End of file seen when expecting text or an end tag."] == errorMessages(checkHTML(document)))
+}
+
+// Found by adversarially reviewing the first version of the case 554591 fix:
+// more valid structures in the same areas, and the parse errors upstream
+// reports for their invalid neighbors.
+
+private let validTableAndSelectBodies: [String] = [
+    // A table nested in a cell is fine; only a <table> directly inside a
+    // table, row group or row is "seen but the previous table is still open".
+    "<table><tr><td><table><tr><td>N</td></tr></table></td></tr></table>",
+    // <select> is a scope boundary, so the <hr> doesn't close the paragraph.
+    "<p><select name=\"s\"><option>A<hr><option>B</select></p>",
+    // <script> is allowed directly in a table, and its contents are text.
+    "<table><script>var a = 1 < 2;</script><tr><td>1</td></tr></table>",
+]
+
+@Test(arguments: validTableAndSelectBodies)
+func validTableAndSelectStructuresHaveNoErrors(_ body: String) {
+    #expect([] == errorMessages(checkHTML(validDocument(body: body))))
+}
+
+/// </head> and </body> are optional too: the first element that doesn't
+/// belong in <head> closes it, and </html> closes an open <body>.
+@Test func omittedHeadAndBodyEndTagsAreNotErrors() {
+    let document = "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<title>T</title>\n<body>\n<p>x</p>\n</html>\n"
+    #expect([] == errorMessages(checkHTML(document)))
+}
+
+/// "&" in script and style contents, comments and CDATA sections is just a
+/// character; the HTML tokenizer never parses character references there.
+@Test(arguments: [
+    validDocument(body: "<script>function esc(c) { return \"&#\" + c.charCodeAt(0) + \";\"; }</script>\n<p>x</p>"),
+    validDocument(head: "<style>/* &copy 2026 &amp */ p { color: red }</style>\n", body: "<p>x</p>"),
+    validDocument(body: "<!-- a &amp b &# c -->\n<p>x</p>"),
+])
+func ampersandsInTextOnlyContentsAreNotCharacterReferences(_ document: String) {
+    #expect([] == errorMessages(checkHTML(document)))
+}
+
+/// In inline SVG, <script>, <style> and <title> are foreign elements: their
+/// contents are markup, as upstream parses them, not raw text.
+@Test func svgScriptContentsAreParsedAsMarkup() {
+    let errors = errorMessages(checkHTML(validDocument(body: "<svg><script>if (a < b) {}</script></svg>")))
+    #expect("Bad character \u{201c} \u{201d} after \u{201c}<\u{201d}. Probable cause: Unescaped \u{201c}<\u{201d}. Try escaping it as \u{201c}&lt;\u{201d}." == errors.first)
+}
+
+@Test func unclosedSVGTitleDoesNotSwallowTheRestOfTheDocument() {
+    // The <img> after the SVG must still be checked.
+    let errors = errorMessages(checkHTML(validDocument(body: "<svg><title>Icon</svg><p><img src=\"x.png\"></p>")))
+    #expect(errors.contains { $0.hasPrefix("An \u{201c}img\u{201d} element must have an \u{201c}alt\u{201d} attribute") })
+    #expect(!errors.contains("End of file seen when expecting text or an end tag."))
+}
+
+@Test func svgCDATASectionIsNotABogusComment() {
+    let errors = errorMessages(checkHTML(validDocument(body: "<svg><style><![CDATA[ .a { fill: red } ]]></style></svg>")))
+    #expect(!errors.contains("Bogus comment."))
+}
+
+@Test(arguments: [
+    ("<table><caption><span>C<tr><td>1</table>", ["Unclosed elements on stack."]),
+    ("<table><tr><div>x</div><td>1</table>", ["Start tag \u{201c}div\u{201d} seen in \u{201c}table\u{201d}."]),
+    // Reported once (it used to be reported twice).
+    ("<table><input name=\"a\"><tr><td>1</td></tr></table>", ["Start tag \u{201c}input\u{201d} seen in \u{201c}table\u{201d}."]),
+    ("<table><td>1</td></table>", ["\u{201c}td\u{201d} start tag in table body."]),
+    ("<p><rt>x</rt></p>", ["Start tag \u{201c}rt\u{201d} seen without a \u{201c}ruby\u{201d} element being open."]),
+    // <dialog> is special, so the inner <li> doesn't close the outer one.
+    ("<ul><li><dialog open><li>x</dialog></ul>", ["Element \u{201c}li\u{201d} not allowed as child of \u{201c}dialog\u{201d} in this context."]),
+])
+func tableRubyAndListParseErrorsMatchUpstream(_ body: String, _ expected: [String]) {
+    #expect(expected == errorMessages(checkHTML(validDocument(body: body))))
+}
+
+/// "Any other end tag" (here </video>) is blocked by an open <p>, and
+/// formatting end tags (</b>) go through the adoption agency; neither closes
+/// the paragraph quietly the way </div> does.
+@Test(arguments: [
+    "<video src=\"a.mp4\"><p>Fallback</video>",
+    "<b><p>text</b>",
+])
+func endTagsThatDoNotImplyEndTagsStillReportOpenElements(_ body: String) {
+    #expect(errorMessages(checkHTML(validDocument(body: body))).contains { $0.hasPrefix("End tag \u{201c}") })
+}
+
+/// In quirks mode (no doctype), <table> doesn't close an open <p>.
+@Test func quirksModeTableDoesNotCloseParagraph() {
+    let errors = errorMessages(checkHTML("<p>Intro<table><tr><td>1</td></tr></table>\n"))
+    #expect(errors.contains("Element \u{201c}table\u{201d} not allowed as child of \u{201c}p\u{201d} in this context."))
+}
+
 private func checkHTML(_ source: String) -> ValidationResult {
     NuValidator().check(
         input: DocumentInput(data: Data(source.utf8), contentType: "text/html; charset=utf-8"),

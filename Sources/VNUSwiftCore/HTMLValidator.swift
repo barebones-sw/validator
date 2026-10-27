@@ -18,6 +18,9 @@ public final class HTMLValidator: Sendable {
         var sawStartTag = false
         var sawHTMLLang = false
         var sawClosedBody = false
+        // Case 554591: quirks mode changes one implicit closure (<table>
+        // doesn't close an open <p>); see HTMLImplicitClosures.isQuirksMode.
+        var quirksMode = false
         var firstStartTag: (offset: Int, length: Int)?
         var ids: [String: Int] = [:]
         var metaCharsetCount = 0
@@ -48,10 +51,21 @@ public final class HTMLValidator: Sendable {
                 sawStartTag = true
                 if !sawDoctype {
                     appendError("Start tag seen without seeing a doctype first. Expected \u{201c}<!DOCTYPE html>\u{201d}.", offset: offset, length: length, locations: locations, messages: &messages)
+                    quirksMode = HTMLImplicitClosures.isQuirksMode(sawDoctype: false)
                     sawDoctype = true
                 }
-                validateStartTag(name: name, attributes: attributes, selfClosing: selfClosing, offset: offset, length: length, stack: stack, locations: locations, ids: &ids, metaCharsetCount: &metaCharsetCount, sawHTMLLang: &sawHTMLLang, messages: &messages)
-                applyImplicitClosures(beforeStarting: name, stack: &stack)
+                // Case 554591: work out which open elements this start tag
+                // closes implicitly *before* checking where it may appear.
+                // The content model applies to the parent the element actually
+                // gets after HTML's optional end tags are implied, so e.g. the
+                // second <li> of "<li>A<li>B" is a child of the <ul>, not of
+                // the first <li>, and "<p>Intro<ul>" puts the <ul> in the
+                // body, not in the <p>. Checking against the pre-closure stack
+                // reported valid documents as errors.
+                let closure = HTMLImplicitClosures.beforeStartTag(name, openElements: stack.map(\.name), quirksMode: quirksMode)
+                let contentStack = Array(stack.prefix(closure.keepCount))
+                validateStartTag(name: name, attributes: attributes, selfClosing: selfClosing, offset: offset, length: length, stack: stack, contentStack: contentStack, impliedEndTagErrors: closure.errors, locations: locations, ids: &ids, metaCharsetCount: &metaCharsetCount, sawHTMLLang: &sawHTMLLang, messages: &messages)
+                stack = contentStack
                 if !HTMLVocabulary.voidElements.contains(name) && !selfClosing {
                     stack.append(OpenElement(name: name, offset: offset))
                 } else if selfClosing && HTMLVocabulary.voidElements.contains(name) {
@@ -78,7 +92,12 @@ public final class HTMLValidator: Sendable {
                     }
                     continue
                 }
-                if match != stack.index(before: stack.endIndex) {
+                // Case 554591: the parser "generates implied end tags" before
+                // it checks the current node, so elements whose end tags are
+                // optional (li, p, dd, option, ...; and table parts for the
+                // table end tags) aren't "open elements" here. Previously
+                // "<ul><li>A</ul>" and "<div><p>text</div>" were errors.
+                if !HTMLImplicitClosures.endTagClosesQuietly(name, matchIndex: match, openElements: stack.map(\.name)) {
                     appendError("End tag \u{201c}\(name)\u{201d} seen, but there were open elements.", offset: offset, length: length, locations: locations, messages: &messages)
                 }
                 stack.removeSubrange(match...)
@@ -117,6 +136,8 @@ public final class HTMLValidator: Sendable {
         offset: Int,
         length: Int,
         stack: [OpenElement],
+        contentStack: [OpenElement],
+        impliedEndTagErrors: [String],
         locations: SourceLocationMap,
         ids: inout [String: Int],
         metaCharsetCount: inout Int,
@@ -173,12 +194,19 @@ public final class HTMLValidator: Sendable {
             appendError("Heading cannot be a child of another heading.", offset: offset, length: length, locations: locations, messages: &messages)
         }
 
-        if name == "table", stack.contains(where: { $0.name == "table" }) {
-            appendError("Start tag for \u{201c}table\u{201d} seen but the previous \u{201c}table\u{201d} is still open.", offset: offset, length: length, locations: locations, messages: &messages)
-        }
-
-        if (name == "input" || name == "select"), stack.last?.name == "table" {
-            appendError("Start tag \u{201c}\(name)\u{201d} seen in \u{201c}table\u{201d}.", offset: offset, length: length, locations: locations, messages: &messages)
+        // Case 554591: these parse errors belong to the table insertion modes,
+        // i.e. while directly inside a table, row group or row, not inside a
+        // cell or caption. The old checks fired for a <table> anywhere inside
+        // another table, so a valid table nested in a <td> was an error, and
+        // they only knew about <input>/<select> directly in a <table>, while
+        // upstream reports every start tag that gets foster-parented out of
+        // a table (errStartTagInTable).
+        if nil != HTMLImplicitClosures.tableInsertionModeIndex(in: stack.map(\.name)) {
+            if "table" == name {
+                appendError("Start tag for \u{201c}table\u{201d} seen but the previous \u{201c}table\u{201d} is still open.", offset: offset, length: length, locations: locations, messages: &messages)
+            } else if !HTMLImplicitClosures.isTableModeStartTag(name) {
+                appendError("Start tag \u{201c}\(name)\u{201d} seen in \u{201c}table\u{201d}.", offset: offset, length: length, locations: locations, messages: &messages)
+            }
         }
 
         if HTMLVocabulary.obsoleteElements.contains(name) {
@@ -222,11 +250,17 @@ public final class HTMLValidator: Sendable {
             }
         }
 
-        if let impliedEndTagMessage = impliedEndTagMessage(beforeStarting: name, stack: stack) {
-            appendError(impliedEndTagMessage, offset: offset, length: length, locations: locations, messages: &messages)
+        // Parse errors from implicitly closing elements that don't have
+        // optional end tags (e.g. "End tag \"p\" implied, but there were open
+        // elements."), computed by HTMLImplicitClosures in validate().
+        for impliedEndTagError in impliedEndTagErrors {
+            appendError(impliedEndTagError, offset: offset, length: length, locations: locations, messages: &messages)
         }
 
-        if let parentMessage = contentModelMessage(for: name, stack: stack) {
+        // Case 554591: the content model is checked against the stack after
+        // implicit closures (see validate()), not the stack as it was when
+        // the tag was seen.
+        if let parentMessage = contentModelMessage(for: name, stack: contentStack) {
             appendError(parentMessage, offset: offset, length: length, locations: locations, messages: &messages)
         }
 
@@ -261,35 +295,6 @@ public final class HTMLValidator: Sendable {
             return "Element \u{201c}\(child)\u{201d} not allowed as child of \u{201c}\(transparentParent.name)\u{201d} in this context. Note: The \u{201c}\(transparentParent.name)\u{201d} element has a transparent content model; its allowed content is inherited from its parent element."
         }
         return nil
-    }
-
-    private func impliedEndTagMessage(beforeStarting child: String, stack: [OpenElement]) -> String? {
-        guard HTMLVocabulary.flowButNotPhrasing.contains(child),
-              let pIndex = stack.lastIndex(where: { $0.name == "p" }),
-              pIndex != stack.index(before: stack.endIndex) else {
-            return nil
-        }
-        return "End tag \u{201c}p\u{201d} implied, but there were open elements."
-    }
-
-    private func applyImplicitClosures(beforeStarting name: String, stack: inout [OpenElement]) {
-        if name == "li" {
-            closeLast("li", in: &stack)
-        } else if name == "dt" || name == "dd" {
-            closeLast("dt", in: &stack)
-            closeLast("dd", in: &stack)
-        } else if name == "p", stack.last?.name == "p" {
-            _ = stack.popLast()
-        } else if HTMLVocabulary.flowButNotPhrasing.contains(name),
-                  let pIndex = stack.lastIndex(where: { $0.name == "p" }) {
-            stack.removeSubrange(pIndex...)
-        }
-    }
-
-    private func closeLast(_ name: String, in stack: inout [OpenElement]) {
-        if let index = stack.lastIndex(where: { $0.name == name }) {
-            stack.removeSubrange(index...)
-        }
     }
 
     private func appendError(_ text: String, offset: Int, length: Int, locations: SourceLocationMap, messages: inout [ValidationMessage]) {
@@ -1100,11 +1105,11 @@ struct HTMLTableModelChecker {
     }
 
     private mutating func processTableElement(_ element: HTMLTableElementInfo) {
+        // Case 554591: "Start tag \"input\"/\"select\" seen in \"table\"." used to
+        // be reported here as well as by HTMLValidator, so it appeared twice.
+        // That parse error is now reported only by HTMLValidator, for every
+        // foster-parented start tag, as upstream does.
         switch element.name {
-        case "input", "select":
-            if mode == .html, elementStack.last == "table" {
-                append("Start tag \u{201c}\(element.name)\u{201d} seen in \u{201c}table\u{201d}.", at: element)
-            }
         case "colgroup":
             finishCurrentRowGroup()
             processColgroup(element)
