@@ -90,6 +90,13 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# vnu-parity refuses to update the baseline from a filtered run (it would
+# drop every case it didn't run), so say so now instead of after the build.
+if [[ "$UPDATE_BASELINE" -eq 1 && -n "$PARITY_FILTER" ]]; then
+    echo "audit-upstream-update: --update-baseline can't be combined with --filter" >&2
+    exit 2
+fi
+
 if [[ -n "$FETCH_REMOTE" ]]; then
     git fetch "$FETCH_REMOTE"
 fi
@@ -176,15 +183,21 @@ if [[ "$RUN_PARITY" -eq 1 ]]; then
         -derivedDataPath "$PARITY_DERIVED_DATA" \
         build
     PARITY_EXECUTABLE="$PARITY_DERIVED_DATA/Build/Products/Debug/vnu-parity"
-    PARITY_ARGS=(--allow-regression)
+    # vnu-parity refuses --update-baseline together with --allow-regression
+    # (and with --filter): an update from such a run would record the
+    # regressions as the new expectations, or drop every case it didn't run
+    # (review item C4). So an update runs without --allow-regression and
+    # fails, writing nothing, if anything regressed.
+    if [[ "$UPDATE_BASELINE" -eq 1 ]]; then
+        PARITY_ARGS=(--update-baseline)
+    else
+        PARITY_ARGS=(--allow-regression)
+    fi
     if [[ "$PARITY_STRICT" -eq 1 ]]; then
         PARITY_ARGS+=(--strict)
     fi
     if [[ -n "$PARITY_FILTER" ]]; then
         PARITY_ARGS+=(--filter "$PARITY_FILTER")
-    fi
-    if [[ "$UPDATE_BASELINE" -eq 1 ]]; then
-        PARITY_ARGS+=(--update-baseline)
     fi
     PARITY_COMMAND="$(printf '%q ' "$PARITY_EXECUTABLE" "${PARITY_ARGS[@]}")"
     PARITY_COMMAND="${PARITY_COMMAND% }"
@@ -251,7 +264,8 @@ cat >> "$REPORT" <<'EOF'
 Scripts/stage-upstream-update.sh
 xcodebuild -project NuValidator.xcodeproj -scheme VNUParity -configuration Debug -derivedDataPath .build/parity-xcode build
 .build/parity-xcode/Build/Products/Debug/vnu-parity --strict --allow-regression
-.build/parity-xcode/Build/Products/Debug/vnu-parity --update-baseline --allow-regression
+.build/parity-xcode/Build/Products/Debug/vnu-parity --update-baseline
+.build/parity-xcode/Build/Products/Debug/vnu-parity --upstream-rules
 xcodebuild -project NuValidator.xcodeproj -scheme NuValidator -destination 'platform=macOS' test
 Scripts/build-macos-app.sh
 ```
