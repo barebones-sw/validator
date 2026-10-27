@@ -919,7 +919,16 @@ struct HTMLGeneralAttributeChecker {
                 digit = nil
             }
             guard let digit else { return nil }
-            value = value * (isHexadecimal ? 16 : 10) + digit
+            // A reference of 2^32 or more (e.g. `&#4294967296;`) used to
+            // overflow this UInt32 and trap, crashing the XPC service (in
+            // BBEdit 16.1, a hang; see review item A10). Anything past
+            // U+10FFFF is out of range, so Unicode.Scalar(value) below
+            // rejects it anyway: stop accumulating once past that limit
+            // (further digits can't bring it back into range), and the
+            // result is unchanged for every reference that didn't overflow.
+            if value <= 0x10FFFF {
+                value = value * (isHexadecimal ? 16 : 10) + digit
+            }
             sawDigit = true
             cursor += 1
         }

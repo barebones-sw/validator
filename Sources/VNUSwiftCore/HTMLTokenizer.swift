@@ -86,6 +86,12 @@ final class HTMLTokenizer {
             if consumePrefix("<!DOCTYPE", from: &index, caseInsensitive: true) {
                 appendDoctypeDiagnostics(from: start, afterKeyword: index, to: &tokens)
                 _ = skipUntil(">", from: &index)
+                // Upstream's DOCTYPE, bogus-comment and attribute-name states
+                // never parse character references, so neither do we here or
+                // in the "<?" and "<!" branches and attribute names below.
+                // (Without this, e.g. `<!x &#0;>` got character-reference
+                // errors upstream doesn't report.)
+                noCharacterReferenceRanges.append(start..<index)
                 let offset = locations.offset(of: start)
                 tokens.append(.doctype(offset: offset, length: max(1, locations.offset(of: index) - offset)))
                 continue
@@ -142,11 +148,15 @@ final class HTMLTokenizer {
             if consumePrefix("<?", from: &index) {
                 appendError("Saw \u{201c}<?\u{201d}. Probable cause: Attempt to use an XML processing instruction in HTML. (XML processing instructions are not supported in HTML.)", at: start, length: 2, to: &tokens)
                 _ = skipUntil(">", from: &index)
+                // A bogus comment: no character references (see "<!DOCTYPE").
+                noCharacterReferenceRanges.append(start..<index)
                 continue
             }
             if consumePrefix("<!", from: &index) {
                 appendError("Bogus comment.", at: start, length: 2, to: &tokens)
                 _ = skipUntil(">", from: &index)
+                // A bogus comment: no character references (see "<!DOCTYPE").
+                noCharacterReferenceRanges.append(start..<index)
                 continue
             }
             source.formIndex(after: &index)
@@ -247,6 +257,10 @@ final class HTMLTokenizer {
                 let attrNameStart = index
                 while index < source.endIndex, isAttributeNameCharacter(source[index]) {
                     source.formIndex(after: &index)
+                }
+                // Attribute names: no character references (see "<!DOCTYPE").
+                if attrNameStart < index {
+                    noCharacterReferenceRanges.append(attrNameStart..<index)
                 }
                 let attrName = String(source[attrNameStart..<index]).lowercased()
                 if attrName.isEmpty {
@@ -569,17 +583,33 @@ final class HTMLTokenizer {
     }
 
     private func consumePrefix(_ prefix: String, from index: inout String.Index, caseInsensitive: Bool = false) -> Bool {
-        let remaining = source[index...]
-        let matches: Bool
-        if caseInsensitive {
-            matches = remaining.lowercased().hasPrefix(prefix.lowercased())
-        } else {
-            matches = remaining.hasPrefix(prefix)
+        // Review item A11: the case-insensitive test (used for "<!DOCTYPE" at
+        // every "<") lowercased the whole rest of the document before
+        // comparing, so tokenizing was quadratic: a 1.5 MB page took over 30
+        // seconds, and because lowercased() only has a fast path for ASCII,
+        // a single non-ASCII character made it about 100 times slower (a
+        // 136 KB page with a "©" in its footer took 14 s). Compare just the
+        // prefix's characters instead.
+        //
+        // The comparison stays Character by Character, as hasPrefix did,
+        // so a combining mark attached to the last character still prevents
+        // a match and the index always lands on a Character boundary. Case
+        // folding is ASCII-only, as HTML specifies for DOCTYPE.
+        var cursor = index
+        for expected in prefix {
+            guard cursor < source.endIndex else {
+                return false
+            }
+            let actual = source[cursor]
+            let same = actual == expected
+                || (caseInsensitive && actual.isASCII && expected.isASCII && actual.lowercased() == expected.lowercased())
+            guard same else {
+                return false
+            }
+            source.formIndex(after: &cursor)
         }
-        if matches {
-            index = source.index(index, offsetBy: prefix.count, limitedBy: source.endIndex) ?? source.endIndex
-        }
-        return matches
+        index = cursor
+        return true
     }
 
     private func isNameStart(_ character: Character) -> Bool {
@@ -671,7 +701,16 @@ final class HTMLTokenizer {
         if index == source.endIndex || source[index] != ";" {
             appendError("Character reference was not terminated by a semicolon.", at: ampersand, length: max(1, locations.offset(of: index) - locations.offset(of: ampersand)), to: &tokens)
         }
-        guard let value = UInt32(digits, radix: isHex ? 16 : 10) else { return }
+        // UInt32(_:radix:) returns nil when the number doesn't fit, so a
+        // reference of 2^32 or more (e.g. `&#4294967296;`) used to get no
+        // diagnostic at all; upstream reports it as outside the permissible
+        // Unicode range. Treat an all-ASCII-digit overflow as UInt32.max so
+        // it gets that error. (A non-ASCII digit still gets nothing, as
+        // before.)
+        let isASCIIDigits = digits.unicodeScalars.allSatisfy { scalar in
+            isHex ? scalar.properties.isASCIIHexDigit : (48...57).contains(scalar.value)
+        }
+        guard let value = UInt32(digits, radix: isHex ? 16 : 10) ?? (isASCIIDigits ? UInt32.max : nil) else { return }
         appendNumericCharacterReferenceDiagnostic(value, at: ampersand, to: &tokens)
     }
 

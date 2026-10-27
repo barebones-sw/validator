@@ -1325,6 +1325,62 @@ func strayTableEndTagsOutsideATableDoNotCrash(_ body: String, _ expected: [Strin
     #expect(expected == errorMessages(checkHTML(validDocument(body: body))))
 }
 
+// A numeric character reference of 2^32 or more overflowed a UInt32 in
+// HTMLAttributeChecker and trapped (crashing the XPC service), and the
+// tokenizer reported nothing for it. vnu.jar reports exactly this one error
+// for each, in text and in attribute values.
+@Test(arguments: [
+    "<p>a &#4294967296; b</p>",
+    "<p>a &#x100000000; b</p>",
+    "<p>a &#99999999999999999999; b</p>",
+    "<p title=\"a &#4294967296; b\">x</p>",
+    "<p title=\"a &#x100000000; b\">x</p>",
+])
+func hugeNumericCharacterReferencesAreOutOfRangeNotACrash(_ body: String) {
+    #expect(["Character reference outside the permissible Unicode range."] == errorMessages(checkHTML(validDocument(body: body))))
+}
+
+// Bogus comments, processing instructions and attribute names never contain
+// character references upstream, so a reference there gets no diagnostic
+// (it used to get e.g. "Character reference expands to zero."). The
+// expectations are vnu.jar's error lists.
+@Test(arguments: [
+    ("<p>a</p><!x &#0;><p>b</p>", ["Bogus comment."]),
+    ("<p>a</p><!x &#4294967296;><p>b</p>", ["Bogus comment."]),
+    ("<p>a</p><?x &#128;><p>b</p>", ["Saw \u{201c}<?\u{201d}. Probable cause: Attempt to use an XML processing instruction in HTML. (XML processing instructions are not supported in HTML.)"]),
+    ("<p data-a&#0;b=\"x\">y</p>", []),
+])
+func characterReferencesAreNotParsedWhereUpstreamDoesNot(_ body: String, _ expected: [String]) {
+    #expect(expected == errorMessages(checkHTML(validDocument(body: body))))
+}
+
+// Review item A11: comparing "<!DOCTYPE" case-insensitively no longer
+// lowercases the rest of the document, but must still match any case.
+@Test(arguments: ["<!doctype html>", "<!DocType html>", "<!DOCTYPE html>"])
+func doctypeIsMatchedCaseInsensitively(_ doctype: String) {
+    let document = "\(doctype)\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<title>T</title>\n</head>\n<body>\n<p>x</p>\n</body>\n</html>\n"
+    #expect([] == errorMessages(checkHTML(document)))
+}
+
+/// Review item A11: tokenizing was quadratic, and about 100 times slower
+/// again once the document held any non-ASCII character. This roughly
+/// 450 KB page took over 3 minutes; it now takes under half a second in a
+/// release build and about 1.5 s in a debug test build, so the 10 s bound
+/// leaves a wide margin for a loaded machine. The time limit makes a
+/// regression fail after a minute rather than hold up the run.
+@Test(.timeLimit(.minutes(1)))
+func largeNonASCIIDocumentIsCheckedInLinearTime() {
+    let paragraph = "<p>Les élèves ont étudié <b>le café</b> et <i>la crème brûlée</i>.</p>\n"
+    let document = validDocument(body: String(repeating: paragraph, count: 6_000))
+    let clock = ContinuousClock()
+    var errors: [String] = []
+    let elapsed = clock.measure {
+        errors = errorMessages(checkHTML(document))
+    }
+    #expect([] == errors)
+    #expect(elapsed < .seconds(10))
+}
+
 private func checkHTML(_ source: String) -> ValidationResult {
     NuValidator().check(
         input: DocumentInput(data: Data(source.utf8), contentType: "text/html; charset=utf-8"),
