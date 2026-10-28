@@ -350,14 +350,34 @@ struct HTMLTreeEventBuilder {
         // ... and otherwise it's an HTML end tag, which closes an HTML element
         // above the innermost integration point (foreignObject, mi, ...). For
         // </p> without a <p> to close, and for </br>, upstream inserts an
-        // empty element that first ends foreign content; this builder doesn't
-        // insert it, but does end the foreign content.
+        // empty element that first ends foreign content.
         // (Except HTMLImplicitClosures.endTagsUnscopedByIntegrationPoints.)
         let scopeStart = HTMLImplicitClosures.endTagsUnscopedByIntegrationPoints.contains(name) ? 0 : (stack.lastIndex { .html != $0.namespace && $0.childrenAreHTML }).map { $0 + 1 } ?? 0
         let htmlMatch = stack[scopeStart...].lastIndex(where: { .html == $0.namespace && $0.name == name })
-        if ("br" == name || ("p" == name && nil == htmlMatch)), let current = stack.last, .html != current.namespace {
+        if "br" == name || ("p" == name && nil == htmlMatch) {
             while let top = stack.last, .html != top.namespace {
                 closeTop()
+            }
+            // Case 554591 (item 4): and, in a figure, the element itself, as
+            // an empty one, so that the checkers see what upstream's do: a
+            // figure's child elements are counted for its table caption
+            // rule, and the <p> in
+            // <figure><figcaption>…</figcaption><table>…</table></p> is a
+            // third, which this builder used to leave out. (Only in a figure,
+            // as HTMLValidator checks it, for now: elsewhere the checkers
+            // would judge it against a parent the port's tree may have got
+            // wrong, or inside an element upstream's schema rejected, which
+            // they don't know about. In the body only: upstream ignores a
+            // stray </p> before the body. Not in a template, where nothing is
+            // checked, nor in a table, which would foster-parent it, and
+            // where vnu.jar stops checking.)
+            // (The figure test comes first: the table test walks the stack,
+            // which for every </br> in a deep document was measurably slow.)
+            if let current = stack.last, .html == current.namespace, "figure" == current.name,
+               sections.bodyStarted, !isInTemplateContents,
+               nil == HTMLImplicitClosures.tableInsertionModeIndex(in: stack[((stack.lastIndex { .html != $0.namespace }).map { $0 + 1 } ?? 0)...].map(\.name)) {
+                events.append(.startElement(HTMLStartElement(name: name, attributes: [], selfClosing: false, namespace: .html, range: range)))
+                events.append(.endElement(name: name, range: range, implicit: true))
             }
             return
         }

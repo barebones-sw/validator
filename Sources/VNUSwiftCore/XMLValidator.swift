@@ -17,9 +17,23 @@ public final class XMLValidator: NSObject, XMLParserDelegate, @unchecked Sendabl
         var location: SourceLocation
     }
 
+    /// Case 554591 (item 4): a <figure>'s content so far, for its content
+    /// model (a figcaption and then flow content, or flow content and then a
+    /// figcaption; see HTMLValidator's FigureContent, which this follows in
+    /// a simpler way). Everything after any figcaption used to be reported,
+    /// a caption that came first included, and a second caption wasn't.
     private struct FigureContext {
         var depth: Int
+        /// The number of SVG and MathML elements open when the figure started
+        /// (see foreignDepth): the figure is the parent of an element or text
+        /// only while it's the same.
+        var foreignDepth: Int
+        /// Whether an element or text came before any figcaption.
+        var sawContent = false
+        /// Whether there's a figcaption yet, and whether it came after
+        /// other content, so that nothing may follow it.
         var sawFigcaption = false
+        var figcaptionIsLast = false
     }
 
     private struct RubyContext {
@@ -41,6 +55,14 @@ public final class XMLValidator: NSObject, XMLParserDelegate, @unchecked Sendabl
     private var definitionListContexts: [DefinitionListContext] = []
     private var dtCaptures: [DTCapture] = []
     private var figureContexts: [FigureContext] = []
+    // Case 554591 (item 4): the number of open SVG and MathML elements, which
+    // aren't on elementStack: an XHTML element or text inside one isn't its
+    // figure's child, however elementStack looks. And the depth (open
+    // elements of any namespace) of the element the figure rules last found
+    // not allowed, or of a template or legacy element, while it's open:
+    // upstream's schema checks nothing more inside it, so neither do they.
+    private var foreignDepth = 0
+    private var figureRulesSuppressedAbove: Int?
     private var rubyContexts: [RubyContext] = []
     private var sawElement = false
     private var tableChecker = HTMLTableModelChecker(mode: .xhtml)
@@ -54,6 +76,8 @@ public final class XMLValidator: NSObject, XMLParserDelegate, @unchecked Sendabl
         definitionListContexts = []
         dtCaptures = []
         figureContexts = []
+        foreignDepth = 0
+        figureRulesSuppressedAbove = nil
         rubyContexts = []
         sawElement = false
         tableChecker = HTMLTableModelChecker(mode: .xhtml)
@@ -86,16 +110,22 @@ public final class XMLValidator: NSObject, XMLParserDelegate, @unchecked Sendabl
     ) {
         sawElement = true
         let name = elementName.lowercased()
-        guard isXHTMLElement(namespaceURI) else {
-            return
-        }
-
         let location = SourceLocation(
             firstLine: parser.lineNumber,
             firstColumn: parser.columnNumber,
             lastLine: parser.lineNumber,
             lastColumn: parser.columnNumber
         )
+        guard isXHTMLElement(namespaceURI) else {
+            // Case 554591 (item 4): an SVG or MathML element directly in a
+            // figure is flow content there, like any other (as written: the
+            // parser keeps SVG's camelCase names); everything in it is the
+            // foreign element's, not the figure's.
+            noteFigureChild(elementName, isXHTML: false, location: location)
+            foreignDepth += 1
+            return
+        }
+
         if let id = attributeDict["id"], idElementNames[id] == nil {
             idElementNames[id] = name
         }
@@ -113,6 +143,13 @@ public final class XMLValidator: NSObject, XMLParserDelegate, @unchecked Sendabl
             }
         }
         appendXHTMLContentModelMessages(element: name, attributes: normalizedAttributes, location: location)
+        noteFigureChild(name, isXHTML: true, location: location)
+        // (Case 554591, item 4: upstream's schema checks nothing in a
+        // template, or in a legacy element that takes anything, such as
+        // <center>; so neither do the figure rules, from here until it ends.)
+        if nil == figureRulesSuppressedAbove, "template" == name || HTMLValidator.legacyAnythingElements.contains(name) {
+            figureRulesSuppressedAbove = elementStack.count + foreignDepth
+        }
         appendGlobalAttributeMessages(element: name, attributes: attributeDict, location: location)
         if name == "base",
            attributeDict["href"] == nil,
@@ -175,7 +212,7 @@ public final class XMLValidator: NSObject, XMLParserDelegate, @unchecked Sendabl
             dtCaptures.append(DTCapture(dlIndex: dlIndex, location: location))
         }
         if name == "figure" {
-            figureContexts.append(FigureContext(depth: elementStack.count))
+            figureContexts.append(FigureContext(depth: elementStack.count, foreignDepth: foreignDepth))
         }
         if name == "ruby" {
             rubyContexts.append(RubyContext(location: location))
@@ -192,6 +229,9 @@ public final class XMLValidator: NSObject, XMLParserDelegate, @unchecked Sendabl
     ) {
         let name = elementName.lowercased()
         guard isXHTMLElement(namespaceURI) else {
+            // (Case 554591, item 4: see foreignDepth.)
+            foreignDepth -= 1
+            noteElementEnded()
             return
         }
 
@@ -212,7 +252,72 @@ public final class XMLValidator: NSObject, XMLParserDelegate, @unchecked Sendabl
             elementStack.removeSubrange(index...)
             anchorHrefStack.removeSubrange(index...)
         }
+        noteElementEnded()
     }
+
+    /// Case 554591 (item 4): an element (XHTML, SVG or MathML), for the
+    /// content model of the figure it's directly in, if any (see
+    /// FigureContext): a figcaption first, then flow content, or flow
+    /// content, then a figcaption, and never a second one; and the children
+    /// a figure never takes (see xhtmlFigureRejectedChildren), wherever they
+    /// are. An element found not allowed starts a subtree where the figure
+    /// rules check nothing more, as upstream's schema does. The old version
+    /// of this reported everything after any figcaption (a caption that came
+    /// first included), and no second caption; and, not seeing SVG or
+    /// MathML, took a caption after an <svg> for the first one, and an XHTML
+    /// figcaption inside one's foreignObject for the figure's own.
+    private func noteFigureChild(_ name: String, isXHTML: Bool, location: SourceLocation) {
+        guard let index = currentFigureIndex else { return }
+        if isXHTML, "figcaption" == name, !figureContexts[index].sawFigcaption {
+            figureContexts[index].sawFigcaption = true
+            figureContexts[index].figcaptionIsLast = figureContexts[index].sawContent
+            return
+        }
+        let isRejected = isXHTML && Self.xhtmlFigureRejectedChildren.contains(name)
+        guard isRejected || (isXHTML && "figcaption" == name) || figureContexts[index].figcaptionIsLast else {
+            // (Flow content, which, before any caption, makes a caption
+            // after it the last.)
+            if !figureContexts[index].sawFigcaption {
+                figureContexts[index].sawContent = true
+            }
+            return
+        }
+        // A second figcaption, anything after one that came last, or a child
+        // a figure never takes.
+        messages.append(.error(
+            "Element \u{201c}\(name)\u{201d} not allowed as child of \u{201c}figure\u{201d} in this context.",
+            location: location
+        ))
+        figureRulesSuppressedAbove = elementStack.count + foreignDepth
+    }
+
+    /// Case 554591 (item 4): the index of the figure an element or text here
+    /// is directly in, if the figure rules apply (see FigureContext and
+    /// figureRulesSuppressedAbove).
+    private var currentFigureIndex: Int? {
+        guard "figure" == elementStack.last, let index = figureContexts.indices.last, foreignDepth == figureContexts[index].foreignDepth else {
+            return nil
+        }
+        if let depth = figureRulesSuppressedAbove, elementStack.count + foreignDepth > depth {
+            return nil
+        }
+        return index
+    }
+
+    /// Case 554591 (item 4): once the element the figure rules last found not
+    /// allowed has ended, they apply again (see figureRulesSuppressedAbove).
+    private func noteElementEnded() {
+        if let depth = figureRulesSuppressedAbove, elementStack.count + foreignDepth <= depth {
+            figureRulesSuppressedAbove = nil
+        }
+    }
+
+    /// Case 554591 (item 4): the XHTML elements upstream's schema never takes
+    /// as a child of a figure, wherever they are in it: HTMLValidator's list
+    /// (see figureRejectedChildren), and, as HTML's own checkers report them
+    /// in an HTML document, <li> and <base>; and <noscript>, which XHTML
+    /// doesn't have at all.
+    private static let xhtmlFigureRejectedChildren: Set<String> = HTMLValidator.figureRejectedChildren.union(["base", "li", "noscript"])
 
     private func appendXHTMLContentModelMessages(element name: String, attributes: [String: String], location: SourceLocation) {
         if attributes["contextmenu"] != nil {
@@ -253,18 +358,6 @@ public final class XMLValidator: NSObject, XMLParserDelegate, @unchecked Sendabl
                 location: location
             ))
         }
-
-        if elementStack.last == "figure",
-           let index = figureContexts.indices.last {
-            if name == "figcaption" {
-                figureContexts[index].sawFigcaption = true
-            } else if figureContexts[index].sawFigcaption {
-                messages.append(.error(
-                    "Element \u{201c}\(name)\u{201d} not allowed as child of \u{201c}figure\u{201d} in this context.",
-                    location: location
-                ))
-            }
-        }
     }
 
     private func appendGlobalAttributeMessages(element: String, attributes: [String: String], location: SourceLocation) {
@@ -286,23 +379,31 @@ public final class XMLValidator: NSObject, XMLParserDelegate, @unchecked Sendabl
         for index in dtCaptures.indices {
             dtCaptures[index].text += string
         }
-        guard string.contains(where: { !$0.isWhitespace }) else { return }
         let location = SourceLocation(
             firstLine: parser.lineNumber,
             firstColumn: parser.columnNumber,
             lastLine: parser.lineNumber,
             lastColumn: parser.columnNumber
         )
+        // Case 554591 (item 4): text directly in a figure, which is reported
+        // only after a figcaption that came last, and before any figcaption
+        // makes the one after it the last. This comes before the check below,
+        // which passes over text that's all Unicode whitespace: to upstream's
+        // schema validator only a space, tab, CR or LF is, so a no-break
+        // space is text.
+        if string.unicodeScalars.contains(where: { !(" " == $0 || "\t" == $0 || "\n" == $0 || "\r" == $0) }), let index = currentFigureIndex {
+            if figureContexts[index].figcaptionIsLast {
+                messages.append(.error("Text not allowed in \u{201c}figure\u{201d} in this context.", location: location))
+            } else if !figureContexts[index].sawFigcaption {
+                figureContexts[index].sawContent = true
+            }
+        }
+        guard string.contains(where: { !$0.isWhitespace }) else { return }
         if elementStack.last == "menu" {
             messages.append(.error("Text not allowed in \u{201c}menu\u{201d} in this context.", location: location))
         }
         if elementStack.contains("iframe") {
             messages.append(.error("Text not allowed in \u{201c}iframe\u{201d} in this context.", location: location))
-        }
-        if elementStack.last == "figure",
-           let index = figureContexts.indices.last,
-           figureContexts[index].sawFigcaption {
-            messages.append(.error("Text not allowed in \u{201c}figure\u{201d} in this context.", location: location))
         }
         if elementStack.last == "ruby", let index = rubyContexts.indices.last {
             rubyContexts[index].sawBaseContent = true

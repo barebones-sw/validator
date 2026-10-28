@@ -20,14 +20,6 @@
       "category" : "valid",
       "failure" : "Expected no errors or warnings but encountered error “An element with “role=option” must be contained in, or owned by, an element with the “role” value “listbox”.”."
     },
-    "html-aria/misc/figure-with-role-doc-example-and-figcaption.html" : {
-      "category" : "valid",
-      "failure" : "Expected no errors or warnings but encountered error “A “figure” element with a “figcaption” descendant must not have a “role” attribute.”."
-    },
-    "html-aria/misc/figure-with-role-figure-and-figcaption-haswarn.html" : {
-      "category" : "haswarn",
-      "failure" : "Expected a warning only but encountered error “A “figure” element with a “figcaption” descendant must not have a “role” attribute.”."
-    },
     "html-aria/misc/input-checkbox-role-switch-aria-expanded-isvalid.html" : {
       "category" : "valid",
       "failure" : "Expected no errors or warnings but encountered error “Attribute “aria-readonly” not allowed on element “input” at this point.”."
@@ -227,10 +219,6 @@
     "html-svg/svgdom-over-01-f-novalid.html" : {
       "category" : "invalid",
       "failure" : "Expected “Element “stop” not allowed as child of “defs” in this context.” but instead encountered “Element “feConvolveMatrix” is missing required attribute “order”.”."
-    },
-    "html/assertions/figure-multiple-figcaption-novalid.html" : {
-      "category" : "invalid",
-      "failure" : "Expected “Element “figcaption” not allowed as child of “figure” in this context.” but instead encountered “Element “img” not allowed as child of “figure” in this context.”."
     },
     "html/attributes/autofocus-isvalid.html" : {
       "category" : "valid",
@@ -733,9 +721,9 @@
   },
   "passCounts" : {
     "hasinfo" : 5,
-    "haswarn" : 137,
-    "invalid" : 3583,
-    "valid" : 1714
+    "haswarn" : 138,
+    "invalid" : 3584,
+    "valid" : 1715
   },
   "version" : 2
 }

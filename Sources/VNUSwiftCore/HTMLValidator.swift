@@ -43,6 +43,17 @@ public final class HTMLValidator: Sendable {
             /// The element started after the body did (for a <template>:
             /// whether </body> in it can be a body end tag).
             static let startedInBody = Flags(rawValue: 1 << 6)
+            /// Case 554591 (item 4): the element is, or is inside, an HTML
+            /// element whose content upstream's schema doesn't check: one it
+            /// rejects ("Suppressing further errors from this subtree"),
+            /// either because it doesn't know it or, as the older content-model
+            /// rules here find (see contentModelMessage), because it's
+            /// misplaced; or one of the obsolete elements its legacy schema
+            /// takes with anything at all in them (see legacyAnythingElements).
+            /// Only the figure rules look at this so far (see
+            /// schemaChecksChildren); the older rules predate it, and still
+            /// check inside such elements.
+            static let inUncheckedElement = Flags(rawValue: 1 << 7)
         }
 
         var name: String
@@ -90,6 +101,31 @@ public final class HTMLValidator: Sendable {
         case afterAfterFrameset
     }
 
+    /// Case 554591 (item 4): an open <figure>'s content so far, for its
+    /// content model in upstream's schema (html5/media.rnc): a figcaption
+    /// and then flow content, or flow content and then a figcaption. So once
+    /// other content has come before the caption, nothing may follow the
+    /// caption; a caption that came first may be followed by anything; and
+    /// there's never a second caption. (HTMLGeneralAttributeChecker used to
+    /// report everything after any figcaption, so the usual caption-first
+    /// figure, <figure><figcaption>…</figcaption><img …></figure>, was an
+    /// error, as were the elements after a figcaption nested deeper in the
+    /// figure, such as one in a <div>.) See figureContentModelMessage.
+    private struct FigureContent {
+        enum CaptionPosition {
+            /// Before any other content: flow content may follow it.
+            case first
+            /// After other content: nothing may follow it.
+            case last
+        }
+
+        /// Whether flow content (an element, or text that isn't whitespace)
+        /// has come before any figcaption.
+        var sawContent = false
+        /// Where the figcaption is, once there is one.
+        var caption: CaptionPosition?
+    }
+
     /// Review item A2: the flags a child, in the given namespace, inherits
     /// from its parent (see OpenElement.Flags).
     private static func childFlags(of parent: OpenElement?, childNamespace: HTMLNamespace) -> OpenElement.Flags {
@@ -111,6 +147,11 @@ public final class HTMLValidator: Sendable {
         }
         if parent.isInTemplateContents || (.html == parent.namespace && "template" == parent.name) {
             flags.insert(.inTemplateContents)
+        }
+        // (Case 554591, item 4: an unchecked element marks itself, as it
+        // starts; see validateStartTag.)
+        if parent.flags.contains(.inUncheckedElement) {
+            flags.insert(.inUncheckedElement)
         }
         return flags
     }
@@ -293,6 +334,12 @@ public final class HTMLValidator: Sendable {
         var ids: [String: (offset: Int, length: Int)] = [:]
         var metaCharsetCount = 0
         var stack: [OpenElement] = []
+        // Case 554591 (item 4): each <figure>'s content so far (see
+        // FigureContent), by its start tag's offset, which no other element
+        // shares. (Keyed by the tag rather than kept in OpenElement, which
+        // review item A2 kept small; nor in a stack of its own, which every
+        // place that closes elements would then have to pop.)
+        var figureContents: [Int: FigureContent] = [:]
         appendSourcePatternDiagnostics(source: source, locations: locations, messages: &messages)
 
         for token in tokens {
@@ -310,6 +357,24 @@ public final class HTMLValidator: Sendable {
             case .comment:
                 continue
             case let .text(content, offset, _):
+                // Case 554591 (item 4): text directly in a <figure>, which
+                // its content model takes before a figcaption (making that
+                // caption the last thing the figure may have) or after a
+                // caption that came first, but not after one that came last
+                // (see FigureContent). This comes before the check below,
+                // which passes over text that's all HTML whitespace: upstream's
+                // schema validator counts a form feed as text. After </body>,
+                // whitespace still goes into the open figure, as does any text
+                // after </html> (the error below, after which upstream goes
+                // on); but not non-space text after </body>, the error below
+                // after which vnu.jar stops checking. (After a frameset there
+                // can be no figure. Upstream first reopens any formatting
+                // element, such as a <b>, that a misnested end tag closed,
+                // which the port doesn't model; the text then goes in that.)
+                let textStopsUpstream = .afterBody == afterBodyMode && HTMLImplicitClosures.containsNonSpace(content)
+                if !textStopsUpstream, let figure = stack.last, .html == figure.namespace, "figure" == figure.name {
+                    appendFigureTextMessages(content, offset: offset, stack: stack[...], figureContents: &figureContents, locations: locations, messages: &messages)
+                }
                 // Review item A2: non-space text, where the insertion mode
                 // handles it (not in foreign content, which its own rules
                 // handle), as upstream's tree builder takes it: after </body>
@@ -550,7 +615,7 @@ public final class HTMLValidator: Sendable {
                 // (Review item A2: the stack after the implied end tags is a
                 // slice of it, not a copy; copying the whole stack for every
                 // start tag made deeply nested documents slower still.)
-                validateStartTag(name: name, writtenName: writtenName, attributes: attributes, selfClosing: selfClosing, namespace: namespace, offset: offset, length: length, stack: stack, contentStack: stack[..<closure.keepCount], impliedEndTagErrors: closure.errors, locations: locations, metaCharsetCount: &metaCharsetCount, sawHTMLLang: &sawHTMLLang, messages: &messages)
+                let startTagFlags = validateStartTag(name: name, writtenName: writtenName, attributes: attributes, selfClosing: selfClosing, namespace: namespace, offset: offset, length: length, stack: stack, contentStack: stack[..<closure.keepCount], impliedEndTagErrors: closure.errors, inHead: sections.isInHead, locations: locations, figureContents: &figureContents, metaCharsetCount: &metaCharsetCount, sawHTMLLang: &sawHTMLLang, messages: &messages)
                 // Review item A2: after "End tag “p” implied, but there were
                 // open elements." and the like, upstream lists the elements
                 // above the one closed (see appendUnclosedElements).
@@ -570,6 +635,14 @@ public final class HTMLValidator: Sendable {
                 if sections.bodyStarted {
                     flags.insert(.startedInBody)
                 }
+                // Case 554591 (item 4): an element the figure rules found not
+                // allowed where it is (see figureContentModelMessage) starts
+                // a rejected subtree, where upstream's schema reports nothing
+                // more ("Suppressing further errors from this subtree"); and
+                // an unknown or legacy element, or one the older content-model
+                // rules reject, marks itself as one whose content upstream
+                // doesn't check (see Flags.inUncheckedElement).
+                flags.formUnion(startTagFlags)
                 // Review item A2: a <math> where MathML can't go: in a MathML
                 // element (an annotation-xml with an HTML encoding, or a token
                 // element: mi, mn, mo or ms; mtext takes HTML phrasing content,
@@ -594,7 +667,7 @@ public final class HTMLValidator: Sendable {
                     // nothing; see OpenElement.Flags.)
                     // (An element HTML doesn't know at all already has this
                     // message from validateStartTag, which vnu.jar gives once.)
-                    let validateStartTagReportedIt = .html == namespace && !name.contains("-") && !HTMLVocabulary.elements.contains(name) && !HTMLVocabulary.obsoleteElements.contains(name) && "menuitem" != name
+                    let validateStartTagReportedIt = .html == namespace && Self.isUnknownHTMLElement(name)
                     if !validateStartTagReportedIt, flags.isDisjoint(with: [.inRejectedSubtree, .inTemplateContents, .inAnyElementContent]) {
                         appendError(HTMLVocabulary.notAllowedAsChildMessage(name, parent: parent.name), offset: offset, length: length, locations: locations, messages: &messages)
                     }
@@ -670,6 +743,7 @@ public final class HTMLValidator: Sendable {
                         // Upstream inserts a <br> for it, which first ends any
                         // foreign content it's in.
                         popForeignContent(forInsertedElement: name, stack: &stack, offset: offset, length: length, locations: locations, messages: &messages)
+                        appendInsertedElementMessages(name, offset: offset, length: length, stack: stack, bodyStarted: sections.bodyStarted, figureContents: &figureContents, locations: locations, messages: &messages)
                     } else {
                         appendError("Stray end tag \u{201c}\(name)\u{201d}.", offset: offset, length: length, locations: locations, messages: &messages)
                     }
@@ -754,6 +828,7 @@ public final class HTMLValidator: Sendable {
                         // Upstream inserts a <p> for it, which first ends any
                         // foreign content it's in.
                         popForeignContent(forInsertedElement: name, stack: &stack, offset: offset, length: length, locations: locations, messages: &messages)
+                        appendInsertedElementMessages(name, offset: offset, length: length, stack: stack, bodyStarted: sections.bodyStarted, figureContents: &figureContents, locations: locations, messages: &messages)
                     } else {
                         appendError("Stray end tag \u{201c}\(name)\u{201d}.", offset: offset, length: length, locations: locations, messages: &messages)
                     }
@@ -821,6 +896,50 @@ public final class HTMLValidator: Sendable {
         appendError("HTML start tag \u{201c}\(name)\u{201d} in a foreign namespace context.", offset: offset, length: length, locations: locations, messages: &messages)
         while let top = stack.last, .html != top.namespace {
             stack.removeLast()
+        }
+    }
+
+    /// Case 554591 (item 4): the element upstream's parser inserts for a
+    /// stray </p> (an empty <p>) or a </br> (a <br>), when it goes in a
+    /// figure: upstream's schema sees it as any other child, so it's content
+    /// there, and a caption after it is the figure's last child, or, after
+    /// such a caption, it's not allowed. The port reported only the end tag,
+    /// so it took a caption after such a </p> for the first one, and missed
+    /// the error after it. (The port's stack still doesn't hold the element,
+    /// which has no content anyway. Only the figure rules check it so far:
+    /// elsewhere, upstream's schema would check it against its parent too,
+    /// "Element “p” not allowed as child of “span”", but where the port's
+    /// tree differs from upstream's, as with a heading inside another, which
+    /// upstream's parser closes, that put it in the wrong parent. Before a
+    /// <br>, upstream also reopens any formatting element a misnested end tag
+    /// closed, which the port doesn't model. Nothing is checked before the
+    /// body, where upstream ignores a stray </p>; in a table, which would
+    /// foster-parent the element, and where vnu.jar stops checking; or where
+    /// upstream's schema checks nothing; see schemaChecksChildren.)
+    private func appendInsertedElementMessages(
+        _ name: String,
+        offset: Int,
+        length: Int,
+        stack: [OpenElement],
+        bodyStarted: Bool,
+        figureContents: inout [Int: FigureContent],
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) {
+        // (Whether the parent is a figure comes first, as it rules out nearly
+        // every one, before the walk down the stack for the table test: doing
+        // that first made a deep document with many </br>s twice as slow.
+        // figureContentModelMessage does the rest, checking only where
+        // upstream's schema checks anything.)
+        guard bodyStarted, let parent = stack.last, .html == parent.namespace, "figure" == parent.name else {
+            return
+        }
+        let htmlStack = stack[((stack.lastIndex { .html != $0.namespace }).map { $0 + 1 } ?? 0)...]
+        guard nil == HTMLImplicitClosures.tableInsertionModeIndex(in: htmlStack.map(\.name)) else {
+            return
+        }
+        if let message = figureContentModelMessage(for: name, namespace: .html, stack: stack[...], inHead: false, isFosterParented: false, figureContents: &figureContents) {
+            appendError(message, offset: offset, length: length, locations: locations, messages: &messages)
         }
     }
 
@@ -949,6 +1068,12 @@ public final class HTMLValidator: Sendable {
         }
     }
 
+    /// Checks a start tag that the insertion mode handles. Returns flags for
+    /// the new element (case 554591, item 4; see OpenElement.Flags):
+    /// inRejectedSubtree when one of the rules here that start a rejected
+    /// subtree rejects it (so far, only the figure rules do), and
+    /// inUncheckedElement when it's one whose content upstream's schema
+    /// doesn't check.
     private func validateStartTag(
         name: String,
         writtenName: String,
@@ -960,11 +1085,14 @@ public final class HTMLValidator: Sendable {
         stack: [OpenElement],
         contentStack: ArraySlice<OpenElement>,
         impliedEndTagErrors: [String],
+        inHead: Bool,
         locations: SourceLocationMap,
+        figureContents: inout [Int: FigureContent],
         metaCharsetCount: inout Int,
         sawHTMLLang: inout Bool,
         messages: inout [ValidationMessage]
-    ) {
+    ) -> OpenElement.Flags {
+        var elementFlags: OpenElement.Flags = []
         // (Duplicate attributes are reported for every start tag; see
         // validate().)
         var attr: [String: String] = [:]
@@ -1025,10 +1153,14 @@ public final class HTMLValidator: Sendable {
         // they only knew about <input>/<select> directly in a <table>, while
         // upstream reports every start tag that gets foster-parented out of
         // a table (errStartTagInTable).
+        // (Case 554591, item 4: whether this one is, which the figure rules
+        // want to know too: see figureContentModelMessage.)
+        var isFosterParented = false
         if nil != HTMLImplicitClosures.tableInsertionModeIndex(in: htmlStack.map(\.name)) {
             if "table" == name {
                 appendError("Start tag for \u{201c}table\u{201d} seen but the previous \u{201c}table\u{201d} is still open.", offset: offset, length: length, locations: locations, messages: &messages)
             } else if !HTMLImplicitClosures.isTableModeStartTag(name) {
+                isFosterParented = true
                 // (Review item A2: upstream reports an <image> here under that
                 // name, then again as the <img> it handles it as.)
                 if writtenName != name {
@@ -1038,6 +1170,10 @@ public final class HTMLValidator: Sendable {
             }
         }
 
+        // (Case 554591, item 4: an element of the legacy schema's that takes
+        // anything, or one HTML doesn't have, marks itself as one whose
+        // content upstream's schema doesn't check; see
+        // OpenElement.Flags.inUncheckedElement.)
         if HTMLVocabulary.obsoleteElements.contains(name) {
             if let obsoleteMessage = obsoleteElementMessage(for: name) {
                 appendError(obsoleteMessage, offset: offset, length: length, locations: locations, messages: &messages)
@@ -1046,8 +1182,14 @@ public final class HTMLValidator: Sendable {
             } else {
                 appendError("The \u{201c}\(name)\u{201d} element is obsolete. Use CSS instead.", offset: offset, length: length, locations: locations, messages: &messages)
             }
+            if .html == namespace, Self.legacyAnythingElements.contains(name) {
+                elementFlags.insert(.inUncheckedElement)
+            }
         } else if name == "menuitem", stack.last?.name != "menu" {
             appendError("The \u{201c}menuitem\u{201d} element is a completely-unknown element that is not allowed anywhere in any HTML content.", offset: offset, length: length, locations: locations, messages: &messages)
+            if .html == namespace {
+                elementFlags.insert(.inUncheckedElement)
+            }
         } else if name.contains("-") {
             if !isValidAutonomousCustomElementName(name) {
                 appendError("Element \u{201c}\(name)\u{201d} not allowed.", offset: offset, length: length, locations: locations, messages: &messages)
@@ -1066,6 +1208,9 @@ public final class HTMLValidator: Sendable {
             // nor in a <template>, where upstream checks nothing, nor inside
             // an element upstream's schema has rejected (see
             // OpenElement.Flags).
+            if .html == namespace {
+                elementFlags.insert(.inUncheckedElement)
+            }
             let inheritedFlags = Self.childFlags(of: contentStack.last, childNamespace: .html)
             let inTemplateContents = inheritedFlags.contains(.inTemplateContents)
             if inheritedFlags.isDisjoint(with: [.inTemplateContents, .inAnyElementContent, .inRejectedSubtree]) {
@@ -1134,17 +1279,38 @@ public final class HTMLValidator: Sendable {
         // children by an SVG or MathML parent's content model.)
         // (Review item A2: nor inside an element upstream's schema has
         // rejected, where it reports nothing more; see OpenElement.Flags.)
-        if .html == contentStack.last?.namespace ?? .html, !(contentStack.last?.isInRejectedSubtree ?? false), let parentMessage = contentModelMessage(for: name, stack: contentStack) {
-            appendError(parentMessage, offset: offset, length: length, locations: locations, messages: &messages)
+        // (Case 554591, item 4: then the figure rules, for a child of a
+        // <figure> or a figcaption anywhere else, unless the rules above have
+        // already reported the element. Unlike those, which are older, an
+        // element these reject starts a rejected subtree, as in upstream.)
+        if .html == contentStack.last?.namespace ?? .html, !(contentStack.last?.isInRejectedSubtree ?? false) {
+            if let parentMessage = contentModelMessage(for: name, stack: contentStack, inHead: inHead) {
+                appendError(parentMessage, offset: offset, length: length, locations: locations, messages: &messages)
+                // (Case 554591, item 4: an element these older rules report
+                // is one upstream's schema rejects, after which it checks
+                // nothing inside it; so the figure rules don't look inside
+                // it either, though these rules still do, as they always
+                // have. Otherwise a figcaption in, say, the <div> of
+                // <span><div>, which vnu.jar doesn't report, was. The one
+                // message here that's the parser's rather than a rejection,
+                // for a <picture> in a <noscript> in the head, makes no
+                // difference: upstream's schema rejects anything in a
+                // picture but what the figure rules don't check.)
+                elementFlags.insert(.inUncheckedElement)
+            } else if let figureMessage = figureContentModelMessage(for: name, namespace: namespace, stack: contentStack, inHead: inHead, isFosterParented: isFosterParented, figureContents: &figureContents) {
+                appendError(figureMessage, offset: offset, length: length, locations: locations, messages: &messages)
+                elementFlags.insert(.inRejectedSubtree)
+            }
         }
 
         // (Review item A2: a self-closed <svg/> or <math/> is fine.)
         if selfClosing && .html == namespace && !HTMLVocabulary.voidElements.contains(name) {
             appendError("Self-closing syntax (\u{201c}/>\u{201d}) used on a non-void HTML element. Ignoring the slash and treating as a start tag.", offset: offset, length: length, locations: locations, messages: &messages)
         }
+        return elementFlags
     }
 
-    private func contentModelMessage(for child: String, stack: ArraySlice<OpenElement>) -> String? {
+    private func contentModelMessage(for child: String, stack: ArraySlice<OpenElement>, inHead: Bool) -> String? {
         if child == "li" {
             let parent = stack.last?.name
             if parent != "ol" && parent != "ul" && parent != "menu" {
@@ -1153,7 +1319,14 @@ public final class HTMLValidator: Sendable {
             }
         }
         if child == "picture" {
-            if stack.last?.name == "noscript", !stack.contains(where: { $0.name == "body" }) {
+            // (Case 554591, item 4: whether the <noscript> is in the head is
+            // the port's model of the parser's state, not whether a <body> is
+            // open: the port opens no element for a body it implies, so a
+            // <noscript> in a body whose tag was left out was taken for one in
+            // the head, and its <picture> got this error. The model still
+            // takes one in a <template> in the head for one in the head,
+            // though upstream's parser takes it as in a body.)
+            if stack.last?.name == "noscript", inHead {
                 return "Bad start tag in \u{201c}picture\u{201d} in \u{201c}noscript\u{201d} in \u{201c}head\u{201d}."
             }
             if let parent = stack.last?.name, Self.invalidPictureParents.contains(parent) {
@@ -1177,6 +1350,192 @@ public final class HTMLValidator: Sendable {
         }
         return nil
     }
+
+    /// Case 554591 (item 4): upstream's schema rules for <figure> and
+    /// <figcaption> (html5/media.rnc), for a start tag whose parent is
+    /// `stack.last`: the figure's content model (see FigureContent), the
+    /// children a figure never takes, and a figcaption anywhere but in a
+    /// figure. Returns the message for an element they don't allow there,
+    /// which is then left out of its figure's content, as Jing leaves it out.
+    /// Nothing is reported where upstream's schema checks nothing (see
+    /// schemaChecksChildren), nor what another rule already reports.
+    private func figureContentModelMessage(for child: String, namespace: HTMLNamespace, stack: ArraySlice<OpenElement>, inHead: Bool, isFosterParented: Bool, figureContents: inout [Int: FigureContent]) -> String? {
+        // (Not for a start tag a table foster-parents, which the port has
+        // already reported as "seen in “table”", and after which vnu.jar
+        // stops checking: the port's stack doesn't put it where upstream's
+        // parser does.)
+        // (With no element open, the start tag goes in the body the parser
+        // implies, which the port opens no element for when the document has
+        // no <html> or <body> tag; contentModelMessage's <li> rule takes it
+        // the same way.)
+        guard !isFosterParented, .html == stack.last?.namespace ?? .html, Self.schemaChecksChildren(of: stack.last, childNamespace: namespace) else {
+            return nil
+        }
+        let isFigcaption = .html == namespace && "figcaption" == child
+        guard let parent = stack.last, "figure" == parent.name else {
+            // A figcaption outside a figure, which upstream reports in any
+            // parent (vnu.jar: "Element “figcaption” not allowed as child of
+            // “div”"). The port reported one only in a phrasing parent (see
+            // contentModelMessage), and took one in a <div> in a figure for
+            // the figure's own caption.
+            guard isFigcaption, Self.reportsFigcaption(in: stack, inHead: inHead) else {
+                return nil
+            }
+            let parentName = stack.last.map { "html" == $0.name ? "body" : $0.name } ?? "body"
+            return HTMLVocabulary.notAllowedAsChildMessage("figcaption", parent: parentName)
+        }
+        let content = figureContents[parent.offset] ?? FigureContent()
+        // A child a figure never takes is reported wherever it is in the
+        // figure, and doesn't count as content before a caption.
+        if .html == namespace, Self.figureRejectedChildren.contains(child) {
+            return HTMLVocabulary.notAllowedAsChildMessage(child, parent: "figure")
+        }
+        // (Nor does an element HTML doesn't have, which validateStartTag has
+        // already reported as not allowed, or a <base>, which a figure never
+        // takes either, but which HTMLGeneralAttributeChecker reports. One
+        // that upstream's schema has as flow content but the port's
+        // vocabulary lacks, a legacy one such as <spacer> or <multicol>, or
+        // a <selectedcontent>, still counts before a caption, though; after
+        // a caption that came last, validateStartTag's "not allowed" is
+        // already the right message.)
+        let isUnknown = .html == namespace && Self.isUnknownHTMLElement(child)
+        if .html == namespace, "base" == child || (isUnknown && !Self.legacyAnythingElements.contains(child) && "selectedcontent" != child) {
+            return nil
+        }
+        if isFigcaption {
+            // A second caption is never allowed, wherever the first one is.
+            if nil != content.caption {
+                return HTMLVocabulary.notAllowedAsChildMessage("figcaption", parent: "figure")
+            }
+            figureContents[parent.offset, default: FigureContent()].caption = content.sawContent ? .last : .first
+            return nil
+        }
+        switch content.caption {
+        case .last?:
+            // Nothing may follow a caption that came after other content.
+            return isUnknown ? nil : HTMLVocabulary.notAllowedAsChildMessage(HTMLForeignContent.displayName(child, namespace: namespace), parent: "figure")
+        case .first?:
+            return nil
+        case nil:
+            // (Any other element, an obsolete, custom, SVG or MathML one
+            // included, is flow content here: vnu.jar reports the <p> in
+            // <figure><center>…</center><figcaption>…</figcaption><p>….)
+            figureContents[parent.offset, default: FigureContent()].sawContent = true
+            return nil
+        }
+    }
+
+    /// Case 554591 (item 4): text directly in the <figure> that's the last
+    /// of `stack` (see FigureContent): before any caption it's content, so a
+    /// caption after it is the figure's last child; after such a caption,
+    /// each piece of it that upstream's schema validator sees (see
+    /// HTMLGeneralAttributeChecker.nonSpaceTextPieces) is reported. This used
+    /// to be reported, once for the whole text, after any figcaption at all.
+    private func appendFigureTextMessages(_ content: String, offset: Int, stack: ArraySlice<OpenElement>, figureContents: inout [Int: FigureContent], locations: SourceLocationMap, messages: inout [ValidationMessage]) {
+        guard let figure = stack.last else { return }
+        let state = figureContents[figure.offset] ?? FigureContent()
+        // (Text after a caption that came first is fine, and once there's
+        // content before the caption, more of it changes nothing; this
+        // returns before the work below for the space between the figure's
+        // children, in the usual figure.)
+        let isAfterLastCaption = (.last == state.caption)
+        guard isAfterLastCaption || (nil == state.caption && !state.sawContent) else { return }
+        // (A NUL in it is dropped, as in any HTML element.)
+        let pieces = HTMLGeneralAttributeChecker.nonSpaceTextPieces(in: content, droppingNUL: true)
+        guard !pieces.isEmpty, Self.schemaChecksChildren(of: figure, childNamespace: .html) else { return }
+        guard isAfterLastCaption else {
+            figureContents[figure.offset, default: FigureContent()].sawContent = true
+            return
+        }
+        for piece in pieces {
+            appendError("Text not allowed in \u{201c}figure\u{201d} in this context.", offset: offset + piece.lowerBound, length: piece.count, locations: locations, messages: &messages)
+        }
+    }
+
+    /// Case 554591 (item 4): whether upstream's schema checks a child, in the
+    /// given namespace, of `parent` at all: not in a template, in content it
+    /// accepts unchecked, inside an element the figure rules have rejected,
+    /// or inside one whose content it doesn't check otherwise (an unknown,
+    /// misplaced or legacy element; see OpenElement.Flags.inUncheckedElement,
+    /// which only the figure rules look at, so as not to report what vnu.jar
+    /// never would, such as a figcaption inside a <center>). (No parent: the
+    /// body the parser implies, where it checks everything.)
+    private static func schemaChecksChildren(of parent: OpenElement?, childNamespace: HTMLNamespace) -> Bool {
+        childFlags(of: parent, childNamespace: childNamespace).isDisjoint(with: [.inTemplateContents, .inAnyElementContent, .inRejectedSubtree, .inUncheckedElement])
+    }
+
+    /// Case 554591 (item 4): an HTML element that validateStartTag reports as
+    /// not allowed wherever it is: one HTML doesn't have, neither in the
+    /// vocabulary nor obsolete, and not a custom element; see its last
+    /// branch. (A <menuitem> outside a <menu> gets a branch of its own, and
+    /// isn't counted here, though one in a <menu> is reported by that last
+    /// branch: neither caller can tell the difference, as their parent is a
+    /// figure or a MathML token element. validate()'s MathML token-element
+    /// rule asks this so as not to repeat that message.)
+    private static func isUnknownHTMLElement(_ name: String) -> Bool {
+        !name.contains("-") && !HTMLVocabulary.elements.contains(name) && !HTMLVocabulary.obsoleteElements.contains(name) && "menuitem" != name
+    }
+
+    /// Case 554591 (item 4): whether the figure rules report a figcaption
+    /// whose parent, `stack.last`, isn't a figure. Not where another rule
+    /// reports it already (in a phrasing parent, see contentModelMessage,
+    /// which comes first; in a <dl>, or a <div> in one, see
+    /// HTMLDefinitionListChecker; in a <picture>, see
+    /// HTMLGeneralAttributeChecker), nor in a <noscript> in the head: there
+    /// upstream's parser reports a "Bad start tag" and moves the figcaption
+    /// to the body, where vnu.jar reports it as a child of that, all of
+    /// which the port doesn't model yet (the "in head noscript" mode). (Nor
+    /// where a table foster-parents it; see figureContentModelMessage. With
+    /// no parent at all, it's in the body the parser implies.)
+    private static func reportsFigcaption(in stack: ArraySlice<OpenElement>, inHead: Bool) -> Bool {
+        guard let parent = stack.last else { return true }
+        switch parent.name {
+        case "dl", "picture":
+            return false
+        case "div":
+            let grandparent = stack.dropLast().last
+            return !(.html == grandparent?.namespace && "dl" == grandparent?.name)
+        case "noscript":
+            // (Whether it's in the head is the port's model of the parser's
+            // state, not whether a <body> is open: the port opens no element
+            // for a body it implies.)
+            return !inHead
+        default:
+            return true
+        }
+    }
+
+    /// Case 554591 (item 4): the HTML elements that upstream's schema never
+    /// takes as a child of a <figure> (vnu.jar reports each as not allowed
+    /// there, before or after a caption, and goes on as if it weren't there),
+    /// though its parser puts them there: definition list parts, legend,
+    /// summary, select's options, ruby's parts, media sources and tracks, and
+    /// the head's title and style. (Also an <li>, which contentModelMessage
+    /// reports first, and a <base>; see figureContentModelMessage.) Not
+    /// private: XMLValidator's figure rules use it too.
+    static let figureRejectedChildren: Set<String> = [
+        "dd", "dt", "legend", "optgroup", "option", "rb", "rp", "rt", "rtc",
+        "source", "style", "summary", "title", "track"
+    ]
+
+    /// Case 554591 (item 4): the obsolete elements that upstream's legacy
+    /// schema (schema/.drivers/legacy.rnc) takes as flow or phrasing content
+    /// with anything at all in them (common.inner.anything), so that its
+    /// schema checks nothing inside one; its Assertions checker reports the
+    /// element itself as obsolete. (vnu.jar has no error for an <li> or a
+    /// figcaption in a <center>, or for a figure there.) validateStartTag
+    /// marks the ones the port knows as obsolete with
+    /// OpenElement.Flags.inUncheckedElement; the rest (isindex, listing,
+    /// multicol, nextid, spacer, and menuitem) the port takes for unknown,
+    /// which marks them too. figureContentModelMessage counts them all as
+    /// flow content, as upstream does. (Not private: XMLValidator's figure
+    /// rules check nothing inside one either.)
+    static let legacyAnythingElements: Set<String> = [
+        "acronym", "applet", "basefont", "bgsound", "big", "blink", "center", "dir",
+        "font", "frame", "frameset", "isindex", "keygen", "listing", "marquee", "menuitem",
+        "multicol", "nextid", "nobr", "noembed", "noframes", "param", "plaintext",
+        "spacer", "strike", "tt", "xmp"
+    ]
 
     private func appendError(_ text: String, offset: Int, length: Int, locations: SourceLocationMap, messages: inout [ValidationMessage]) {
         messages.append(.error(text, location: locations.location(offset: offset, length: length), extract: locations.extract(offset: offset, length: length)))

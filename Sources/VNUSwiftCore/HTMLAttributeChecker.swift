@@ -512,7 +512,6 @@ struct HTMLGeneralAttributeChecker {
         var mediaStack: [MediaState] = []
         var selectStack: [SelectState] = []
         var optionStack: [OptionState] = []
-        var figureStack: [FigureState] = []
         // Review item 3: upstream's bookkeeping for <img> elements without a
         // text alternative inside a <figure> (see FigureAltRecord): every
         // figure's record, in the order the figures start; for each depth of
@@ -634,7 +633,17 @@ struct HTMLGeneralAttributeChecker {
                 if isHTML {
                     appendDatatypeAttributeMessages(for: element, locations: locations, messages: &messages)
                     appendGlobalAttributeMessages(for: element, locations: locations, messages: &messages)
-                    appendBaseMessages(for: element, sawBodyContentBeforeBase: sawBodyContentBeforeBase, sawBaseBlockingElement: sawBaseBlockingElement, locations: locations, messages: &messages)
+                    // (Case 554591, item 4: where a <base> in the body is,
+                    // as its message names it, and whether that message is
+                    // this rule's to give: not where upstream's schema
+                    // checks nothing, nor where another rule already gives
+                    // it, in a <dl>, a <div> in one or a <picture> (see
+                    // HTMLDefinitionListChecker and appendPictureChildMessages),
+                    // or in a MathML token element (see HTMLValidator).)
+                    let parentIsDivInDL = parentIsHTML && "div" == parent && stack.count >= 2 && "dl" == stack[stack.count - 2] && .html == namespaceStack[stack.count - 2]
+                    let baseMisplacementIsReported = !inTemplateContents && !inAnyElementContent && !isRejectedForeign
+                        && !(parentIsHTML && ("dl" == parent || "picture" == parent)) && !parentIsDivInDL
+                    appendBaseMessages(for: element, parent: parent.map { HTMLForeignContent.displayName($0, namespace: parentNamespace) }, reportsMisplacement: baseMisplacementIsReported, sawBodyContentBeforeBase: sawBodyContentBeforeBase, sawBaseBlockingElement: sawBaseBlockingElement, locations: locations, messages: &messages)
                     appendStructuralAssertionMessages(for: element, stack: stack, mapNames: mapNames, locations: locations, messages: &messages)
                     appendElementSpecificMessages(for: element, stack: stack, locations: locations, messages: &messages)
                 }
@@ -690,22 +699,11 @@ struct HTMLGeneralAttributeChecker {
                 if parentIsHTML, parent == "picture", let pictureIndex = pictureStack.indices.last {
                     appendPictureChildMessages(for: element, state: &pictureStack[pictureIndex], locations: locations, messages: &messages)
                 }
-                if isHTML, element.name == "figcaption", let figureIndex = figureStack.indices.last {
-                    if figureStack[figureIndex].figcaptionCount > 0 {
-                        appendMessage("Element \u{201c}figcaption\u{201d} not allowed as child of \u{201c}figure\u{201d} in this context.", for: element, locations: locations, messages: &messages)
-                    }
-                    figureStack[figureIndex].figcaptionCount += 1
-                    figureStack[figureIndex].sawFigcaption = true
-                    if figureStack[figureIndex].hasRole, !figureStack[figureIndex].reportedRoleWithFigcaption {
-                        appendMessage("A \u{201c}figure\u{201d} element with a \u{201c}figcaption\u{201d} descendant must not have a \u{201c}role\u{201d} attribute.", for: figureStack[figureIndex].element, locations: locations, messages: &messages)
-                        figureStack[figureIndex].reportedRoleWithFigcaption = true
-                    }
-                } else if parentIsHTML, parent == "figure", let figureIndex = figureStack.indices.last, figureStack[figureIndex].sawFigcaption {
-                    appendMessage("Element \u{201c}\(element.name)\u{201d} not allowed as child of \u{201c}figure\u{201d} in this context.", for: element, locations: locations, messages: &messages)
-                }
-                if isHTML, element.name == "caption", stack.contains("figure"), stack.contains("table") {
-                    appendWarningMessage("When a \u{201c}table\u{201d} element is the only content in a \u{201c}figure\u{201d} element other than the \u{201c}figcaption\u{201d}, the \u{201c}caption\u{201d} element should be omitted in favor of the \u{201c}figcaption\u{201d}.", for: element, locations: locations, messages: &messages)
-                }
+                // (Case 554591, item 4: a figure's content model, which this
+                // used to check here, is HTMLValidator's now, as it's a schema
+                // rule; see its FigureContent. A figure's role and table
+                // caption rules are checked when it ends; see
+                // appendFigureEndMessages.)
                 if isHTML, element.name == "audio" || element.name == "video" {
                     mediaStack.append(MediaState(element: element))
                 }
@@ -752,9 +750,6 @@ struct HTMLGeneralAttributeChecker {
                 }
                 if isHTML, element.name == "picture" {
                     pictureStack.append(PictureState(element: element))
-                }
-                if isHTML, element.name == "figure" {
-                    figureStack.append(FigureState(element: element, hasRole: element.hasAttribute("role")))
                 }
                 if isHTML, element.name == "details" {
                     detailsStack.append(DetailsState(element: element))
@@ -839,9 +834,27 @@ struct HTMLGeneralAttributeChecker {
                         figureAltRecords[currentFigure].imagesLackingAlt.append(element)
                     }
                     if "figure" == element.name {
-                        figureAltRecords.append(FigureAltRecord())
+                        figureAltRecords.append(FigureAltRecord(figure: element))
                         figureContext.record = figureAltRecords.count - 1
                         currentFigureAltDepth = stack.count
+                    }
+                    // Case 554591 (item 4): an HTML child of a figure, which
+                    // upstream collects for its table caption rule (see
+                    // appendFigureEndMessages); and a <caption> of a table
+                    // that's one of them, which upstream notes on the figure,
+                    // the last one winning. (Only a figure has a record, so
+                    // the parent's, or the table's parent's, is a figure's.)
+                    if let record = parentFigureContext.record {
+                        figureAltRecords[record].htmlChildCount += 1
+                        if "figcaption" == element.name {
+                            figureAltRecords[record].hasFigcaptionChild = true
+                        } else if "table" == element.name {
+                            figureAltRecords[record].hasTableChild = true
+                        }
+                    }
+                    if "caption" == element.name, parentIsHTML, "table" == parent, figureAltContextStack.count >= 2,
+                       let record = figureAltContextStack[figureAltContextStack.count - 2].record {
+                        figureAltRecords[record].nestedTableCaption = element
                     }
                 }
                 updateBaseState(afterStarting: element, sawBodyContentBeforeBase: &sawBodyContentBeforeBase, sawBaseBlockingElement: &sawBaseBlockingElement)
@@ -865,7 +878,7 @@ struct HTMLGeneralAttributeChecker {
                 rejectedForeignStack.append(isRejectedForeign)
                 roleStack.append(role)
                 anchorHrefStack.append(isHTML && "a" == element.name && element.hasAttribute("href"))
-            case let .endElement(name, _, _):
+            case let .endElement(name, endRange, _):
                 // Review item A2: whether the element ending is HTML, for the
                 // name-keyed state below, which only HTML elements start.
                 let endedIsHTML = stack.lastIndex(of: name).map { .html == namespaceStack[$0] } ?? true
@@ -885,9 +898,6 @@ struct HTMLGeneralAttributeChecker {
                 }
                 if endedIsHTML, name == "picture", let state = pictureStack.popLast() {
                     appendPictureMessages(state, locations: locations, messages: &messages)
-                }
-                if endedIsHTML, name == "figure", !figureStack.isEmpty {
-                    _ = figureStack.popLast()
                 }
                 if endedIsHTML, name == "audio" || name == "video", !mediaStack.isEmpty {
                     _ = mediaStack.popLast()
@@ -945,9 +955,12 @@ struct HTMLGeneralAttributeChecker {
                     // Review item 3: a figure that ends reports the <img>
                     // elements without a text alternative it kept back, unless
                     // its caption stands in for them (see FigureAltRecord).
+                    // (Case 554591, item 4: and its role and table caption,
+                    // where upstream reports the first at the figure's end:
+                    // this event's end tag, for the element that's ending.)
                     for position in (index..<stack.count).reversed() {
                         if let record = figureAltContextStack[position].record {
-                            appendFigureAltMessages(figureAltRecords[record], locations: locations, messages: &messages)
+                            appendFigureEndMessages(figureAltRecords[record], endRange: (position == index) ? endRange : nil, locations: locations, messages: &messages)
                         }
                     }
                     figureAltContextStack.removeSubrange(index...)
@@ -1017,8 +1030,10 @@ struct HTMLGeneralAttributeChecker {
                 // Review item A2: one message for each piece of the text that
                 // upstream's schema validator sees (see nonSpaceTextPieces).
                 // This used to be one per element, however many pieces.
+                // (Case 554591, item 4: a NUL in MathML is foreign content's,
+                // which upstream's tree builder turns into U+FFFD.)
                 if let index = mathArityStack.indices.last, mathArityStack[index].stackIndex == stack.count - 1 {
-                    for piece in Self.nonSpaceTextPieces(in: content) {
+                    for piece in Self.nonSpaceTextPieces(in: content, droppingNUL: false) {
                         appendMessage("Text not allowed in \u{201c}\(mathArityStack[index].element.name)\u{201d} in this context.", range: HTMLSourceRange(offset: range.offset + piece.lowerBound, length: piece.count), locations: locations, messages: &messages)
                     }
                 }
@@ -1028,7 +1043,7 @@ struct HTMLGeneralAttributeChecker {
                 // upstream's schema reports it, for each piece as above. The
                 // port accepted it.
                 if let index = annotationXMLStack.indices.last, annotationXMLStack[index].stackIndex == stack.count - 1 {
-                    for piece in Self.nonSpaceTextPieces(in: content) {
+                    for piece in Self.nonSpaceTextPieces(in: content, droppingNUL: false) {
                         appendMessage("Text not allowed in \u{201c}annotation-xml\u{201d} in this context.", range: HTMLSourceRange(offset: range.offset + piece.lowerBound, length: piece.count), locations: locations, messages: &messages)
                     }
                 }
@@ -1042,16 +1057,6 @@ struct HTMLGeneralAttributeChecker {
                 if currentIsHTML, stack.last == "picture", pictureStack.indices.last != nil, !content.unicodeScalars.allSatisfy(isASCIIWhitespace) {
                     appendMessage(
                         "Text not allowed in \u{201c}picture\u{201d} in this context.",
-                        range: range,
-                        locations: locations,
-                        messages: &messages
-                    )
-                }
-                if currentIsHTML, stack.last == "figure", let figureIndex = figureStack.indices.last,
-                   figureStack[figureIndex].sawFigcaption,
-                   !content.unicodeScalars.allSatisfy(isASCIIWhitespace) {
-                    appendMessage(
-                        "Text not allowed in \u{201c}figure\u{201d} in this context.",
                         range: range,
                         locations: locations,
                         messages: &messages
@@ -1636,13 +1641,28 @@ struct HTMLGeneralAttributeChecker {
     /// StackNode): whether it has an <img>, a second one or other embedded
     /// content, text outside its caption, and text in its caption, and the
     /// <img> elements it keeps back until it ends (appendFigureAltMessages).
+    ///
+    /// Case 554591 (item 4): also what upstream's other figure rules look at
+    /// when the figure ends (see appendFigureEndMessages): the figure itself,
+    /// for its role; its HTML child elements (upstream's collectedChildren),
+    /// counted, and whether they include a figcaption and a table; and the
+    /// last <caption> of a table that's one of those children.
     private struct FigureAltRecord {
+        var figure: HTMLStartElement
         var imgFound = false
         var embeddedContentFound = false
         var textNodeFound = false
         var figcaptionNeeded = false
         var figcaptionContentFound = false
         var imagesLackingAlt: [HTMLStartElement] = []
+        var htmlChildCount = 0
+        var hasFigcaptionChild = false
+        var hasTableChild = false
+        var nestedTableCaption: HTMLStartElement?
+
+        init(figure: HTMLStartElement) {
+            self.figure = figure
+        }
     }
 
     /// Review item 3: where an open element is, for upstream's figure
@@ -1674,14 +1694,6 @@ struct HTMLGeneralAttributeChecker {
             textDropsNUL = isHTML ? !(isRawText || "title" == element.name || "textarea" == element.name)
                 : HTMLForeignContent.childrenAreHTML(element.name, namespace: element.namespace, attributes: element.attributes)
         }
-    }
-
-    private struct FigureState {
-        var element: HTMLStartElement
-        var hasRole: Bool
-        var figcaptionCount = 0
-        var sawFigcaption = false
-        var reportedRoleWithFigcaption = false
     }
 
     private struct DetailsState {
@@ -1808,7 +1820,17 @@ struct HTMLGeneralAttributeChecker {
     /// its input buffer's boundaries, and after the longest name it knows
     /// in an unterminated reference such as "&notit;"; this follows neither,
     /// nor its exact split of a name that isn't a reference at all.)
-    private static func nonSpaceTextPieces(in text: String) -> [Range<Int>] {
+    /// (Case 554591, item 4: not private, as HTMLValidator's figure rules
+    /// report text the same way. Also, as upstream's tokenizer has it: a
+    /// reference to a form feed is a space, not text, since the tokenizer
+    /// turns it into one (a form feed written as such is still text); and a
+    /// NUL ends a piece too, as the tokenizer hands on the text before it
+    /// separately, and is then dropped where `droppingNUL` (in an HTML
+    /// element, whose tree builder ignores it) or a piece of its own (in
+    /// foreign content, where it becomes U+FFFD). This used to count "&#12;"
+    /// as text, which in a figure made the caption after it the last child,
+    /// and took a NUL for part of the text around it.)
+    static func nonSpaceTextPieces(in text: String, droppingNUL: Bool) -> [Range<Int>] {
         let scalars = Array(text.unicodeScalars)
         // Each scalar's UTF-16 offset, and the text's length at the end.
         var offsets = [0]
@@ -1821,7 +1843,7 @@ struct HTMLGeneralAttributeChecker {
         var pieceStart = 0
         var index = 0
         while index <= scalars.count {
-            guard index < scalars.count, "&" != scalars[index], "<" != scalars[index] else {
+            guard index < scalars.count, "&" != scalars[index], "<" != scalars[index], "\u{0}" != scalars[index] else {
                 // The end of a piece of ordinary text.
                 if scalars[pieceStart..<index].contains(where: { !isXMLSpace($0) }) {
                     pieces.append(offsets[pieceStart]..<offsets[index])
@@ -1829,12 +1851,19 @@ struct HTMLGeneralAttributeChecker {
                 guard index < scalars.count else {
                     break
                 }
-                // Then the reference (or the "&" or "<") as a piece of its own.
+                // Then the reference (or the "&", "<" or NUL) as a piece of
+                // its own.
                 let end = ("&" == scalars[index]) ? referencePieceEnd(in: scalars, at: index) : index + 1
-                var piece = String.UnicodeScalarView()
-                piece.append(contentsOf: scalars[index..<end])
-                if !HTMLCharacterReferences.decode(String(piece)).unicodeScalars.allSatisfy(isXMLSpace) {
-                    pieces.append(offsets[index]..<offsets[end])
+                if "\u{0}" == scalars[index] {
+                    if !droppingNUL {
+                        pieces.append(offsets[index]..<offsets[end])
+                    }
+                } else {
+                    var piece = String.UnicodeScalarView()
+                    piece.append(contentsOf: scalars[index..<end])
+                    if !HTMLCharacterReferences.decode(String(piece)).unicodeScalars.allSatisfy({ isXMLSpace($0) || ("&" == scalars[index] && "\u{0C}" == $0) }) {
+                        pieces.append(offsets[index]..<offsets[end])
+                    }
                 }
                 index = end
                 pieceStart = end
@@ -1848,8 +1877,8 @@ struct HTMLGeneralAttributeChecker {
     /// Review item A2: where the piece of text that upstream's tokenizer
     /// makes of the "&" at `start` ends (see nonSpaceTextPieces): past a
     /// numeric reference and its semicolon, or past the "&#" or "&#x" alone
-    /// when no digits follow; past a name and its semicolon; and otherwise
-    /// just past the "&".
+    /// when no digits follow (and its semicolon, if that comes next); past a
+    /// name and its semicolon; and otherwise just past the "&".
     private static func referencePieceEnd(in scalars: [Unicode.Scalar], at start: Int) -> Int {
         let isDigit: (Unicode.Scalar, Bool) -> Bool = { scalar, hexadecimal in
             ("0"..."9").contains(scalar) || (hexadecimal && (("a"..."f").contains(scalar) || ("A"..."F").contains(scalar)))
@@ -1865,11 +1894,14 @@ struct HTMLGeneralAttributeChecker {
             if hexadecimal {
                 cursor += 1
             }
-            let digitsStart = cursor
             while cursor < scalars.count, isDigit(scalars[cursor], hexadecimal) {
                 cursor += 1
             }
-            if cursor > digitsStart, cursor < scalars.count, ";" == scalars[cursor] {
+            // (Case 554591, item 4: the semicolon is the piece's even with no
+            // digits before it, as upstream's tokenizer takes "&#;" and
+            // "&#x;": this split them in two, so text written that way was
+            // reported twice, in a figure and in MathML.)
+            if cursor < scalars.count, ";" == scalars[cursor] {
                 cursor += 1
             }
             return cursor
@@ -2315,6 +2347,8 @@ struct HTMLGeneralAttributeChecker {
 
     private func appendBaseMessages(
         for element: HTMLStartElement,
+        parent: String?,
+        reportsMisplacement: Bool,
         sawBodyContentBeforeBase: Bool,
         sawBaseBlockingElement: Bool,
         locations: SourceLocationMap,
@@ -2329,8 +2363,16 @@ struct HTMLGeneralAttributeChecker {
                 messages: &messages
             )
         }
+        // (Case 554591, item 4: naming the element it's in, as upstream's
+        // schema does; this always said "body", so a <base> in a <figure> or
+        // a <div> got a message vnu.jar doesn't give, instead of its own. The
+        // figure rules leave a <base> to this. And only where it's this
+        // rule's to give; see the caller.)
         if sawBodyContentBeforeBase {
-            appendMessage("Element \u{201c}base\u{201d} not allowed as child of \u{201c}body\u{201d} in this context.", for: element, locations: locations, messages: &messages)
+            if reportsMisplacement {
+                let parentName = (nil == parent || "html" == parent) ? "body" : parent!
+                appendMessage(HTMLVocabulary.notAllowedAsChildMessage("base", parent: parentName), for: element, locations: locations, messages: &messages)
+            }
         } else if sawBaseBlockingElement {
             appendMessage("The \u{201c}base\u{201d} element must come before any \u{201c}link\u{201d} or \u{201c}script\u{201d} elements in the document.", for: element, locations: locations, messages: &messages)
         }
@@ -2957,6 +2999,44 @@ struct HTMLGeneralAttributeChecker {
             }
         }
         return false
+    }
+
+    /// Case 554591 (item 4): a figure's end, as upstream's Assertions checker
+    /// has it, in its order: the role rule, the <img> elements the figure
+    /// kept back (see appendFigureAltMessages), and the table caption rule.
+    ///
+    /// A figure with text in a figcaption (see FigureAltRecord) may have no
+    /// role but figure or doc-example, compared as written once its
+    /// references are decoded (role="FIGURE" or "figure " won't do). This is
+    /// reported at the figure's end tag, as upstream reports it (at its start
+    /// tag when the end is implied, as the event has no other place). It used
+    /// to be reported as soon as a figcaption started, at the figure, for any
+    /// role, whatever was in the caption: role="figure" and
+    /// role="doc-example" were errors, and so was a role with an empty
+    /// caption.
+    ///
+    /// And when a figure's HTML children are a figcaption and a table with a
+    /// <caption>, and nothing else, that caption should be left out in favor
+    /// of the figcaption: a warning, at the caption. It used to be given for
+    /// any caption of any table anywhere in a figure, whatever else it had.
+    private func appendFigureEndMessages(
+        _ record: FigureAltRecord,
+        endRange: HTMLSourceRange?,
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) {
+        // (A role attribute with no value is an empty role, as upstream reads
+        // it.)
+        if record.figcaptionContentFound, record.figure.hasAttribute("role") {
+            let role = HTMLCharacterReferences.decode(record.figure.attributeValue("role") ?? "")
+            if "figure" != role, "doc-example" != role {
+                appendMessage("A \u{201c}figure\u{201d} element with a \u{201c}figcaption\u{201d} descendant must not have a \u{201c}role\u{201d} attribute.", range: endRange ?? record.figure.range, locations: locations, messages: &messages)
+            }
+        }
+        appendFigureAltMessages(record, locations: locations, messages: &messages)
+        if let caption = record.nestedTableCaption, 2 == record.htmlChildCount, record.hasFigcaptionChild, record.hasTableChild {
+            appendWarningMessage("When a \u{201c}table\u{201d} element is the only content in a \u{201c}figure\u{201d} element other than the \u{201c}figcaption\u{201d}, the \u{201c}caption\u{201d} element should be omitted in favor of the \u{201c}figcaption\u{201d}.", for: caption, locations: locations, messages: &messages)
+        }
     }
 
     /// Review item 3: a figure's end, as upstream has it: the <img>

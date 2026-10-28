@@ -405,13 +405,14 @@ func imageTextAlternativesMatchUpstream(document: String, expected: [(String, St
     #expect(actual == expected.map { "\($0.0): \($0.1)" }.sorted(), "\(document)")
 }
 
-// Review item 3: two figures vnu.jar can't give the whole expectation for, as
-// it also reports something the port doesn't yet (the XML 1.0 warning for a
-// form feed; item 4's figure content model). A literal form feed in a caption
-// is caption text (a reference to one isn't), and a caption before the <img>
-// stands in for its alt as one after it does.
+// Review item 3: a figure vnu.jar can't give the whole expectation for, as it
+// also reports something the port doesn't yet (the XML 1.0 warning for a form
+// feed). A literal form feed in a caption is caption text (a reference to one
+// isn't). (Case 554591, item 4: a caption before the <img>, which stands in
+// for its alt as one after it does, was here too, until the port had the
+// figure content model; see figureContentModelMatchesUpstream.)
 @Test func figureCaptionStandsInForAltInTheseCasesToo() {
-    for body in ["<figure><img src=x.png><figcaption>\u{0C}</figcaption></figure>", "<figure><figcaption>C</figcaption><img src=x.png></figure>"] {
+    for body in ["<figure><img src=x.png><figcaption>\u{0C}</figcaption></figure>"] {
         let messages = checkHTML("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n\(body)\n").messages.map(\.message)
         #expect(!messages.contains { $0.hasPrefix("An \u{201c}img\u{201d} element must have an \u{201c}alt\u{201d} attribute") }, "\(body)")
     }
@@ -446,6 +447,323 @@ func imgRoleTokensComeFromJavasTrimAndSplit(_ body: String) {
     let messages = checkHTML("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n\(body)\n").messages.map(\.message)
     #expect(1 == messages.filter { $0.hasPrefix("Bad value \u{201c}") && $0.hasSuffix("\u{201d} for attribute \u{201c}role\u{201d} on element \u{201c}img\u{201d}") }.count, "\(body)")
     #expect(messages.contains("Bad value \u{201c}none\u{201d} for attribute \u{201c}role\u{201d} on element \u{201c}img\u{201d}"), "\(body)")
+}
+
+// Case 554591 (item 4): a figure's content model, as upstream's schema has
+// it: a figcaption and then flow content, or flow content and then a
+// figcaption, never two, and a figcaption nowhere else; with the figure
+// rules upstream's Assertions checks when a figure ends (its role, and a
+// table caption the figcaption should replace). The port used to report
+// everything after any figcaption in the figure (the caption-first figure,
+// <figure><figcaption>…</figcaption><img …></figure>, included). The
+// expected messages are vnu.jar's.
+@Test(arguments: [
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><figcaption>C</figcaption><p>x</p></figure>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><p>x</p><figcaption>C</figcaption></figure>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><p>a</p><figcaption>C</figcaption><p>b</p></figure>\n", [("error", "Element \u{201c}p\u{201d} not allowed as child of \u{201c}figure\u{201d} in this context.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><p>a</p><figcaption>C</figcaption><p>b</p><p>c</p></figure>\n", [("error", "Element \u{201c}p\u{201d} not allowed as child of \u{201c}figure\u{201d} in this context."), ("error", "Element \u{201c}p\u{201d} not allowed as child of \u{201c}figure\u{201d} in this context.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><figcaption>A</figcaption><figcaption>B</figcaption></figure>\n", [("error", "Element \u{201c}figcaption\u{201d} not allowed as child of \u{201c}figure\u{201d} in this context.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><figcaption>A</figcaption><p>x</p><figcaption>B</figcaption></figure>\n", [("error", "Element \u{201c}figcaption\u{201d} not allowed as child of \u{201c}figure\u{201d} in this context.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><figcaption>C</figcaption>text</figure>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><p>x</p><figcaption>C</figcaption>text</figure>\n", [("error", "Text not allowed in \u{201c}figure\u{201d} in this context.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure>text<figcaption>C</figcaption><p>x</p></figure>\n", [("error", "Element \u{201c}p\u{201d} not allowed as child of \u{201c}figure\u{201d} in this context.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure>\n  <figcaption>C</figcaption>\n  <p>x</p>\n</figure>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><!-- c --><figcaption>C</figcaption><p>x</p></figure>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><script>var a;</script><figcaption>C</figcaption><p>x</p></figure>\n", [("error", "Element \u{201c}p\u{201d} not allowed as child of \u{201c}figure\u{201d} in this context.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><template><p>t</p></template><figcaption>C</figcaption><p>x</p></figure>\n", [("error", "Element \u{201c}p\u{201d} not allowed as child of \u{201c}figure\u{201d} in this context.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><div><figcaption>C</figcaption></div><p>x</p></figure>\n", [("error", "Element \u{201c}figcaption\u{201d} not allowed as child of \u{201c}div\u{201d} in this context.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><figcaption>C</figcaption><img src=x alt=y></figure>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><p>x</p><figcaption>C</figcaption>\n</figure>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><figcaption>C</figcaption><svg width=1 height=1></svg></figure>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><svg width=1 height=1></svg><figcaption>C</figcaption><p>x</p></figure>\n", [("error", "Element \u{201c}p\u{201d} not allowed as child of \u{201c}figure\u{201d} in this context.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><p>x</p><figcaption>A</figcaption><figcaption>B</figcaption></figure>\n", [("error", "Element \u{201c}figcaption\u{201d} not allowed as child of \u{201c}figure\u{201d} in this context.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><figcaption>C</figcaption></figure>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><figcaption>A</figcaption><figure><p>x</p><figcaption>B</figcaption></figure><p>y</p></figure>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><p>x</p><figcaption>C</figcaption><foo>y</foo></figure>\n", [("error", "Element \u{201c}foo\u{201d} not allowed as child of \u{201c}figure\u{201d} in this context."), ("error", "The \u{201c}foo\u{201d} element is a completely-unknown element that is not allowed anywhere in any HTML content.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><figcaption>C</figcaption><foo>y</foo></figure>\n", [("error", "Element \u{201c}foo\u{201d} not allowed as child of \u{201c}figure\u{201d} in this context."), ("error", "The \u{201c}foo\u{201d} element is a completely-unknown element that is not allowed anywhere in any HTML content.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure>a<figcaption>C</figcaption>b</figure>\n", [("error", "Text not allowed in \u{201c}figure\u{201d} in this context.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure>&nbsp;<figcaption>C</figcaption><p>x</p></figure>\n", [("error", "Element \u{201c}p\u{201d} not allowed as child of \u{201c}figure\u{201d} in this context.")]),
+    // (A figure with text in a figcaption may have no role but figure or
+    // doc-example, written exactly so; reported at the figure's end.)
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure role=group><figcaption>C</figcaption></figure>\n", [("error", "A \u{201c}figure\u{201d} element with a \u{201c}figcaption\u{201d} descendant must not have a \u{201c}role\u{201d} attribute.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure role=figure><figcaption>C</figcaption></figure>\n", [("warning", "The \u{201c}figure\u{201d} role is unnecessary for element \u{201c}figure\u{201d}.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure role=group><figcaption></figcaption></figure>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure role=doc-example><figcaption>C</figcaption></figure>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure role=group><div><figcaption>C</figcaption></div></figure>\n", [("error", "A \u{201c}figure\u{201d} element with a \u{201c}figcaption\u{201d} descendant must not have a \u{201c}role\u{201d} attribute."), ("error", "Element \u{201c}figcaption\u{201d} not allowed as child of \u{201c}div\u{201d} in this context.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure role=none><figcaption>C</figcaption></figure>\n", [("error", "A \u{201c}figure\u{201d} element with a \u{201c}figcaption\u{201d} descendant must not have a \u{201c}role\u{201d} attribute.")]),
+    // (A table's caption is "omitted in favor of the figcaption" only when
+    // the figure's HTML children are just the figcaption and that table.)
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><figcaption>C</figcaption><table><caption>T</caption><tr><td>x</td></tr></table></figure>\n", [("warning", "When a \u{201c}table\u{201d} element is the only content in a \u{201c}figure\u{201d} element other than the \u{201c}figcaption\u{201d}, the \u{201c}caption\u{201d} element should be omitted in favor of the \u{201c}figcaption\u{201d}.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><figcaption>C</figcaption><table><caption>T</caption><tr><td>x</td></tr></table><p>y</p></figure>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><table><caption>T</caption><tr><td>x</td></tr></table></figure>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><figcaption>C</figcaption><div><table><caption>T</caption><tr><td>x</td></tr></table></div></figure>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><table><caption>T</caption><tr><td>x</td></tr></table><figcaption>C</figcaption></figure>\n", [("warning", "When a \u{201c}table\u{201d} element is the only content in a \u{201c}figure\u{201d} element other than the \u{201c}figcaption\u{201d}, the \u{201c}caption\u{201d} element should be omitted in favor of the \u{201c}figcaption\u{201d}.")]),
+    // (What upstream's schema doesn't check: a template, an SVG <desc>, an
+    // unknown element's subtree, an element it has rejected, or a legacy
+    // element's content; children a figure never takes; text in pieces; a
+    // figcaption in other parents; and the role and table rules' details.)
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><li>x</li><figcaption>C</figcaption><p>y</p></figure>\n", [("error", "Element \u{201c}li\u{201d} not allowed as child of \u{201c}figure\u{201d} in this context.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><p>a</p><figcaption>C</figcaption><div><span><div>z</div></span><li>q</li></div></figure>\n", [("error", "Element \u{201c}div\u{201d} not allowed as child of \u{201c}figure\u{201d} in this context.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><figcaption>A</figcaption><p>x</p><figcaption>B</figcaption><p>y</p></figure>\n", [("error", "Element \u{201c}figcaption\u{201d} not allowed as child of \u{201c}figure\u{201d} in this context.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><p>x</p><figcaption>C</figcaption>a&amp;b</figure>\n", [("error", "Text not allowed in \u{201c}figure\u{201d} in this context."), ("error", "Text not allowed in \u{201c}figure\u{201d} in this context."), ("error", "Text not allowed in \u{201c}figure\u{201d} in this context.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure>&#32;<figcaption>C</figcaption><p>x</p></figure>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><figcaption>C</figcaption><figcaption>D</figcaption><figcaption>E</figcaption></figure>\n", [("error", "Element \u{201c}figcaption\u{201d} not allowed as child of \u{201c}figure\u{201d} in this context."), ("error", "Element \u{201c}figcaption\u{201d} not allowed as child of \u{201c}figure\u{201d} in this context.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><a href=x><figcaption>C</figcaption></a></figure>\n", [("error", "Element \u{201c}figcaption\u{201d} not allowed as child of \u{201c}a\u{201d} in this context. Note: The \u{201c}a\u{201d} element has a transparent content model; its allowed content is inherited from its parent element.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<div><figcaption>C</figcaption></div>\n", [("error", "Element \u{201c}figcaption\u{201d} not allowed as child of \u{201c}div\u{201d} in this context.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figcaption>C</figcaption>\n", [("error", "Element \u{201c}figcaption\u{201d} not allowed as child of \u{201c}body\u{201d} in this context.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<my-el><figcaption>C</figcaption></my-el>\n", [("error", "Element \u{201c}figcaption\u{201d} not allowed as child of \u{201c}my-el\u{201d} in this context.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<foo><figcaption>C</figcaption></foo>\n", [("error", "Element \u{201c}foo\u{201d} not allowed as child of \u{201c}body\u{201d} in this context."), ("error", "The \u{201c}foo\u{201d} element is a completely-unknown element that is not allowed anywhere in any HTML content.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<foo><figure><p>x</p><figcaption>C</figcaption><p>y</p></figure></foo>\n", [("error", "Element \u{201c}foo\u{201d} not allowed as child of \u{201c}body\u{201d} in this context."), ("error", "The \u{201c}foo\u{201d} element is a completely-unknown element that is not allowed anywhere in any HTML content.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><center>x</center><figcaption>C</figcaption><p>y</p></figure>\n", [("error", "Element \u{201c}p\u{201d} not allowed as child of \u{201c}figure\u{201d} in this context."), ("error", "The \u{201c}center\u{201d} element is obsolete. Use CSS instead.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><p>x</p><figcaption>C</figcaption><center>y</center></figure>\n", [("error", "Element \u{201c}center\u{201d} not allowed as child of \u{201c}figure\u{201d} in this context."), ("error", "The \u{201c}center\u{201d} element is obsolete. Use CSS instead.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><p>x</p><figcaption>C</figcaption><my-el>y</my-el></figure>\n", [("error", "Element \u{201c}my-el\u{201d} not allowed as child of \u{201c}figure\u{201d} in this context.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><p>x</p><figcaption>C</figcaption><svg width=1 height=1></svg></figure>\n", [("error", "Element \u{201c}svg\u{201d} not allowed as child of \u{201c}figure\u{201d} in this context.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><p>x</p><figcaption>C</figcaption><math><mi>x</mi></math></figure>\n", [("error", "Element \u{201c}math\u{201d} not allowed as child of \u{201c}figure\u{201d} in this context.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<template><figure><p>x</p><figcaption>C</figcaption><p>y</p></figure></template>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<template><figcaption>C</figcaption></template>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<svg><desc><figure><p>x</p><figcaption>C</figcaption><p>y</p></figure></desc></svg>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<ul><li><figcaption>C</figcaption></li></ul>\n", [("error", "Element \u{201c}figcaption\u{201d} not allowed as child of \u{201c}li\u{201d} in this context.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<ul><figcaption>C</figcaption></ul>\n", [("error", "Element \u{201c}figcaption\u{201d} not allowed as child of \u{201c}ul\u{201d} in this context.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<details><summary>S</summary><figcaption>C</figcaption></details>\n", [("error", "Element \u{201c}figcaption\u{201d} not allowed as child of \u{201c}details\u{201d} in this context.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p>x<figcaption>C</figcaption>\n", [("error", "Element \u{201c}figcaption\u{201d} not allowed as child of \u{201c}body\u{201d} in this context.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<fieldset><legend><figcaption>C</figcaption></legend></fieldset>\n", [("error", "Element \u{201c}figcaption\u{201d} not allowed as child of \u{201c}legend\u{201d} in this context.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><figcaption><figure><figcaption>A</figcaption><p>x</p></figure></figcaption><p>y</p></figure>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure role=group><figcaption><h2>T</h2></figcaption></figure>\n", [("warning", "This document has heading elements but none of them has a computed heading level of 1.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure role=group><figure></figure><figcaption>C</figcaption></figure>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure role=group><figcaption><span>C</span></figcaption></figure>\n", [("error", "A \u{201c}figure\u{201d} element with a \u{201c}figcaption\u{201d} descendant must not have a \u{201c}role\u{201d} attribute.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><figcaption>C</figcaption><table><caption>T</caption><tr><td>x</td></tr></table><svg width=1 height=1></svg></figure>\n", [("warning", "When a \u{201c}table\u{201d} element is the only content in a \u{201c}figure\u{201d} element other than the \u{201c}figcaption\u{201d}, the \u{201c}caption\u{201d} element should be omitted in favor of the \u{201c}figcaption\u{201d}.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><figcaption>C</figcaption>text<table><caption>T</caption><tr><td>x</td></tr></table></figure>\n", [("warning", "When a \u{201c}table\u{201d} element is the only content in a \u{201c}figure\u{201d} element other than the \u{201c}figcaption\u{201d}, the \u{201c}caption\u{201d} element should be omitted in favor of the \u{201c}figcaption\u{201d}.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><figcaption>C</figcaption><table><caption>T</caption><tr><td>x</td></tr></table><script></script></figure>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><figcaption>C</figcaption><table><tr><td><table><caption>T</caption><tr><td>x</td></tr></table></td></tr></table></figure>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><figcaption>C</figcaption><table><caption>T</caption><tr><td>x</td></tr></table><template></template></figure>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><figcaption>C</figcaption><template><table><caption>T</caption><tr><td>x</td></tr></table></template></figure>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure>\u{a0}<figcaption>C</figcaption><p>x</p></figure>\n", [("error", "Element \u{201c}p\u{201d} not allowed as child of \u{201c}figure\u{201d} in this context.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<div><figure role=group><figcaption>C</figcaption></div>\n", [("error", "A \u{201c}figure\u{201d} element with a \u{201c}figcaption\u{201d} descendant must not have a \u{201c}role\u{201d} attribute."), ("error", "End tag \u{201c}div\u{201d} seen, but there were open elements."), ("error", "Unclosed element \u{201c}figure\u{201d}.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure role=group><figcaption> </figcaption></figure>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure role=\"\"><figcaption>C</figcaption></figure>\n", [("error", "A \u{201c}figure\u{201d} element with a \u{201c}figcaption\u{201d} descendant must not have a \u{201c}role\u{201d} attribute."), ("error", "Bad value \u{201c}\u{201d} for attribute \u{201c}role\u{201d} on element \u{201c}figure\u{201d}.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><figcaption>A<figcaption>B</figcaption></figcaption></figure>\n", [("error", "Element \u{201c}figcaption\u{201d} not allowed as child of \u{201c}figcaption\u{201d} in this context.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><p>x</p><figcaption>C</figcaption><!--c--></figure>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><p>x</p><figcaption>C</figcaption><script></script></figure>\n", [("error", "Element \u{201c}script\u{201d} not allowed as child of \u{201c}figure\u{201d} in this context.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><style>p{}</style><figcaption>C</figcaption><p>x</p></figure>\n", [("error", "Element \u{201c}style\u{201d} not allowed as child of \u{201c}figure\u{201d} in this context.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><noscript>x</noscript><figcaption>C</figcaption><p>y</p></figure>\n", [("error", "Element \u{201c}p\u{201d} not allowed as child of \u{201c}figure\u{201d} in this context.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><figcaption>C</figcaption><dt>x</dt></figure>\n", [("error", "Element \u{201c}dt\u{201d} not allowed as child of \u{201c}figure\u{201d} in this context.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><figcaption>A</figcaption>text<figcaption>B</figcaption></figure>\n", [("error", "Element \u{201c}figcaption\u{201d} not allowed as child of \u{201c}figure\u{201d} in this context.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<object data=x><figcaption>C</figcaption></object>\n", [("error", "Element \u{201c}figcaption\u{201d} not allowed as child of \u{201c}object\u{201d} in this context. Note: The \u{201c}object\u{201d} element has a transparent content model; its allowed content is inherited from its parent element.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<template><figure role=group><figcaption>C</figcaption></figure></template>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><foo><figcaption>C</figcaption></foo><p>y</p></figure>\n", [("error", "Element \u{201c}foo\u{201d} not allowed as child of \u{201c}figure\u{201d} in this context."), ("error", "The \u{201c}foo\u{201d} element is a completely-unknown element that is not allowed anywhere in any HTML content.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><foo>x</foo><figcaption>C</figcaption><p>y</p></figure>\n", [("error", "Element \u{201c}foo\u{201d} not allowed as child of \u{201c}figure\u{201d} in this context."), ("error", "The \u{201c}foo\u{201d} element is a completely-unknown element that is not allowed anywhere in any HTML content.")]),
+    // (More of the children a figure never takes, which don't count before a
+    // caption, and parents a figcaption can't have.)
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><dt>x</dt><figcaption>C</figcaption><p>y</p></figure>\n", [("error", "Element \u{201c}dt\u{201d} not allowed as child of \u{201c}figure\u{201d} in this context.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><source src=x><figcaption>C</figcaption><p>y</p></figure>\n", [("error", "Element \u{201c}source\u{201d} not allowed as child of \u{201c}figure\u{201d} in this context.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><title>x</title><figcaption>C</figcaption><p>y</p></figure>\n", [("error", "Element \u{201c}title\u{201d} not allowed as child of \u{201c}figure\u{201d} in this context.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><rt>x</rt><figcaption>C</figcaption><p>y</p></figure>\n", [("error", "Element \u{201c}rt\u{201d} not allowed as child of \u{201c}figure\u{201d} in this context."), ("error", "Start tag \u{201c}rt\u{201d} seen without a \u{201c}ruby\u{201d} element being open.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><option>x</option><figcaption>C</figcaption><p>y</p></figure>\n", [("error", "Element \u{201c}option\u{201d} not allowed as child of \u{201c}figure\u{201d} in this context.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><br><figcaption>C</figcaption><p>y</p></figure>\n", [("error", "Element \u{201c}p\u{201d} not allowed as child of \u{201c}figure\u{201d} in this context.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><foo-->x</foo--><figcaption>C</figcaption><p>y</p></figure>\n", [("error", "Element \u{201c}p\u{201d} not allowed as child of \u{201c}figure\u{201d} in this context.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<center><figcaption>C</figcaption></center>\n", [("error", "The \u{201c}center\u{201d} element is obsolete. Use CSS instead.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<select><option><figcaption>C</figcaption></option></select>\n", [("error", "Element \u{201c}figcaption\u{201d} not allowed as child of \u{201c}option\u{201d} in this context.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<dl><dt>t</dt><dd><figcaption>C</figcaption></dd></dl>\n", [("error", "Element \u{201c}figcaption\u{201d} not allowed as child of \u{201c}dd\u{201d} in this context.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<details><summary><figcaption>C</figcaption></summary></details>\n", [("error", "Element \u{201c}figcaption\u{201d} not allowed as child of \u{201c}summary\u{201d} in this context.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><p>x</p><figcaption>C</figcaption><div><figure><p>a</p><figcaption>B</figcaption><p>b</p></figure></div></figure>\n", [("error", "Element \u{201c}div\u{201d} not allowed as child of \u{201c}figure\u{201d} in this context.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><figcaption>A</figcaption><figure>t<figcaption>B</figcaption>u</figure>v</figure>\n", [("error", "Text not allowed in \u{201c}figure\u{201d} in this context.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><p>x</p><figcaption>C</figcaption><figcaption>D<div>e</div><span><div>f</div></span></figcaption></figure>\n", [("error", "Element \u{201c}figcaption\u{201d} not allowed as child of \u{201c}figure\u{201d} in this context.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><p>x</p><figcaption>C</figcaption><div><li>z</li></div></figure>\n", [("error", "Element \u{201c}div\u{201d} not allowed as child of \u{201c}figure\u{201d} in this context.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<center><figure><p>x</p><figcaption>C</figcaption><p>y</p></figure></center>\n", [("error", "The \u{201c}center\u{201d} element is obsolete. Use CSS instead.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><center><figcaption>C</figcaption></center><p>y</p></figure>\n", [("error", "The \u{201c}center\u{201d} element is obsolete. Use CSS instead.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<my-el><figure><p>x</p><figcaption>C</figcaption><p>y</p></figure></my-el>\n", [("error", "Element \u{201c}p\u{201d} not allowed as child of \u{201c}figure\u{201d} in this context.")]),
+    // (Review item 3's caption-first figure, now that vnu.jar's whole answer
+    // is the port's: a caption before the <img> stands in for its alt too.)
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><figcaption>C</figcaption><img src=x.png></figure>\n", []),
+    // (A figcaption where the definition list and picture rules report it,
+    // once; and no table caption warning without a figcaption.)
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<dl><figcaption>C</figcaption></dl>\n", [("error", "Element \u{201c}figcaption\u{201d} not allowed as child of \u{201c}dl\u{201d} in this context.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<picture><figcaption>C</figcaption><img src=x alt=y></picture>\n", [("error", "Element \u{201c}figcaption\u{201d} not allowed as child of \u{201c}picture\u{201d} in this context.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<dl><div><dt>a</dt><dd>b</dd><figcaption>C</figcaption></div></dl>\n", [("error", "Element \u{201c}figcaption\u{201d} not allowed as child of \u{201c}div\u{201d} in this context.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><table><caption>T</caption><tr><td>x</td></tr></table><p>y</p></figure>\n", []),
+    // (Inside an element the older content-model rules reject, nothing more
+    // is checked; a reference to a form feed is a space; text after </html>
+    // still goes in the figure; a legacy element the port doesn't know is
+    // still content; the element a stray </p> or </br> inserts in a figure
+    // is content there; a noscript or picture in a body whose tag was left
+    // out isn't taken for one in the head; and a <base> is reported in its
+    // own parent.)
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<span><div><figcaption>C</figcaption></div></span>\n", [("error", "Element \u{201c}div\u{201d} not allowed as child of \u{201c}span\u{201d} in this context.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><li><figcaption>F</figcaption></li><p>x</p></figure>\n", [("error", "Element \u{201c}li\u{201d} not allowed as child of \u{201c}figure\u{201d} in this context.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<button><div><figcaption>C</figcaption></div></button>\n", [("error", "Element \u{201c}div\u{201d} not allowed as child of \u{201c}button\u{201d} in this context.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure>&#12;<figcaption>C</figcaption><p>x</p></figure>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><p>x</p><figcaption>C</figcaption>&#12;</figure>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><p>x</p><figcaption>C</figcaption></html>x</figure>\n", [("error", "End tag for  \u{201c}html\u{201d} seen, but there were unclosed elements."), ("error", "Non-space character in page trailer."), ("error", "Text not allowed in \u{201c}figure\u{201d} in this context."), ("error", "Unclosed element \u{201c}figure\u{201d}.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure></html>&nbsp;<figcaption>C</figcaption><p>x</p></figure>\n", [("error", "Element \u{201c}p\u{201d} not allowed as child of \u{201c}figure\u{201d} in this context."), ("error", "End tag for  \u{201c}html\u{201d} seen, but there were unclosed elements."), ("error", "Non-space character in page trailer."), ("error", "Unclosed element \u{201c}figure\u{201d}.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure></p><figcaption>C</figcaption><p>x</p></figure>\n", [("error", "Element \u{201c}p\u{201d} not allowed as child of \u{201c}figure\u{201d} in this context."), ("error", "No \u{201c}p\u{201d} element in scope but a \u{201c}p\u{201d} end tag seen.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure></br><figcaption>C</figcaption><p>x</p></figure>\n", [("error", "Element \u{201c}p\u{201d} not allowed as child of \u{201c}figure\u{201d} in this context."), ("error", "End tag \u{201c}br\u{201d}.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><p>x</p><figcaption>C</figcaption></p></figure>\n", [("error", "Element \u{201c}p\u{201d} not allowed as child of \u{201c}figure\u{201d} in this context."), ("error", "No \u{201c}p\u{201d} element in scope but a \u{201c}p\u{201d} end tag seen.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><p>x</p><figcaption>C</figcaption></br></figure>\n", [("error", "Element \u{201c}br\u{201d} not allowed as child of \u{201c}figure\u{201d} in this context."), ("error", "End tag \u{201c}br\u{201d}.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><figcaption>C</figcaption><table><caption>T</caption><tr><td>x</td></tr></table></p></figure>\n", [("error", "No \u{201c}p\u{201d} element in scope but a \u{201c}p\u{201d} end tag seen.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p>x</p><noscript><figcaption>C</figcaption></noscript>\n", [("error", "Element \u{201c}figcaption\u{201d} not allowed as child of \u{201c}noscript\u{201d} in this context.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p>x</p><noscript><picture><img src=x alt=y></picture></noscript>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p>x</p><div><base href=x></div>\n", [("error", "Element \u{201c}base\u{201d} not allowed as child of \u{201c}div\u{201d} in this context.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><base href=x><figcaption>C</figcaption><p>y</p></figure>\n", [("error", "Element \u{201c}base\u{201d} not allowed as child of \u{201c}figure\u{201d} in this context.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><p>x</p><figcaption>A</figcaption><base href=a></figure>\n", [("error", "Element \u{201c}base\u{201d} not allowed as child of \u{201c}figure\u{201d} in this context.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<template><span></p></span></template>\n", [("error", "No \u{201c}p\u{201d} element in scope but a \u{201c}p\u{201d} end tag seen.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p>a</br>b</p>\n", [("error", "End tag \u{201c}br\u{201d}.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><span><figcaption>C</figcaption></span>t</figure>\n", [("error", "Element \u{201c}figcaption\u{201d} not allowed as child of \u{201c}span\u{201d} in this context.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<body><noscript><figcaption>C</figcaption></noscript>\n", [("error", "Element \u{201c}figcaption\u{201d} not allowed as child of \u{201c}noscript\u{201d} in this context.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><figcaption>C</figcaption><center><figure><p>x</p><figcaption>D</figcaption><p>y</p></figure></center></figure>\n", [("error", "The \u{201c}center\u{201d} element is obsolete. Use CSS instead.")]),
+    // (A figcaption in a body the parser implies, with no <html> tag; "&#;"
+    // is one piece of text; and a <base> named in its own parent, reported
+    // once where another rule reports it, and not where upstream's schema
+    // checks nothing.)
+    ("<!DOCTYPE html><title>T</title><figcaption>C</figcaption>\n", [("error", "Element \u{201c}figcaption\u{201d} not allowed as child of \u{201c}body\u{201d} in this context."), ("warning", "Consider adding a \u{201c}lang\u{201d} attribute to the \u{201c}html\u{201d} start tag to declare the language of this document.")]),
+    ("<!DOCTYPE html><title>T</title><figcaption><div><figcaption>C</figcaption></div></figcaption>\n", [("error", "Element \u{201c}figcaption\u{201d} not allowed as child of \u{201c}body\u{201d} in this context."), ("warning", "Consider adding a \u{201c}lang\u{201d} attribute to the \u{201c}html\u{201d} start tag to declare the language of this document.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><p>p</p><figcaption>C</figcaption>&#;</figure>\n", [("error", "No digits after \u{201c}\u{201d}."), ("error", "Text not allowed in \u{201c}figure\u{201d} in this context.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><p>p</p><figcaption>C</figcaption>&#x;</figure>\n", [("error", "No digits after \u{201c}\u{201d}."), ("error", "Text not allowed in \u{201c}figure\u{201d} in this context.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p>x</p><dl><base href=x><dt>a</dt><dd>b</dd></dl>\n", [("error", "Element \u{201c}base\u{201d} not allowed as child of \u{201c}dl\u{201d} in this context.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p>x</p><dl><div><base href=x><dt>a</dt><dd>b</dd></div></dl>\n", [("error", "Element \u{201c}base\u{201d} not allowed as child of \u{201c}div\u{201d} in this context.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p>x</p><picture><base href=x><img src=x alt=y></picture>\n", [("error", "Element \u{201c}base\u{201d} not allowed as child of \u{201c}picture\u{201d} in this context.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p>x</p><svg><foreignObject><base href=x></foreignObject></svg>\n", [("error", "Element \u{201c}base\u{201d} not allowed as child of \u{201c}foreignObject\u{201d} in this context.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p>x</p><math><mtext><base href=x></mtext></math>\n", [("error", "Element \u{201c}base\u{201d} not allowed as child of \u{201c}mtext\u{201d} in this context.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p>x</p><template><base href=x></template>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p>x</p><svg><desc><base href=x></desc></svg>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p>x</p><math><mi><base href=x></mi></math>\n", [("error", "Element \u{201c}base\u{201d} not allowed as child of \u{201c}mi\u{201d} in this context.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<math><msub><mi>a</mi>&#;<mi>b</mi></msub></math>\n", [("error", "No digits after \u{201c}\u{201d}."), ("error", "Text not allowed in \u{201c}msub\u{201d} in this context.")]),
+] as [(String, [(String, String)])])
+func figureContentModelMatchesUpstream(document: String, expected: [(String, String)]) {
+    let actual = checkHTML(document).messages
+        .filter { $0.type != "info" || $0.subType == "warning" }
+        .map { "\($0.type == "info" ? "warning" : "error"): \($0.message)" }
+        .sorted()
+    #expect(actual == expected.map { "\($0.0): \($0.1)" }.sorted(), "\(document)")
+}
+
+// Case 554591 (item 4): the same content model in an XHTML document, which
+// the XML checker follows in a simpler way. The expected messages are
+// vnu.jar's.
+@Test(arguments: [
+    ("<figure><figcaption>C</figcaption><img src=\"x\" alt=\"y\"/></figure>", []),
+    ("<figure><figcaption>C</figcaption>text</figure>", []),
+    ("<figure><p>a</p><figcaption>C</figcaption><p>b</p></figure>", ["Element \u{201c}p\u{201d} not allowed as child of \u{201c}figure\u{201d} in this context."]),
+    ("<figure><figcaption>A</figcaption><figcaption>B</figcaption></figure>", ["Element \u{201c}figcaption\u{201d} not allowed as child of \u{201c}figure\u{201d} in this context."]),
+    ("<figure>text<figcaption>C</figcaption><p>x</p></figure>", ["Element \u{201c}p\u{201d} not allowed as child of \u{201c}figure\u{201d} in this context."]),
+    ("<figure><figcaption>A</figcaption><p>x</p><figcaption>B</figcaption></figure>", ["Element \u{201c}figcaption\u{201d} not allowed as child of \u{201c}figure\u{201d} in this context."]),
+    ("<figure>\n  <figcaption>C</figcaption>\n  <p>x</p>\n</figure>", []),
+    ("<figure><p>x</p><figcaption>C</figcaption></figure>", []),
+    // (Children a figure never takes, wherever they are; SVG and MathML
+    // children, which are content; a no-break or ideographic space, which is
+    // text; and nothing more inside an element these rules reject, or inside
+    // SVG content.)
+    ("<figure><figcaption>C</figcaption><li>a</li></figure>", ["Element \u{201c}li\u{201d} not allowed as child of \u{201c}figure\u{201d} in this context."]),
+    ("<figure><figcaption>C</figcaption><dt>x</dt></figure>", ["Element \u{201c}dt\u{201d} not allowed as child of \u{201c}figure\u{201d} in this context."]),
+    ("<figure><dt>x</dt><figcaption>C</figcaption><p>y</p></figure>", ["Element \u{201c}dt\u{201d} not allowed as child of \u{201c}figure\u{201d} in this context."]),
+    ("<figure><figcaption>C</figcaption><legend>x</legend></figure>", ["Element \u{201c}legend\u{201d} not allowed as child of \u{201c}figure\u{201d} in this context."]),
+    ("<figure><figcaption>C</figcaption><noscript>x</noscript></figure>", ["Element \u{201c}noscript\u{201d} not allowed as child of \u{201c}figure\u{201d} in this context."]),
+    ("<figure><figcaption>C</figcaption><style>p{}</style></figure>", ["Element \u{201c}style\u{201d} not allowed as child of \u{201c}figure\u{201d} in this context."]),
+    ("<figure><base href=\"x\"/><figcaption>C</figcaption><p>y</p></figure>", ["Element \u{201c}base\u{201d} not allowed as child of \u{201c}figure\u{201d} in this context."]),
+    ("<figure><svg xmlns=\"http://www.w3.org/2000/svg\" width=\"1\" height=\"1\"><rect width=\"1\" height=\"1\"/></svg><figcaption>C</figcaption><p>x</p></figure>", ["Element \u{201c}p\u{201d} not allowed as child of \u{201c}figure\u{201d} in this context."]),
+    ("<figure><math xmlns=\"http://www.w3.org/1998/Math/MathML\"><mspace width=\"1em\"/></math><figcaption>C</figcaption><p>x</p></figure>", ["Element \u{201c}p\u{201d} not allowed as child of \u{201c}figure\u{201d} in this context."]),
+    ("<figure><p>x</p><figcaption>C</figcaption><svg xmlns=\"http://www.w3.org/2000/svg\" width=\"1\" height=\"1\"></svg></figure>", ["Element \u{201c}svg\u{201d} not allowed as child of \u{201c}figure\u{201d} in this context."]),
+    ("<figure><p>x</p><figcaption>C</figcaption><svg xmlns=\"http://www.w3.org/2000/svg\" width=\"1\" height=\"1\"><text>t</text></svg></figure>", ["Element \u{201c}svg\u{201d} not allowed as child of \u{201c}figure\u{201d} in this context."]),
+    ("<figure><p>x</p><figcaption>C</figcaption><svg xmlns=\"http://www.w3.org/2000/svg\"><foreignObject><p xmlns=\"http://www.w3.org/1999/xhtml\">y</p></foreignObject></svg></figure>", ["Element \u{201c}svg\u{201d} not allowed as child of \u{201c}figure\u{201d} in this context."]),
+    ("<figure>&#160;<figcaption>C</figcaption><p>x</p></figure>", ["Element \u{201c}p\u{201d} not allowed as child of \u{201c}figure\u{201d} in this context."]),
+    ("<figure>&#x3000;<figcaption>C</figcaption><p>x</p></figure>", ["Element \u{201c}p\u{201d} not allowed as child of \u{201c}figure\u{201d} in this context."]),
+    ("<figure><p>a</p><figcaption>A</figcaption><figure><figcaption>B</figcaption><figcaption>C</figcaption></figure></figure>", ["Element \u{201c}figure\u{201d} not allowed as child of \u{201c}figure\u{201d} in this context."]),
+] as [(String, [String])])
+func xhtmlFigureContentModelMatchesUpstream(_ body: String, _ expected: [String]) {
+    let result = NuValidator().check(
+        input: DocumentInput(data: Data("<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<html xmlns=\"http://www.w3.org/1999/xhtml\" lang=\"en\"><head><title>T</title></head><body>\n\(body)\n</body></html>\n".utf8), contentType: "application/xhtml+xml; charset=utf-8"),
+        options: CheckerOptions(parameters: ["out": ["json"]])
+    )
+    let actual = result.messages.filter { $0.type != "info" || $0.subType == "warning" }.map(\.message)
+    #expect(actual == expected, "\(body)")
+}
+
+// Case 554591 (item 4): in an XHTML document, an element inside SVG content
+// in a figure isn't one of the figure's children: here, the figcaption in the
+// foreignObject isn't the figure's first caption, nor the <li> one of its
+// children. (vnu.jar reports both against the foreignObject, which the XML
+// checker doesn't check yet, and nothing against the figure.) Nor do the
+// figure rules check anything in a template or in a legacy element that
+// takes anything, such as <center>, as upstream's schema doesn't (vnu.jar
+// also calls <center> obsolete, which the XML checker doesn't).
+@Test(arguments: [
+    "<figure><svg xmlns=\"http://www.w3.org/2000/svg\"><foreignObject><figcaption xmlns=\"http://www.w3.org/1999/xhtml\">D</figcaption></foreignObject></svg><figcaption>C</figcaption></figure>",
+    "<figure><figcaption>C</figcaption><svg xmlns=\"http://www.w3.org/2000/svg\"><foreignObject><li xmlns=\"http://www.w3.org/1999/xhtml\">x</li></foreignObject></svg></figure>",
+    "<template><figure><dd>d</dd><figcaption>C</figcaption><figcaption>D</figcaption></figure></template>",
+    "<center><figure><dd>d</dd><figcaption>C</figcaption><figcaption>D</figcaption></figure></center>",
+    "<figure><figcaption>C</figcaption><center><figure><p>x</p><figcaption>D</figcaption><p>y</p></figure></center></figure>",
+])
+func xhtmlFigureRulesLookOnlyAtWhatUpstreamChecks(_ body: String) {
+    let result = NuValidator().check(
+        input: DocumentInput(data: Data("<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<html xmlns=\"http://www.w3.org/1999/xhtml\" lang=\"en\"><head><title>T</title></head><body>\n\(body)\n</body></html>\n".utf8), contentType: "application/xhtml+xml; charset=utf-8"),
+        options: CheckerOptions(parameters: ["out": ["json"]])
+    )
+    #expect(!result.messages.contains { $0.message.contains("not allowed as child of \u{201c}figure\u{201d}") }, "\(body)")
+}
+
+// Case 554591 (item 4): a figure's role is compared as upstream compares it,
+// as written once its references are decoded: only "figure" and
+// "doc-example" may go with a caption that has text. vnu.jar's answers, but
+// only for this message: the port also says "The “figure” role is
+// unnecessary" for the first two, and "Bad value" for the third, where
+// vnu.jar doesn't (notes items 17 and 23).
+@Test(arguments: [
+    ("<figure role=FIGURE><figcaption>C</figcaption></figure>", true),
+    ("<figure role=\"figure \"><figcaption>C</figcaption></figure>", true),
+    ("<figure role=&#x66;igure><figcaption>C</figcaption></figure>", false),
+])
+func figureRoleIsComparedAsWritten(_ body: String, _ reportsRole: Bool) {
+    let messages = checkHTML("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n\(body)\n").messages.map(\.message)
+    #expect(reportsRole == messages.contains("A \u{201c}figure\u{201d} element with a \u{201c}figcaption\u{201d} descendant must not have a \u{201c}role\u{201d} attribute."), "\(body)")
+}
+
+// Case 554591 (item 4): upstream reports a figure's role at the figure's end
+// tag (vnu.jar: line 2, from column 46), not at its start tag.
+@Test func figureRoleErrorIsAtTheFigureEndTag() {
+    let message = checkHTML("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure role=group><figcaption>C</figcaption></figure>\n").messages.first { $0.message.hasPrefix("A \u{201c}figure\u{201d} element with a \u{201c}figcaption\u{201d}") }
+    // (Like vnu.jar's JSON, a message on one line leaves firstLine out.)
+    #expect(2 == message?.lastLine)
+    #expect(46 == message?.firstColumn)
+}
+
+// Case 554591 (item 4): figures vnu.jar can't give the whole expectation for,
+// as it also says something the port doesn't (it stops checking at a
+// fatal error, which a start tag a table foster-parents and text after
+// </body> are; and it reports a NUL in the stream, and calls a <menuitem>,
+// <spacer> or <multicol> obsolete), or the port says something it doesn't
+// (that a <selectedcontent>, which it doesn't know yet, isn't allowed), so
+// only the figure rules' messages are compared, with vnu.jar's answers. A
+// figcaption a table foster-parents isn't reported again, nor one inside a
+// <menuitem>, whose content upstream doesn't check; non-space text after
+// </body> is reported as that, not as text in the figure, though a form feed
+// there is text in it; a NUL in a figure is dropped, though it ends a piece
+// of text; and a <spacer>, a <multicol> or a <selectedcontent> is content
+// before a caption.
+@Test(arguments: [
+    ("<div><table><figcaption>C</figcaption><tr><td>x</td></tr></table></div>", []),
+    ("<table><colgroup><figcaption>C</figcaption></colgroup></table>", []),
+    ("<table><form><figcaption>C</figcaption></form></table>", []),
+    ("<menuitem><figcaption>C</figcaption></menuitem>", []),
+    ("<figure><p>x</p><figcaption>C</figcaption></body>text", []),
+    ("<figure><p>x</p><figcaption>C</figcaption></body>\u{0C}</figure>", ["Text not allowed in \u{201c}figure\u{201d} in this context."]),
+    ("<figure>\u{0}<figcaption>C</figcaption><p>x</p></figure>", []),
+    ("<figure><p>x</p><figcaption>C</figcaption>a\u{0}b</figure>", ["Text not allowed in \u{201c}figure\u{201d} in this context.", "Text not allowed in \u{201c}figure\u{201d} in this context."]),
+    ("<figure><spacer></spacer><figcaption>C</figcaption><p>x</p></figure>", ["Element \u{201c}p\u{201d} not allowed as child of \u{201c}figure\u{201d} in this context."]),
+    ("<figure><multicol>k</multicol><figcaption>C</figcaption><p>x</p></figure>", ["Element \u{201c}p\u{201d} not allowed as child of \u{201c}figure\u{201d} in this context."]),
+    ("<figure><selectedcontent></selectedcontent><figcaption>C</figcaption><p>y</p></figure>", ["Element \u{201c}p\u{201d} not allowed as child of \u{201c}figure\u{201d} in this context."]),
+] as [(String, [String])])
+func figureRulesMatchUpstreamWhereItSaysMore(_ body: String, _ expected: [String]) {
+    let messages = checkHTML("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n\(body)\n").messages.map(\.message)
+    let figureMessages = messages.filter { $0.hasPrefix("Text not allowed in \u{201c}figure\u{201d}") || $0.hasPrefix("Element \u{201c}figcaption\u{201d} not allowed") || $0.hasPrefix("Element \u{201c}p\u{201d} not allowed as child of \u{201c}figure\u{201d}") }
+    #expect(figureMessages == expected, "\(body)")
+}
+
+// Case 554591 (item 4): a legacy element the port doesn't know, after a
+// caption that came last, is reported once, as vnu.jar reports it: the
+// port's message for an element it doesn't know is already that one (vnu.jar
+// also calls a <spacer> obsolete, which the port doesn't).
+@Test func legacyElementAfterLastCaptionIsReportedOnce() {
+    let messages = checkHTML("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><p>x</p><figcaption>C</figcaption><spacer></spacer></figure>\n").messages.map(\.message)
+    #expect(1 == messages.filter { "Element \u{201c}spacer\u{201d} not allowed as child of \u{201c}figure\u{201d} in this context." == $0 }.count)
 }
 
 @Test func htmlDocumentParserEmitsBalancedTreeEvents() {
@@ -740,7 +1058,8 @@ func imgRoleTokensComeFromJavasTrimAndSplit(_ body: String) {
         <iframe allowpaymentrequest seamless>text</iframe>
         <select><option aria-selected=true></option><option label=""></option></select>
         <details><p>Before summary</p><summary>Late</summary><summary>Again</summary></details>
-        <figure role=img><img src=x alt><table><caption>Table</caption><tr><td>x</td></tr></table><figcaption>Caption</figcaption><img src=y alt></figure>
+        <figure role=img><img src=x alt><figcaption>Caption</figcaption><img src=y alt></figure>
+        <figure><table><caption>Table</caption><tr><td>x</td></tr></table><figcaption>Caption</figcaption></figure>
         <address><address>Nested</address></address>
         <article><p>No heading</p></article><section><p>No heading</p></section>
         <button><audio controls loading=auto></audio></button>
