@@ -22,7 +22,7 @@
     },
     "html-aria/misc/figure-with-role-doc-example-and-figcaption.html" : {
       "category" : "valid",
-      "failure" : "Expected no errors or warnings but encountered error “Discarding unrecognized token “doc-example” from value of attribute “role”. Browsers ignore any token that is not a defined ARIA non-abstract role.”."
+      "failure" : "Expected no errors or warnings but encountered error “A “figure” element with a “figcaption” descendant must not have a “role” attribute.”."
     },
     "html-aria/misc/figure-with-role-figure-and-figcaption-haswarn.html" : {
       "category" : "haswarn",
@@ -60,73 +60,25 @@
       "category" : "haswarn",
       "failure" : "Expected a warning only but encountered error “An element that is a child of an element with “role=rowgroup” must have “role=row”.”."
     },
-    "html-aria/roles-plain-concrete/roles-plain-concrete-heading.html" : {
-      "category" : "valid",
-      "failure" : "Expected no errors or warnings but encountered error “Discarding unrecognized token “heading” from value of attribute “role”. Browsers ignore any token that is not a defined ARIA non-abstract role.”."
-    },
-    "html-aria/roles-plain-concrete/roles-plain-concrete-image.html" : {
-      "category" : "valid",
-      "failure" : "Expected no errors or warnings but encountered error “Discarding unrecognized token “image” from value of attribute “role”. Browsers ignore any token that is not a defined ARIA non-abstract role.”."
-    },
-    "html-aria/roles-plain-concrete/roles-plain-concrete-rowheader.html" : {
-      "category" : "valid",
-      "failure" : "Expected no errors or warnings but encountered error “Discarding unrecognized token “rowheader” from value of attribute “role”. Browsers ignore any token that is not a defined ARIA non-abstract role.”."
-    },
-    "html-aria/roles-plain-concrete/roles-plain-concrete-tooltip.html" : {
-      "category" : "valid",
-      "failure" : "Expected no errors or warnings but encountered error “Discarding unrecognized token “tooltip” from value of attribute “role”. Browsers ignore any token that is not a defined ARIA non-abstract role.”."
-    },
-    "html-aria/roles-properties-supported-inherited/columnheader-aria-expanded-false.html" : {
-      "category" : "valid",
-      "failure" : "Expected no errors or warnings but encountered error “Discarding unrecognized token “columnheader” from value of attribute “role”. Browsers ignore any token that is not a defined ARIA non-abstract role.”."
-    },
-    "html-aria/roles-properties-supported-inherited/columnheader-aria-expanded-true.html" : {
-      "category" : "valid",
-      "failure" : "Expected no errors or warnings but encountered error “Discarding unrecognized token “columnheader” from value of attribute “role”. Browsers ignore any token that is not a defined ARIA non-abstract role.”."
-    },
-    "html-aria/roles-properties-supported-inherited/columnheader-aria-expanded-undefined.html" : {
-      "category" : "valid",
-      "failure" : "Expected no errors or warnings but encountered error “Discarding unrecognized token “columnheader” from value of attribute “role”. Browsers ignore any token that is not a defined ARIA non-abstract role.”."
-    },
     "html-aria/roles-properties-supported-inherited/columnheader-aria-readonly-false.html" : {
       "category" : "valid",
-      "failure" : "Expected no errors or warnings but encountered error “Discarding unrecognized token “columnheader” from value of attribute “role”. Browsers ignore any token that is not a defined ARIA non-abstract role.”."
+      "failure" : "Expected no errors or warnings but encountered error “Attribute “aria-readonly” not allowed on element “span” at this point.”."
     },
     "html-aria/roles-properties-supported-inherited/columnheader-aria-readonly-true.html" : {
       "category" : "valid",
-      "failure" : "Expected no errors or warnings but encountered error “Discarding unrecognized token “columnheader” from value of attribute “role”. Browsers ignore any token that is not a defined ARIA non-abstract role.”."
-    },
-    "html-aria/roles-properties-supported-inherited/columnheader-aria-required-false.html" : {
-      "category" : "valid",
-      "failure" : "Expected no errors or warnings but encountered error “Discarding unrecognized token “columnheader” from value of attribute “role”. Browsers ignore any token that is not a defined ARIA non-abstract role.”."
-    },
-    "html-aria/roles-properties-supported-inherited/columnheader-aria-required-true.html" : {
-      "category" : "valid",
-      "failure" : "Expected no errors or warnings but encountered error “Discarding unrecognized token “columnheader” from value of attribute “role”. Browsers ignore any token that is not a defined ARIA non-abstract role.”."
+      "failure" : "Expected no errors or warnings but encountered error “Attribute “aria-readonly” not allowed on element “span” at this point.”."
     },
     "html-aria/roles-properties-supported-inherited/columnheader-aria-selected-false.html" : {
       "category" : "valid",
-      "failure" : "Expected no errors or warnings but encountered error “Discarding unrecognized token “columnheader” from value of attribute “role”. Browsers ignore any token that is not a defined ARIA non-abstract role.”."
+      "failure" : "Expected no errors or warnings but encountered error “Attribute “aria-selected” not allowed on element “span” at this point.”."
     },
     "html-aria/roles-properties-supported-inherited/columnheader-aria-selected-true.html" : {
       "category" : "valid",
-      "failure" : "Expected no errors or warnings but encountered error “Discarding unrecognized token “columnheader” from value of attribute “role”. Browsers ignore any token that is not a defined ARIA non-abstract role.”."
+      "failure" : "Expected no errors or warnings but encountered error “Attribute “aria-selected” not allowed on element “span” at this point.”."
     },
     "html-aria/roles-properties-supported-inherited/columnheader-aria-selected-undefined.html" : {
       "category" : "valid",
-      "failure" : "Expected no errors or warnings but encountered error “Discarding unrecognized token “columnheader” from value of attribute “role”. Browsers ignore any token that is not a defined ARIA non-abstract role.”."
-    },
-    "html-aria/roles-properties-supported-inherited/heading-aria-expanded-false.html" : {
-      "category" : "valid",
-      "failure" : "Expected no errors or warnings but encountered error “Discarding unrecognized token “heading” from value of attribute “role”. Browsers ignore any token that is not a defined ARIA non-abstract role.”."
-    },
-    "html-aria/roles-properties-supported-inherited/heading-aria-expanded-true.html" : {
-      "category" : "valid",
-      "failure" : "Expected no errors or warnings but encountered error “Discarding unrecognized token “heading” from value of attribute “role”. Browsers ignore any token that is not a defined ARIA non-abstract role.”."
-    },
-    "html-aria/roles-properties-supported-inherited/heading-aria-expanded-undefined.html" : {
-      "category" : "valid",
-      "failure" : "Expected no errors or warnings but encountered error “Discarding unrecognized token “heading” from value of attribute “role”. Browsers ignore any token that is not a defined ARIA non-abstract role.”."
+      "failure" : "Expected no errors or warnings but encountered error “Attribute “aria-selected” not allowed on element “span” at this point.”."
     },
     "html-aria/roles-properties-supported-inherited/progressbar-aria-valuemax-1.1.html" : {
       "category" : "valid",
@@ -136,57 +88,25 @@
       "category" : "valid",
       "failure" : "Expected no errors or warnings but encountered error “Attribute “aria-valuemin” not allowed on element “div” at this point.”."
     },
-    "html-aria/roles-properties-supported-inherited/rowheader-aria-expanded-false.html" : {
-      "category" : "valid",
-      "failure" : "Expected no errors or warnings but encountered error “Discarding unrecognized token “rowheader” from value of attribute “role”. Browsers ignore any token that is not a defined ARIA non-abstract role.”."
-    },
-    "html-aria/roles-properties-supported-inherited/rowheader-aria-expanded-true.html" : {
-      "category" : "valid",
-      "failure" : "Expected no errors or warnings but encountered error “Discarding unrecognized token “rowheader” from value of attribute “role”. Browsers ignore any token that is not a defined ARIA non-abstract role.”."
-    },
-    "html-aria/roles-properties-supported-inherited/rowheader-aria-expanded-undefined.html" : {
-      "category" : "valid",
-      "failure" : "Expected no errors or warnings but encountered error “Discarding unrecognized token “rowheader” from value of attribute “role”. Browsers ignore any token that is not a defined ARIA non-abstract role.”."
-    },
     "html-aria/roles-properties-supported-inherited/rowheader-aria-readonly-false.html" : {
       "category" : "valid",
-      "failure" : "Expected no errors or warnings but encountered error “Discarding unrecognized token “rowheader” from value of attribute “role”. Browsers ignore any token that is not a defined ARIA non-abstract role.”."
+      "failure" : "Expected no errors or warnings but encountered error “Attribute “aria-readonly” not allowed on element “span” at this point.”."
     },
     "html-aria/roles-properties-supported-inherited/rowheader-aria-readonly-true.html" : {
       "category" : "valid",
-      "failure" : "Expected no errors or warnings but encountered error “Discarding unrecognized token “rowheader” from value of attribute “role”. Browsers ignore any token that is not a defined ARIA non-abstract role.”."
-    },
-    "html-aria/roles-properties-supported-inherited/rowheader-aria-required-false.html" : {
-      "category" : "valid",
-      "failure" : "Expected no errors or warnings but encountered error “Discarding unrecognized token “rowheader” from value of attribute “role”. Browsers ignore any token that is not a defined ARIA non-abstract role.”."
-    },
-    "html-aria/roles-properties-supported-inherited/rowheader-aria-required-true.html" : {
-      "category" : "valid",
-      "failure" : "Expected no errors or warnings but encountered error “Discarding unrecognized token “rowheader” from value of attribute “role”. Browsers ignore any token that is not a defined ARIA non-abstract role.”."
+      "failure" : "Expected no errors or warnings but encountered error “Attribute “aria-readonly” not allowed on element “span” at this point.”."
     },
     "html-aria/roles-properties-supported-inherited/rowheader-aria-selected-false.html" : {
       "category" : "valid",
-      "failure" : "Expected no errors or warnings but encountered error “Discarding unrecognized token “rowheader” from value of attribute “role”. Browsers ignore any token that is not a defined ARIA non-abstract role.”."
+      "failure" : "Expected no errors or warnings but encountered error “Attribute “aria-selected” not allowed on element “span” at this point.”."
     },
     "html-aria/roles-properties-supported-inherited/rowheader-aria-selected-true.html" : {
       "category" : "valid",
-      "failure" : "Expected no errors or warnings but encountered error “Discarding unrecognized token “rowheader” from value of attribute “role”. Browsers ignore any token that is not a defined ARIA non-abstract role.”."
+      "failure" : "Expected no errors or warnings but encountered error “Attribute “aria-selected” not allowed on element “span” at this point.”."
     },
     "html-aria/roles-properties-supported-inherited/rowheader-aria-selected-undefined.html" : {
       "category" : "valid",
-      "failure" : "Expected no errors or warnings but encountered error “Discarding unrecognized token “rowheader” from value of attribute “role”. Browsers ignore any token that is not a defined ARIA non-abstract role.”."
-    },
-    "html-aria/roles-properties-supported-inherited/tooltip-aria-expanded-false.html" : {
-      "category" : "valid",
-      "failure" : "Expected no errors or warnings but encountered error “Discarding unrecognized token “tooltip” from value of attribute “role”. Browsers ignore any token that is not a defined ARIA non-abstract role.”."
-    },
-    "html-aria/roles-properties-supported-inherited/tooltip-aria-expanded-true.html" : {
-      "category" : "valid",
-      "failure" : "Expected no errors or warnings but encountered error “Discarding unrecognized token “tooltip” from value of attribute “role”. Browsers ignore any token that is not a defined ARIA non-abstract role.”."
-    },
-    "html-aria/roles-properties-supported-inherited/tooltip-aria-expanded-undefined.html" : {
-      "category" : "valid",
-      "failure" : "Expected no errors or warnings but encountered error “Discarding unrecognized token “tooltip” from value of attribute “role”. Browsers ignore any token that is not a defined ARIA non-abstract role.”."
+      "failure" : "Expected no errors or warnings but encountered error “Attribute “aria-selected” not allowed on element “span” at this point.”."
     },
     "html-aria/roles-properties-supported-inherited/treegrid-aria-multiselectable-false.html" : {
       "category" : "valid",
@@ -231,42 +151,6 @@
     "html-aria/roles-properties-supported-inherited/treeitem-aria-selected-undefined.html" : {
       "category" : "valid",
       "failure" : "Expected no errors or warnings but encountered error “Attribute “aria-selected” not allowed on element “div” at this point.”."
-    },
-    "html-aria/roles-properties-supported/roles-properties-supported-columnheader-aria-sort-ascending.html" : {
-      "category" : "valid",
-      "failure" : "Expected no errors or warnings but encountered error “Discarding unrecognized token “columnheader” from value of attribute “role”. Browsers ignore any token that is not a defined ARIA non-abstract role.”."
-    },
-    "html-aria/roles-properties-supported/roles-properties-supported-columnheader-aria-sort-descending.html" : {
-      "category" : "valid",
-      "failure" : "Expected no errors or warnings but encountered error “Discarding unrecognized token “columnheader” from value of attribute “role”. Browsers ignore any token that is not a defined ARIA non-abstract role.”."
-    },
-    "html-aria/roles-properties-supported/roles-properties-supported-columnheader-aria-sort-none.html" : {
-      "category" : "valid",
-      "failure" : "Expected no errors or warnings but encountered error “Discarding unrecognized token “columnheader” from value of attribute “role”. Browsers ignore any token that is not a defined ARIA non-abstract role.”."
-    },
-    "html-aria/roles-properties-supported/roles-properties-supported-columnheader-aria-sort-other.html" : {
-      "category" : "valid",
-      "failure" : "Expected no errors or warnings but encountered error “Discarding unrecognized token “columnheader” from value of attribute “role”. Browsers ignore any token that is not a defined ARIA non-abstract role.”."
-    },
-    "html-aria/roles-properties-supported/roles-properties-supported-heading-aria-level-1.html" : {
-      "category" : "valid",
-      "failure" : "Expected no errors or warnings but encountered error “Discarding unrecognized token “heading” from value of attribute “role”. Browsers ignore any token that is not a defined ARIA non-abstract role.”."
-    },
-    "html-aria/roles-properties-supported/roles-properties-supported-rowheader-aria-sort-ascending.html" : {
-      "category" : "valid",
-      "failure" : "Expected no errors or warnings but encountered error “Discarding unrecognized token “rowheader” from value of attribute “role”. Browsers ignore any token that is not a defined ARIA non-abstract role.”."
-    },
-    "html-aria/roles-properties-supported/roles-properties-supported-rowheader-aria-sort-descending.html" : {
-      "category" : "valid",
-      "failure" : "Expected no errors or warnings but encountered error “Discarding unrecognized token “rowheader” from value of attribute “role”. Browsers ignore any token that is not a defined ARIA non-abstract role.”."
-    },
-    "html-aria/roles-properties-supported/roles-properties-supported-rowheader-aria-sort-none.html" : {
-      "category" : "valid",
-      "failure" : "Expected no errors or warnings but encountered error “Discarding unrecognized token “rowheader” from value of attribute “role”. Browsers ignore any token that is not a defined ARIA non-abstract role.”."
-    },
-    "html-aria/roles-properties-supported/roles-properties-supported-rowheader-aria-sort-other.html" : {
-      "category" : "valid",
-      "failure" : "Expected no errors or warnings but encountered error “Discarding unrecognized token “rowheader” from value of attribute “role”. Browsers ignore any token that is not a defined ARIA non-abstract role.”."
     },
     "html-aria/testcases-multiselectable/testcase-tree-multiselectable-C.html" : {
       "category" : "valid",
@@ -452,18 +336,6 @@
       "category" : "valid",
       "failure" : "Expected no errors or warnings but encountered error “Bad value “2012-03” for attribute “datetime” on element “time”.”."
     },
-    "html-rdfa/0305-isvalid.html" : {
-      "category" : "valid",
-      "failure" : "Expected no errors or warnings but encountered error “Discarding unrecognized token “heading” from value of attribute “role”. Browsers ignore any token that is not a defined ARIA non-abstract role.”."
-    },
-    "html-rdfa/0306-isvalid.html" : {
-      "category" : "valid",
-      "failure" : "Expected no errors or warnings but encountered error “Discarding unrecognized token “heading” from value of attribute “role”. Browsers ignore any token that is not a defined ARIA non-abstract role.”."
-    },
-    "html-rdfa/0307-isvalid.html" : {
-      "category" : "valid",
-      "failure" : "Expected no errors or warnings but encountered error “Discarding unrecognized token “heading” from value of attribute “role”. Browsers ignore any token that is not a defined ARIA non-abstract role.”."
-    },
     "html-rdfa/0321-isvalid.html" : {
       "category" : "valid",
       "failure" : "Expected no errors or warnings but encountered error “A “link” element must have an “href” or “imagesrcset” attribute, or both.”."
@@ -499,18 +371,6 @@
     "html-rdfalite/0282-isvalid.html" : {
       "category" : "valid",
       "failure" : "Expected no errors or warnings but encountered error “Bad value “2012-03” for attribute “datetime” on element “time”.”."
-    },
-    "html-rdfalite/0305-isvalid.html" : {
-      "category" : "valid",
-      "failure" : "Expected no errors or warnings but encountered error “Discarding unrecognized token “heading” from value of attribute “role”. Browsers ignore any token that is not a defined ARIA non-abstract role.”."
-    },
-    "html-rdfalite/0306-isvalid.html" : {
-      "category" : "valid",
-      "failure" : "Expected no errors or warnings but encountered error “Discarding unrecognized token “heading” from value of attribute “role”. Browsers ignore any token that is not a defined ARIA non-abstract role.”."
-    },
-    "html-rdfalite/0307-isvalid.html" : {
-      "category" : "valid",
-      "failure" : "Expected no errors or warnings but encountered error “Discarding unrecognized token “heading” from value of attribute “role”. Browsers ignore any token that is not a defined ARIA non-abstract role.”."
     },
     "html-rdfalite/0321-isvalid.html" : {
       "category" : "valid",
@@ -2808,10 +2668,6 @@
       "category" : "invalid",
       "failure" : "Expected “An “img” element with any “aria-*” attributes other than “aria-hidden” must also have an accessible name. (e.g., an “alt” attribute).” but instead encountered “An “img” element must have an “alt” attribute, except under certain conditions. For details, consult guidance on providing text alternatives for images.”."
     },
-    "html/elements/img/bad-role-value-novalid.html" : {
-      "category" : "invalid",
-      "failure" : "Expected “Bad value “invalid” for attribute “role” on element “img”.” but instead encountered “Discarding unrecognized token “invalid” from value of attribute “role”. Browsers ignore any token that is not a defined ARIA non-abstract role.”."
-    },
     "html/elements/img/controls-without-alt-novalid.html" : {
       "category" : "invalid",
       "failure" : "Expected “The “controls” attribute must not be specified on an “img” element that does not have an “alt” attribute, or whose “alt” attribute’s value is the empty string.” but instead encountered “An “img” element must have an “alt” attribute, except under certain conditions. For details, consult guidance on providing text alternatives for images.”."
@@ -3198,8 +3054,8 @@
   "passCounts" : {
     "hasinfo" : 5,
     "haswarn" : 132,
-    "invalid" : 3526,
-    "valid" : 1160
+    "invalid" : 3527,
+    "valid" : 1195
   },
   "version" : 2
 }

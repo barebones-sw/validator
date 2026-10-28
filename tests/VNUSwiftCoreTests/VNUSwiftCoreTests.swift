@@ -785,6 +785,110 @@ func transparentContentModelsMatchUpstream(markup: String, expected: String?) {
     #expect(childErrors == (expected.map { [$0] } ?? []), "\(markup)")
 }
 
+// Review item A13: role attributes go through upstream's role filter (one
+// combined Discarding error, superfluous tokens as info, case-sensitive) and
+// then the schema ("Bad value" when no token is recognized and the value
+// isn't one the schema knows). Each case is its own document; the expected
+// role messages (kind and text) were confirmed against vnu.jar.
+private func discardingUnrecognized(_ tokens: String) -> String {
+    "Discarding unrecognized \(tokens) from value of attribute \u{201c}role\u{201d}. Browsers ignore any token that is not a defined ARIA non-abstract role."
+}
+
+private func badRoleValue(_ value: String, _ element: String) -> String {
+    "Bad value \u{201c}\(value)\u{201d} for attribute \u{201c}role\u{201d} on element \u{201c}\(element)\u{201d}."
+}
+
+@Test(arguments: [
+    // Roles the port's set lacked (tooltip, heading, the doc-* footnote roles).
+    ("<div role=\"tooltip\" id=t>Help</div>", []),
+    ("<div role=\"heading\" aria-level=2>H</div>", []),
+    ("<p>x<sup><a href=#fn1 id=r1 role=\"doc-noteref\">1</a></sup></p>", []),
+    ("<section role=\"doc-endnotes\"><ol><li id=fn1><p>n <a href=#r1 role=\"doc-backlink\">back</a></p></li></ol></section>", []),
+    // No recognized token: the schema's "Bad value" for the whole value.
+    ("<div role=\"foo\">x</div>", [("error", badRoleValue("foo", "div"))]),
+    ("<div role=\"foo bar\">x</div>", [("error", badRoleValue("foo bar", "div"))]),
+    ("<div role=\"Button\" tabindex=0>x</div>", [("error", badRoleValue("Button", "div"))]),
+    ("<div role=\"\">x</div>", [("error", badRoleValue("", "div"))]),
+    ("<span role=\"generic\">x</span>", [("error", badRoleValue("generic", "span"))]),
+    // ... unless the schema knows the value on its own.
+    ("<div role=\"paragraph\">x</div>", []),
+    // A recognized token: one Discarding message for all unrecognized ones.
+    ("<div role=\"foo bar button\" tabindex=0>x</div>", [("error", discardingUnrecognized("tokens \u{201c}foo\u{201d}, \u{201c}bar\u{201d}"))]),
+    ("<div role=\"strong button\" tabindex=0>x</div>", [("error", discardingUnrecognized("token \u{201c}strong\u{201d}"))]),
+    ("<img src=x alt=y role=\"foo img\">", [("error", discardingUnrecognized("token \u{201c}foo\u{201d}"))]),
+    // Superfluous roles are info, and "presentation" never counts.
+    ("<div role=\"button link\" tabindex=0>x</div>", [("info", "Discarding superfluous token \u{201c}link\u{201d} from value of attribute \u{201c}role\u{201d}. Browsers only process the first token found that is a defined ARIA non-abstract role.")]),
+    ("<div role=\"button presentation\" tabindex=0>x</div>", []),
+    ("<ul role=\"directory\"><li>x</li></ul>", [("warning", badRoleValue("directory", "ul"))]),
+    // Nothing for custom elements.
+    ("<my-el role=\"foo button\">x</my-el>", []),
+    // select: upstream's assertions, plus the schema's role list.
+    ("<select multiple role=\"menu\"><option>a</option></select>", [("error", "A \u{201c}select\u{201d} element with a \u{201c}multiple\u{201d} attribute or with a \u{201c}size\u{201d} attribute whose value is greater than 1 must not have any \u{201c}role\u{201d} attribute.")]),
+    ("<select role=\"button\"><option>a</option></select>", [
+        ("error", badRoleValue("button", "select")),
+        ("error", "The \u{201c}button\u{201d} role is not allowed for element \u{201c}select\u{201d} without a \u{201c}multiple\u{201d} attribute and without a \u{201c}size\u{201d} attribute whose value is greater than 1."),
+    ]),
+    // ... matched exactly: no "unnecessary" warning for these.
+    ("<select multiple role=\"listbox foo\"><option>a</option></select>", [
+        ("error", discardingUnrecognized("token \u{201c}foo\u{201d}")),
+        ("error", "A \u{201c}select\u{201d} element with a \u{201c}multiple\u{201d} attribute or with a \u{201c}size\u{201d} attribute whose value is greater than 1 must not have any \u{201c}role\u{201d} attribute."),
+    ]),
+    ("<select role=\"COMBOBOX\"><option>a</option></select>", [
+        ("error", badRoleValue("COMBOBOX", "select")),
+        ("error", "The \u{201c}COMBOBOX\u{201d} role is not allowed for element \u{201c}select\u{201d} without a \u{201c}multiple\u{201d} attribute and without a \u{201c}size\u{201d} attribute whose value is greater than 1."),
+    ]),
+    // One "Bad value" per attribute, even where an element has its own list.
+    ("<img src=x alt=y role=\"foo\">", [("error", badRoleValue("foo", "img"))]),
+    ("<p>a<br role=\"Separator\">b</p>", [("error", badRoleValue("Separator", "br"))]),
+    // Java's trim, and a split on space, tab, CR and LF only.
+    ("<div role=\" foo \">x</div>", [("error", badRoleValue("foo", "div"))]),
+    ("<div role=\"button\u{3000}link\" tabindex=0>x</div>", [("error", badRoleValue("button\u{3000}link", "div"))]),
+    // A valueless role is an empty one.
+    ("<div role>x</div>", [("error", badRoleValue("", "div"))]),
+    // Where the schema doesn't judge the value: template contents, obsolete
+    // elements, and where role isn't allowed at all.
+    ("<template><div role=\"foo\">x</div></template>", []),
+    ("<center role=\"Main\">x</center>", []),
+    ("<picture role=\"generic\"><img src=x alt=y></picture>", [("error", "Attribute \u{201c}role\u{201d} not allowed on element \u{201c}picture\u{201d} at this point.")]),
+    // SVG elements are filtered, even with a hyphen in the name.
+    ("<svg width=1 height=1><missing-glyph role=\"foo button\"></missing-glyph></svg>", [("error", discardingUnrecognized("token \u{201c}foo\u{201d}"))]),
+    // MathML isn't filtered: math may have exactly role="math" (which isn't
+    // needed), and the elements inside it no role at all.
+    ("<math role=\"foo button\"><mi>x</mi></math>", [("error", badRoleValue("foo button", "math"))]),
+    ("<math role=\"math\"><mi>x</mi></math>", [("warning", "Element \u{201c}math\u{201d} does not need a \u{201c}role\u{201d} attribute.")]),
+    ("<math><mi role=\"foo\">x</mi></math>", [("error", "Attribute \u{201c}role\u{201d} not allowed on element \u{201c}mi\u{201d} at this point.")]),
+] as [(String, [(String, String)])])
+func roleAttributeMessagesMatchUpstream(markup: String, expected: [(String, String)]) {
+    let result = checkHTML("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\(markup)")
+    let roleMessages = result.messages
+        .filter { $0.message.contains("role") }
+        .map { message -> String in
+            let kind = message.type == "info" ? (message.subType == "warning" ? "warning" : "info") : message.type
+            return "\(kind): \(message.message)"
+        }
+        .sorted()
+    #expect(roleMessages == expected.map { "\($0.0): \($0.1)" }.sorted(), "\(markup)")
+}
+
+// A13: role's "Bad value" is a schema message, which upstream reports before
+// its other checks' messages for the same element (TestRunner compares an
+// invalid file's first error). Confirmed against vnu.jar.
+@Test func roleSchemaMessageComesFirst() {
+    let result = checkHTML("<!doctype html><html lang=en><meta charset=utf-8><title>T</title><label for=nope role=\"foaf:Person\">L</label>")
+    #expect(result.messages.first?.message == badRoleValue("foaf:Person", "label"))
+    #expect(result.messages.contains { $0.message == "The value of the \u{201c}for\u{201d} attribute of the \u{201c}label\u{201d} element must be the ID of a non-hidden form control." })
+}
+
+// A13: select's aria-expanded requirement is the schema's, so it applies to
+// role="combobox" exactly. Confirmed against vnu.jar.
+@Test func selectComboboxAriaExpandedIsCaseSensitive() {
+    let missing = "Element \u{201c}select\u{201d} is missing required attribute \u{201c}aria-expanded\u{201d}."
+    let exact = checkHTML("<!doctype html><html lang=en><meta charset=utf-8><title>T</title><select size=1 role=\"combobox\"><option>a</option></select>")
+    let upper = checkHTML("<!doctype html><html lang=en><meta charset=utf-8><title>T</title><select role=\"COMBOBOX\"><option>a</option></select>")
+    #expect(exact.messages.contains { $0.message == missing })
+    #expect(!upper.messages.contains { $0.message == missing })
+}
+
 @Test func generalAttributeCheckerCoversARIAMiscRoleRules() {
     let result = checkHTML("""
         <!doctype html><html lang=en><meta charset=utf-8><title>T</title>

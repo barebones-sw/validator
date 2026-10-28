@@ -473,6 +473,7 @@ struct HTMLGeneralAttributeChecker {
                     optgroupStack[optgroupIndex].sawLegend = true
                 }
                 appendDisallowedAttributeMessages(for: element, parent: parent, locations: locations, messages: &messages)
+                appendRoleTokenMessages(for: element, parent: parent, stack: stack, locations: locations, messages: &messages)
                 appendDatatypeAttributeMessages(for: element, locations: locations, messages: &messages)
                 appendGlobalAttributeMessages(for: element, locations: locations, messages: &messages)
                 appendBaseMessages(for: element, sawBodyContentBeforeBase: sawBodyContentBeforeBase, sawBaseBlockingElement: sawBaseBlockingElement, locations: locations, messages: &messages)
@@ -1013,9 +1014,6 @@ struct HTMLGeneralAttributeChecker {
         if let prefix = element.attributeValue("prefix"), !isValidRDFaPrefix(prefix) {
             appendBadAttributeValue(prefix, attribute: "prefix", for: element, locations: locations, messages: &messages)
         }
-        if let role = element.attributeValue("role"), roleContainsRDFaRole(role) {
-            appendBadAttributeValue(role, attribute: "role", for: element, locations: locations, messages: &messages)
-        }
     }
 
     private func appendSVGMessages(
@@ -1143,12 +1141,6 @@ struct HTMLGeneralAttributeChecker {
             guard isAbsoluteURLToken(tokens[index + 1]) else { return false }
         }
         return true
-    }
-
-    private func roleContainsRDFaRole(_ value: String) -> Bool {
-        value.split(whereSeparator: { $0.isWhitespace }).contains { token in
-            token.contains(":") || token.contains("/")
-        }
     }
 
     private func isAbsoluteURLToken(_ value: String) -> Bool {
@@ -1398,6 +1390,21 @@ struct HTMLGeneralAttributeChecker {
         locations: SourceLocationMap,
         messages: inout [ValidationMessage]
     ) {
+        let disallowed = disallowedAttributes(for: element, parent: parent)
+        for attribute in element.attributes where disallowed.contains(attribute.name) {
+            appendMessage(
+                "Attribute \u{201c}\(attribute.name)\u{201d} not allowed on element \u{201c}\(element.name)\u{201d} at this point.",
+                for: element,
+                locations: locations,
+                messages: &messages
+            )
+        }
+    }
+
+    // Attributes the schema doesn't allow on this element here. (Also used by
+    // appendRoleTokenMessages: where role isn't allowed at all, the schema
+    // never judges its value.)
+    private func disallowedAttributes(for element: HTMLStartElement, parent: String?) -> Set<String> {
         let disallowed: Set<String>
         if element.name == "picture" {
             disallowed = Self.pictureDisallowedAttributes
@@ -1423,15 +1430,7 @@ struct HTMLGeneralAttributeChecker {
         } else {
             disallowed = []
         }
-
-        for attribute in element.attributes where disallowed.contains(attribute.name) {
-            appendMessage(
-                "Attribute \u{201c}\(attribute.name)\u{201d} not allowed on element \u{201c}\(element.name)\u{201d} at this point.",
-                for: element,
-                locations: locations,
-                messages: &messages
-            )
-        }
+        return disallowed
     }
 
     private func appendElementSpecificMessages(
@@ -1759,11 +1758,10 @@ struct HTMLGeneralAttributeChecker {
         locations: SourceLocationMap,
         messages: inout [ValidationMessage]
     ) {
-        appendRoleTokenMessages(for: element, locations: locations, messages: &messages)
         appendRoleEffectMessages(for: element, role: role, locations: locations, messages: &messages)
         appendUnnecessaryRoleMessages(for: element, role: role, locations: locations, messages: &messages)
         appendARIANamingMessages(for: element, locations: locations, messages: &messages)
-        appendSelectRoleMessages(for: element, role: role, locations: locations, messages: &messages)
+        appendSelectRoleMessages(for: element, stack: stack, locations: locations, messages: &messages)
         appendSummaryARIAMessages(for: element, stack: stack, locations: locations, messages: &messages)
         appendARIAPropertyMessages(for: element, role: role, idElementNames: idElementNames, locations: locations, messages: &messages)
         appendImageARIAMessages(for: element, role: role, locations: locations, messages: &messages)
@@ -1789,34 +1787,151 @@ struct HTMLGeneralAttributeChecker {
 
     private func appendRoleTokenMessages(
         for element: HTMLStartElement,
+        parent: String?,
+        stack: [String],
         locations: SourceLocationMap,
         messages: inout [ValidationMessage]
     ) {
-        let tokens = roleTokens(for: element)
-        guard !tokens.isEmpty else { return }
-        var sawRecognized = false
+        // Review item A13: this now mirrors upstream's two stages. The role
+        // filter (RoleAttributeFilteringContentHandlerWrapper) reports
+        // unrecognized and superfluous tokens and passes on a single value,
+        // and the schema then judges that value. The port used to report
+        // every unrecognized token on its own, even when no token was
+        // recognized (where upstream gives the schema's "Bad value" instead),
+        // lowercased tokens that upstream matches case-sensitively, and was
+        // missing 46 of upstream's roles (heading, tooltip, columnheader,
+        // rowheader, every doc-* role and the graphics-* roles), so footnote
+        // markup from goldmark and kramdown, tooltips and ARIA headings were
+        // all reported as errors. It runs right after the disallowed-attribute
+        // check because these are the schema's messages, which upstream
+        // reports before its other checks' messages for the same element.
+        // Where each stage applies was matched against vnu.jar:
+        guard let rawValue = roleAttributeValue(for: element) else { return }
+        // - Nothing at all inside a template's contents.
+        guard !stack.contains("template") else { return }
+        let inSVG = element.name == "svg" || stack.contains("svg")
+        // - MathML isn't filtered: the math element may have exactly
+        //   role="math" (appendUnnecessaryRoleMessages warns that it's not
+        //   needed), so anything else is a "Bad value" as written, and the
+        //   elements inside it may not have a role at all.
+        if !inSVG, element.name == "math" || stack.contains("math") {
+            if element.name == "math" {
+                if rawValue != "math" {
+                    appendBadAttributeValue(rawValue, attribute: "role", for: element, locations: locations, messages: &messages)
+                }
+            } else {
+                appendAttributeNotAllowed("role", for: element, locations: locations, messages: &messages)
+            }
+            return
+        }
+        // - Nothing for an autonomous custom element in HTML. (SVG elements
+        //   with hyphens in their names, such as missing-glyph, are filtered.)
+        guard inSVG || !element.name.contains("-"), let filtered = filteredRole(for: element) else { return }
+        if filtered.roleValue != nil, !filtered.unrecognized.isEmpty {
+            appendMessage(
+                "Discarding unrecognized\(renderedRoleTokenList(filtered.unrecognized)) from value of attribute \u{201c}role\u{201d}. Browsers ignore any token that is not a defined ARIA non-abstract role.",
+                for: element,
+                locations: locations,
+                messages: &messages
+            )
+        }
+        if filtered.roleValue != nil, !filtered.superfluous.isEmpty {
+            appendInfoMessage(
+                "Discarding superfluous\(renderedRoleTokenList(filtered.superfluous)) from value of attribute \u{201c}role\u{201d}. Browsers only process the first token found that is a defined ARIA non-abstract role.",
+                for: element,
+                locations: locations,
+                messages: &messages
+            )
+        }
+        // - The schema judges the value only on elements it knows, and where
+        //   role is allowed at all: not on obsolete or unknown HTML elements
+        //   (or unknown, hyphenated SVG ones), and not where
+        //   appendDisallowedAttributeMessages reports role as not allowed.
+        let schemaKnowsElement = inSVG
+            ? !element.name.contains("-")
+            : (HTMLVocabulary.elements.contains(element.name) && !HTMLVocabulary.obsoleteElements.contains(element.name))
+        guard schemaKnowsElement, !disallowedAttributes(for: element, parent: parent).contains("role") else { return }
+        if filtered.roleValue == "directory" {
+            // Deprecated in ARIA 1.2: upstream's schema no longer lists it,
+            // and upstream (MessageEmitterAdapter) reports the resulting
+            // "Bad value" as a warning.
+            appendWarningMessage("Bad value \u{201c}directory\u{201d} for attribute \u{201c}role\u{201d} on element \u{201c}\(element.name)\u{201d}.", for: element, locations: locations, messages: &messages)
+        } else if !Self.schemaARIARoles.contains(filtered.schemaValue) {
+            // No token was recognized and the value as a whole isn't one the
+            // schema accepts (an unknown role, several tokens, an empty
+            // value, or a CURIE or URL as in RDFa): the schema's error.
+            appendBadAttributeValue(filtered.schemaValue, attribute: "role", for: element, locations: locations, messages: &messages)
+        }
+    }
+
+    /// What upstream's role filter makes of an element's role attribute.
+    private struct FilteredRole {
+        /// The first token that's a non-abstract ARIA role, as written.
+        var roleValue: String?
+        /// Tokens that aren't non-abstract ARIA roles, in order.
+        var unrecognized: [String]
+        /// Non-abstract roles after the first, except "presentation".
+        var superfluous: [String]
+        /// The value the schema sees: roleValue, or else the whole trimmed
+        /// attribute value.
+        var schemaValue: String
+    }
+
+    /// Review item A13: RoleAttributeFilteringContentHandlerWrapper's
+    /// getFirstMatchingAriaRoleFromTokenList. The value is trimmed as Java's
+    /// String.trim() does (every character up to U+0020), split on space,
+    /// tab, line feed and carriage return only, and matched case-sensitively.
+    /// Upstream's other role checks (Assertions) work from the unfiltered
+    /// value instead (some from the string as written, some from its
+    /// lowercased tokens); the port's checks for those use roleTokens(for:)
+    /// and firstRoleToken(for:), which A13 leaves alone.
+    private func filteredRole(for element: HTMLStartElement) -> FilteredRole? {
+        guard let value = roleAttributeValue(for: element) else { return nil }
+        let scalars = value.unicodeScalars
+        guard let first = scalars.firstIndex(where: { $0.value > 0x20 }),
+              let last = scalars.lastIndex(where: { $0.value > 0x20 }) else {
+            return FilteredRole(roleValue: nil, unrecognized: [], superfluous: [], schemaValue: "")
+        }
+        let trimmed = String(Substring(scalars[first...last]))
+        let tokens = trimmed.unicodeScalars
+            .split(whereSeparator: { [" ", "\t", "\n", "\r"].contains($0) })
+            .map { String(Substring($0)) }
+        var filtered = FilteredRole(roleValue: nil, unrecognized: [], superfluous: [], schemaValue: trimmed)
         for token in tokens {
             if !Self.nonAbstractARIARoles.contains(token) {
-                appendMessage(
-                    "Discarding unrecognized token \u{201c}\(token)\u{201d} from value of attribute \u{201c}role\u{201d}. Browsers ignore any token that is not a defined ARIA non-abstract role.",
-                    for: element,
-                    locations: locations,
-                    messages: &messages
-                )
-            } else if sawRecognized {
-                appendInfoMessage(
-                    "Discarding superfluous token \u{201c}\(token)\u{201d} from value of attribute \u{201c}role\u{201d}. Browsers only process the first token found that is a defined ARIA non-abstract role.",
-                    for: element,
-                    locations: locations,
-                    messages: &messages
-                )
-            } else {
-                sawRecognized = true
+                filtered.unrecognized.append(token)
+            } else if filtered.roleValue == nil {
+                filtered.roleValue = token
+            } else if token != "presentation" {
+                filtered.superfluous.append(token)
             }
         }
-        if tokens.first == "directory" {
-            appendWarningMessage("Bad value \u{201c}directory\u{201d} for attribute \u{201c}role\u{201d} on element \u{201c}\(element.name)\u{201d}.", for: element, locations: locations, messages: &messages)
+        if let roleValue = filtered.roleValue {
+            filtered.schemaValue = roleValue
         }
+        return filtered
+    }
+
+    /// The role attribute's value, "" for a valueless one (<div role>), as
+    /// upstream sees it; nil when there's no role attribute.
+    private func roleAttributeValue(for element: HTMLStartElement) -> String? {
+        guard element.hasAttribute("role") else { return nil }
+        return element.attributeValue("role") ?? ""
+    }
+
+    /// The schema's view of an element's role, for the checks that stand in
+    /// for the schema's per-element role lists: nil when there's no role
+    /// attribute, or when its value isn't one the schema knows at all
+    /// (appendRoleTokenMessages has reported "Bad value" for that already).
+    private func knownSchemaRole(for element: HTMLStartElement) -> String? {
+        guard let schemaValue = filteredRole(for: element)?.schemaValue,
+              Self.schemaARIARoles.contains(schemaValue) else { return nil }
+        return schemaValue
+    }
+
+    /// Upstream's renderTokenList: " token “a”" or " tokens “a”, “b”".
+    private func renderedRoleTokenList(_ tokens: [String]) -> String {
+        (tokens.count > 1 ? " tokens " : " token ") + tokens.map { "\u{201c}\($0)\u{201d}" }.joined(separator: ", ")
     }
 
     private func appendRoleEffectMessages(
@@ -1848,11 +1963,19 @@ struct HTMLGeneralAttributeChecker {
         messages: inout [ValidationMessage]
     ) {
         guard let role else { return }
-        if element.name == "math", role == "math" {
-            appendWarningMessage("Element \u{201c}math\u{201d} does not need a \u{201c}role\u{201d} attribute.", for: element, locations: locations, messages: &messages)
+        // Review item A13: for math and select, upstream compares the role
+        // attribute as written, so role="MATH" or role="listbox foo" isn't
+        // "unnecessary" (the first is a "Bad value", and the second gets the
+        // select error instead; see appendRoleTokenMessages and
+        // appendSelectRoleMessages).
+        if element.name == "math" {
+            if "math" == element.attributeValue("role") {
+                appendWarningMessage("Element \u{201c}math\u{201d} does not need a \u{201c}role\u{201d} attribute.", for: element, locations: locations, messages: &messages)
+            }
             return
         }
-        if let expected = unnecessaryRole(for: element), expected == role {
+        if let expected = unnecessaryRole(for: element), expected == role,
+           element.name != "select" || expected == element.attributeValue("role") {
             if element.name == "a", role == "link" {
                 appendWarningMessage("The \u{201c}link\u{201d} role is unnecessary for element \u{201c}a\u{201d} with attribute \u{201c}href\u{201d}.", for: element, locations: locations, messages: &messages)
             } else if element.name == "select", role == "listbox" {
@@ -1913,15 +2036,35 @@ struct HTMLGeneralAttributeChecker {
 
     private func appendSelectRoleMessages(
         for element: HTMLStartElement,
-        role: String?,
+        stack: [String],
         locations: SourceLocationMap,
         messages: inout [ValidationMessage]
     ) {
-        guard element.name == "select", let role else { return }
-        if allowsMultipleSelection(element), role != "listbox" {
-            appendBadAttributeValue(role, attribute: "role", for: element, locations: locations, messages: &messages)
-        } else if isDropDownSelect(element), role == "listbox" {
-            appendMessage("The \u{201c}listbox\u{201d} role is not allowed for element \u{201c}select\u{201d} without a \u{201c}multiple\u{201d} attribute and without a \u{201c}size\u{201d} attribute whose value is greater than 1.", for: element, locations: locations, messages: &messages)
+        // Review item A13: upstream's Assertions judge a select's role from
+        // the raw attribute value (case-sensitive and untrimmed): with
+        // multiple, or a size above 1, any role but listbox is an error (and
+        // listbox is merely unnecessary, a warning that
+        // appendUnnecessaryRoleMessages gives on the same exact match);
+        // otherwise any role but
+        // combobox (also unnecessary) and menu is an error. The port used to
+        // report other roles on a multiple select as "Bad value" against the
+        // first token, which upstream never says here, and checked only
+        // listbox on a drop-down select.
+        guard element.name == "select", !stack.contains("template"), let rawRole = roleAttributeValue(for: element) else { return }
+        // Separately, upstream's schema (web-forms.rnc) allows only these
+        // roles on a select, judged as the schema sees the value (see
+        // filteredRole(for:)); unknown values got their "Bad value" from
+        // appendRoleTokenMessages. (Upstream reports none of this inside a
+        // template's contents.)
+        if let schemaRole = knownSchemaRole(for: element), !Self.selectSchemaRoles.contains(schemaRole) {
+            appendBadAttributeValue(schemaRole, attribute: "role", for: element, locations: locations, messages: &messages)
+        }
+        if allowsMultipleSelection(element) {
+            if rawRole != "listbox" {
+                appendMessage("A \u{201c}select\u{201d} element with a \u{201c}multiple\u{201d} attribute or with a \u{201c}size\u{201d} attribute whose value is greater than 1 must not have any \u{201c}role\u{201d} attribute.", for: element, locations: locations, messages: &messages)
+            }
+        } else if rawRole != "combobox", rawRole != "menu" {
+            appendMessage("The \u{201c}\(rawRole)\u{201d} role is not allowed for element \u{201c}select\u{201d} without a \u{201c}multiple\u{201d} attribute and without a \u{201c}size\u{201d} attribute whose value is greater than 1.", for: element, locations: locations, messages: &messages)
         }
     }
 
@@ -1959,7 +2102,9 @@ struct HTMLGeneralAttributeChecker {
         if (element.name == "br" || element.name == "wbr"), element.hasAttribute("aria-atomic") {
             appendAttributeNotAllowed("aria-atomic", for: element, locations: locations, messages: &messages)
         }
-        if (element.name == "br" || element.name == "wbr"), role == "separator" {
+        // Review item A13: the schema's value (case-sensitive), so that
+        // role="Separator" gets only appendRoleTokenMessages's "Bad value".
+        if (element.name == "br" || element.name == "wbr"), knownSchemaRole(for: element) == "separator" {
             appendBadAttributeValue("separator", attribute: "role", for: element, locations: locations, messages: &messages)
         }
         if element.name == "body", normalizedAttributeValue("aria-hidden", for: element) == "true" {
@@ -2057,8 +2202,13 @@ struct HTMLGeneralAttributeChecker {
             appendMessage("An \u{201c}img\u{201d} element with a \u{201c}role\u{201d} attribute must not have an \u{201c}alt\u{201d} attribute whose value is the empty string.", for: element, locations: locations, messages: &messages)
         }
 
-        if let role, !Self.imgAllowedRoles.contains(role) {
-            appendBadAttributeValue(role, attribute: "role", for: element, locations: locations, messages: &messages)
+        // Review item A13: this stands in for the schema's list of img
+        // roles, so it judges the value the schema sees (the first
+        // recognized role), not the first token: role="foo img" is an img.
+        // Values the schema doesn't know at all are reported (once) by
+        // appendRoleTokenMessages.
+        if let schemaRole = knownSchemaRole(for: element), !Self.imgAllowedRoles.contains(schemaRole) {
+            appendBadAttributeValue(schemaRole, attribute: "role", for: element, locations: locations, messages: &messages)
         }
 
         if element.hasAttribute("role"), !hasAccessibleName(element) {
@@ -2247,7 +2397,9 @@ struct HTMLGeneralAttributeChecker {
            element.hasAttribute("aria-haspopup") {
             appendWarningMessage("The \u{201c}aria-haspopup\u{201d} attribute should not be used on an \u{201c}input\u{201d} element that has a \u{201c}list\u{201d} attribute and whose type is \u{201c}text\u{201d}.", for: element, locations: locations, messages: &messages)
         }
-        if element.name == "select", role == "combobox", !element.hasAttribute("aria-expanded") {
+        // Review item A13: a schema rule (aria.rnc), so it applies to the
+        // schema's value, case-sensitively: not to role="COMBOBOX".
+        if element.name == "select", knownSchemaRole(for: element) == "combobox", !element.hasAttribute("aria-expanded") {
             appendMessage("Element \u{201c}select\u{201d} is missing required attribute \u{201c}aria-expanded\u{201d}.", for: element, locations: locations, messages: &messages)
         }
     }
@@ -5072,17 +5224,55 @@ struct HTMLGeneralAttributeChecker {
         "and", "or", "not", "href_matches", "selector_matches"
     ]
 
+    // Review item A13: upstream's NON_ABSTRACT_ARIA_ROLES
+    // (RoleAttributeFilteringContentHandlerWrapper.java), exactly. A role
+    // attribute's first token from this set is the role browsers use.
     private static let nonAbstractARIARoles: Set<String> = [
-        "alert", "alertdialog", "application", "article", "banner", "button", "caption",
-        "cell", "checkbox", "code", "combobox", "complementary", "contentinfo", "definition",
-        "deletion", "dialog", "directory", "document", "emphasis", "feed", "figure", "form",
-        "generic", "grid", "gridcell", "group", "img", "insertion", "link", "list", "listbox",
-        "listitem", "log", "main", "marquee", "math", "menu", "menubar", "menuitem",
+        "alert", "alertdialog", "application", "article", "banner", "button", "cell",
+        "checkbox", "columnheader", "combobox", "complementary", "contentinfo", "definition",
+        "dialog", "directory", "doc-abstract", "doc-acknowledgments", "doc-afterword",
+        "doc-appendix", "doc-backlink", "doc-biblioentry", "doc-bibliography", "doc-biblioref",
+        "doc-chapter", "doc-colophon", "doc-conclusion", "doc-cover", "doc-credit",
+        "doc-credits", "doc-dedication", "doc-endnote", "doc-endnotes", "doc-epigraph",
+        "doc-epilogue", "doc-errata", "doc-example", "doc-footnote", "doc-foreword",
+        "doc-glossary", "doc-glossref", "doc-index", "doc-introduction", "doc-noteref",
+        "doc-notice", "doc-pagebreak", "doc-pagelist", "doc-part", "doc-preface",
+        "doc-prologue", "doc-pullquote", "doc-qna", "doc-subtitle", "doc-tip", "doc-toc",
+        "document", "feed", "figure", "form", "graphics-document", "graphics-object",
+        "graphics-symbol", "grid", "gridcell", "group", "heading", "img", "link", "list",
+        "listbox", "listitem", "log", "main", "marquee", "math", "menu", "menubar", "menuitem",
         "menuitemcheckbox", "menuitemradio", "navigation", "none", "note", "option",
-        "paragraph", "presentation", "progressbar", "radio", "radiogroup", "region", "row", "rowgroup",
-        "scrollbar", "search", "searchbox", "separator", "slider", "spinbutton", "status",
-        "strong", "subscript", "superscript", "switch", "tab", "table", "tablist", "tabpanel",
-        "term", "textbox", "timer", "toolbar", "tree", "treegrid", "treeitem"
+        "presentation", "progressbar", "radio", "radiogroup", "region", "row", "rowgroup",
+        "rowheader", "scrollbar", "search", "searchbox", "separator", "slider", "spinbutton",
+        "status", "switch", "tab", "table", "tablist", "tabpanel", "term", "textbox", "timer",
+        "toolbar", "tooltip", "tree", "treegrid", "treeitem"
+    ]
+
+    // Every role value upstream's schema (schema/html5/*.rnc) accepts for
+    // some element: the set above less "directory" (deprecated), plus
+    // roles that browsers don't treat as non-abstract but the schema still
+    // allows on their own, such as paragraph, code, meter and time.
+    private static let schemaARIARoles: Set<String> = [
+        "alert", "alertdialog", "application", "article", "banner", "blockquote", "button",
+        "caption", "cell", "checkbox", "code", "columnheader", "combobox", "complementary",
+        "contentinfo", "definition", "deletion", "dialog", "doc-abstract",
+        "doc-acknowledgments", "doc-afterword", "doc-appendix", "doc-backlink",
+        "doc-biblioentry", "doc-bibliography", "doc-biblioref", "doc-chapter", "doc-colophon",
+        "doc-conclusion", "doc-cover", "doc-credit", "doc-credits", "doc-dedication",
+        "doc-endnote", "doc-endnotes", "doc-epigraph", "doc-epilogue", "doc-errata",
+        "doc-example", "doc-footnote", "doc-foreword", "doc-glossary", "doc-glossref",
+        "doc-index", "doc-introduction", "doc-noteref", "doc-notice", "doc-pagebreak",
+        "doc-pagelist", "doc-part", "doc-preface", "doc-prologue", "doc-pullquote", "doc-qna",
+        "doc-subtitle", "doc-tip", "doc-toc", "document", "emphasis", "feed", "figure", "form",
+        "graphics-document", "graphics-object", "graphics-symbol", "grid", "gridcell", "group",
+        "heading", "image", "img", "insertion", "link", "list", "listbox", "listitem", "log",
+        "main", "marquee", "math", "menu", "menubar", "menuitem", "menuitemcheckbox",
+        "menuitemradio", "meter", "navigation", "none", "note", "option", "paragraph",
+        "presentation", "progressbar", "radio", "radiogroup", "region", "row", "rowgroup",
+        "rowheader", "scrollbar", "search", "searchbox", "separator", "slider", "spinbutton",
+        "status", "strong", "subscript", "superscript", "switch", "tab", "table", "tablist",
+        "tabpanel", "term", "textbox", "time", "timer", "toolbar", "tooltip", "tree",
+        "treegrid", "treeitem"
     ]
 
     // Upstream's isProhibitedFromBeingNamed list, less "a" and "area", which
@@ -5118,6 +5308,9 @@ struct HTMLGeneralAttributeChecker {
     private static let ariaRangeRoles: Set<String> = [
         "meter", "scrollbar", "separator", "slider", "spinbutton"
     ]
+
+    // select.attrs in upstream's web-forms.rnc.
+    private static let selectSchemaRoles: Set<String> = ["combobox", "listbox", "menu"]
 
     private static let imgAllowedRoles: Set<String> = [
         "button", "checkbox", "img", "link", "menuitem", "menuitemcheckbox", "menuitemradio",
