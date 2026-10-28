@@ -415,6 +415,75 @@ struct HTMLMicrodataAttributeChecker {
     }
 }
 
+/// Review item 3: what upstream's text-alternative rules for an <img>
+/// (Assertions.java) look at, taken once so that HTMLValidator, which reports
+/// a missing alt where upstream does (as it reads the tag), and
+/// HTMLGeneralAttributeChecker, which reports the rest and the figure case,
+/// can't disagree. For duplicate attributes the first counts, as the parser
+/// keeps only that one, and a valueless attribute's value is empty.
+struct ImageTextAlternativeFacts {
+    /// nil when there's no alt attribute at all.
+    let alt: String?
+    let hasAriaLabel: Bool
+    let hasAriaLabelledby: Bool
+    let hasRole: Bool
+    /// The role attribute as written ("" when there's none).
+    let role: String
+    /// Any other aria-* attribute with a value, aria-hidden aside.
+    let hasOtherARIA: Bool
+    /// The title attribute ("" when there's none).
+    let title: String
+
+    init(attributes: [HTMLAttribute]) {
+        var seen: Set<String> = []
+        var alt: String?
+        var role: String?
+        var title: String?
+        var hasOtherARIA = false
+        for attribute in attributes where seen.insert(attribute.name).inserted {
+            let value = attribute.value ?? ""
+            switch attribute.name {
+            case "alt":
+                alt = value
+            case "role":
+                role = value
+            case "title":
+                title = value
+            default:
+                if attribute.name.hasPrefix("aria-"), "aria-hidden" != attribute.name, "aria-label" != attribute.name,
+                   "aria-labelledby" != attribute.name, !value.isEmpty {
+                    hasOtherARIA = true
+                }
+            }
+        }
+        self.alt = alt
+        self.hasAriaLabel = seen.contains("aria-label")
+        self.hasAriaLabelledby = seen.contains("aria-labelledby")
+        self.hasRole = nil != role
+        self.role = role ?? ""
+        // (aria-label and aria-labelledby are aria-* attributes too, but
+        // they're only looked at when neither is there.)
+        self.hasOtherARIA = hasOtherARIA
+        self.title = title ?? ""
+    }
+
+    /// No alt, aria-label or aria-labelledby attribute: upstream's first case.
+    var lacksTextAlternativeAttributes: Bool {
+        nil == alt && !hasAriaLabel && !hasAriaLabelledby
+    }
+
+    /// Upstream's "An “img” element must have an “alt” attribute, except under
+    /// certain conditions": none of those, no role, no other aria-* attribute
+    /// with a value, and no title (or an empty one).
+    var needsAlt: Bool {
+        lacksTextAlternativeAttributes && !hasRole && !hasOtherARIA && title.isEmpty
+    }
+
+    /// The message, which HTMLValidator and HTMLGeneralAttributeChecker both
+    /// give (one copy, so that they can't drift apart).
+    static let missingAltMessage = "An \u{201c}img\u{201d} element must have an \u{201c}alt\u{201d} attribute, except under certain conditions. For details, consult guidance on providing text alternatives for images."
+}
+
 struct HTMLGeneralAttributeChecker {
     func validate(document: HTMLParsedDocument, locations: SourceLocationMap) -> [ValidationMessage] {
         var messages: [ValidationMessage] = []
@@ -444,6 +513,19 @@ struct HTMLGeneralAttributeChecker {
         var selectStack: [SelectState] = []
         var optionStack: [OptionState] = []
         var figureStack: [FigureState] = []
+        // Review item 3: upstream's bookkeeping for <img> elements without a
+        // text alternative inside a <figure> (see FigureAltRecord): every
+        // figure's record, in the order the figures start; for each depth of
+        // the stack, the record of the figure last opened at that depth (nil
+        // once another element has been opened there), which mirrors
+        // upstream's stack array, whose slots keep the last element pushed;
+        // the depth of the figure most recently opened (upstream's
+        // currentFigurePtr, which a figure's end doesn't reset); and, for each
+        // open element, where it is (see FigureAltContext).
+        var figureAltRecords: [FigureAltRecord] = []
+        var figureAltSlots: [Int?] = []
+        var currentFigureAltDepth: Int?
+        var figureAltContextStack: [FigureAltContext] = []
         var detailsStack: [DetailsState] = []
         var sectioningStack: [SectioningState] = []
         var headingStack: [HeadingState] = []
@@ -720,7 +802,62 @@ struct HTMLGeneralAttributeChecker {
                 if foreignSchemaChecksApply, .mathML == element.namespace, "annotation-xml" == element.name {
                     annotationXMLStack.append(AnnotationXMLState(stackIndex: stack.count))
                 }
+                // Review item 3: upstream's text-alternative rules for <img>
+                // (Assertions.java), and its figure bookkeeping, which keeps an
+                // <img> without one inside a <figure> back until the figure
+                // ends: a caption can stand in for it then. Nothing inside a
+                // <template>, where upstream checks nothing. (The port used to
+                // report every <img> without an alt attribute, whatever its
+                // title, ARIA label or figure, and in templates too.)
+                let parentFigureContext = figureAltContextStack.last ?? FigureAltContext()
+                var figureContext = FigureAltContext(child: element, parent: parentFigureContext)
+                if isHTML, !inTemplateContents {
+                    // (The figure that upstream's currentFigurePtr names now:
+                    // nil when another element has taken its place in the
+                    // stack, which loses what's noted here, as upstream does.)
+                    let currentFigure = currentFigureAltDepth.flatMap { $0 < figureAltSlots.count ? figureAltSlots[$0] : nil }
+                    if parentFigureContext.isInFigure, let currentFigure {
+                        // A second <img>, or other embedded content, keeps a
+                        // caption from standing in for an <img>'s alt.
+                        if "img" == element.name {
+                            if figureAltRecords[currentFigure].imgFound {
+                                figureAltRecords[currentFigure].embeddedContentFound = true
+                            } else {
+                                figureAltRecords[currentFigure].imgFound = true
+                            }
+                        } else if Self.figureEmbeddedContentElements.contains(element.name) {
+                            figureAltRecords[currentFigure].embeddedContentFound = true
+                        }
+                    }
+                    // (Outside a figure, HTMLValidator reports the missing
+                    // alt itself, as it reads the tag, which keeps the message
+                    // in its place among that checker's; see
+                    // ImageTextAlternativeFacts.)
+                    if "img" == element.name, appendImageTextAlternativeMessages(for: element, locations: locations, messages: &messages),
+                       parentFigureContext.isInFigure, let currentFigure {
+                        figureAltRecords[currentFigure].figcaptionNeeded = true
+                        figureAltRecords[currentFigure].imagesLackingAlt.append(element)
+                    }
+                    if "figure" == element.name {
+                        figureAltRecords.append(FigureAltRecord())
+                        figureContext.record = figureAltRecords.count - 1
+                        currentFigureAltDepth = stack.count
+                    }
+                }
                 updateBaseState(afterStarting: element, sawBodyContentBeforeBase: &sawBodyContentBeforeBase, sawBaseBlockingElement: &sawBaseBlockingElement)
+                // (Elements in a template aren't in upstream's stack at all, so
+                // they take no slot; see figureAltSlots.)
+                if !inTemplateContents {
+                    while figureAltSlots.count < stack.count {
+                        figureAltSlots.append(nil)
+                    }
+                    if figureAltSlots.count == stack.count {
+                        figureAltSlots.append(figureContext.record)
+                    } else {
+                        figureAltSlots[stack.count] = figureContext.record
+                    }
+                }
+                figureAltContextStack.append(figureContext)
                 stack.append(element.name)
                 namespaceStack.append(element.namespace)
                 anyElementContentStack.append(inAnyElementContent)
@@ -805,6 +942,15 @@ struct HTMLGeneralAttributeChecker {
                     pendingLanguageText = ""
                 }
                 if let index = stack.lastIndex(of: name) {
+                    // Review item 3: a figure that ends reports the <img>
+                    // elements without a text alternative it kept back, unless
+                    // its caption stands in for them (see FigureAltRecord).
+                    for position in (index..<stack.count).reversed() {
+                        if let record = figureAltContextStack[position].record {
+                            appendFigureAltMessages(figureAltRecords[record], locations: locations, messages: &messages)
+                        }
+                    }
+                    figureAltContextStack.removeSubrange(index...)
                     stack.removeSubrange(index...)
                     namespaceStack.removeSubrange(index...)
                     anyElementContentStack.removeSubrange(index...)
@@ -815,6 +961,36 @@ struct HTMLGeneralAttributeChecker {
                     anchorHrefStack.removeSubrange(index...)
                 }
             case let .characters(content, range):
+                // Review item 3: text in a figure or in its caption, for
+                // upstream's figure bookkeeping (see FigureAltRecord). Caption
+                // text lets the caption stand in for an <img>'s alt, and any
+                // other text in the figure doesn't; either way, it counts as
+                // text for the figures below the current one in the stack.
+                // Text in a heading counts as neither, as upstream has it.
+                // (Upstream's tokenizer decodes character references only in
+                // ordinary text and RCDATA, not in raw text or a CDATA
+                // section, and its tree builder drops a NUL wherever an HTML
+                // element would take it; see FigureAltContext.)
+                let textIsInTemplateContents = (templateContentsStack.last ?? false) || (.html == namespaceStack.last && "template" == stack.last)
+                if !textIsInTemplateContents, let context = figureAltContextStack.last, !context.isInHeading,
+                   context.isInFigcaption || context.isInFigure,
+                   Self.containsFigureText(content, decodingReferences: context.textDecodesReferences && !Self.isCDATASection(range, locations: locations), droppingNUL: context.textDropsNUL) {
+                    let currentFigure = currentFigureAltDepth.flatMap { $0 < figureAltSlots.count ? figureAltSlots[$0] : nil }
+                    if context.isInFigcaption {
+                        // (The text's own element counts as a figure here: a
+                        // node's ancestor mask in upstream includes the node.)
+                        if context.isInFigure, let currentFigure {
+                            figureAltRecords[currentFigure].figcaptionContentFound = true
+                        }
+                    } else if let currentFigure {
+                        figureAltRecords[currentFigure].textNodeFound = true
+                    }
+                    if let depth = currentFigureAltDepth {
+                        for case let record? in figureAltSlots.prefix(depth) {
+                            figureAltRecords[record].textNodeFound = true
+                        }
+                    }
+                }
                 if scriptContent != nil {
                     scriptContent?.content += content
                 }
@@ -1453,6 +1629,51 @@ struct HTMLGeneralAttributeChecker {
         var element: HTMLStartElement
         var hasLabel: Bool
         var text = ""
+    }
+
+    /// Review item 3: one <figure>, as upstream's bookkeeping for <img>
+    /// elements without a text alternative sees it (Assertions.java's figure
+    /// StackNode): whether it has an <img>, a second one or other embedded
+    /// content, text outside its caption, and text in its caption, and the
+    /// <img> elements it keeps back until it ends (appendFigureAltMessages).
+    private struct FigureAltRecord {
+        var imgFound = false
+        var embeddedContentFound = false
+        var textNodeFound = false
+        var figcaptionNeeded = false
+        var figcaptionContentFound = false
+        var imagesLackingAlt: [HTMLStartElement] = []
+    }
+
+    /// Review item 3: where an open element is, for upstream's figure
+    /// bookkeeping: in a heading, a figcaption or a figure (the element
+    /// itself, or an ancestor, as upstream's ancestor masks include the
+    /// element's own bit); its figure record, for a figure; and how text
+    /// directly in it reaches upstream's checker: with character references
+    /// decoded (not in raw text: script, style, xmp, iframe, noembed,
+    /// noframes, plaintext), and without a NUL, which upstream's tree builder
+    /// drops in an HTML element (not in raw text or RCDATA) or an integration
+    /// point, and turns into U+FFFD elsewhere.
+    private struct FigureAltContext {
+        var isInHeading = false
+        var isInFigcaption = false
+        var isInFigure = false
+        var record: Int?
+        var textDecodesReferences = true
+        var textDropsNUL = true
+
+        init() {}
+
+        init(child element: HTMLStartElement, parent: FigureAltContext) {
+            let isHTML = .html == element.namespace
+            isInHeading = parent.isInHeading || (isHTML && HTMLVocabulary.headingElements.contains(element.name))
+            isInFigcaption = parent.isInFigcaption || (isHTML && "figcaption" == element.name)
+            isInFigure = parent.isInFigure || (isHTML && "figure" == element.name)
+            let isRawText = isHTML && HTMLGeneralAttributeChecker.rawTextElements.contains(element.name)
+            textDecodesReferences = !isRawText
+            textDropsNUL = isHTML ? !(isRawText || "title" == element.name || "textarea" == element.name)
+                : HTMLForeignContent.childrenAreHTML(element.name, namespace: element.namespace, attributes: element.attributes)
+        }
     }
 
     private struct FigureState {
@@ -2222,7 +2443,6 @@ struct HTMLGeneralAttributeChecker {
         appendSelectRoleMessages(for: element, stack: stack, locations: locations, messages: &messages)
         appendSummaryARIAMessages(for: element, stack: stack, locations: locations, messages: &messages)
         appendARIAPropertyMessages(for: element, role: role, idElementNames: idElementNames, locations: locations, messages: &messages)
-        appendImageARIAMessages(for: element, role: role, locations: locations, messages: &messages)
         appendLabelARIAAssociationMessages(for: element, idElementNames: idElementNames, labelStack: labelStack, locations: locations, messages: &messages)
         appendARIAStructureMessages(for: element, role: role, stack: stack, roleStack: roleStack, locations: locations, messages: &messages)
 
@@ -2470,6 +2690,13 @@ struct HTMLGeneralAttributeChecker {
                 appendWarningMessage("The \u{201c}\(role)\u{201d} role is unnecessary for an \u{201c}input\u{201d} element that has no \u{201c}list\u{201d} attribute and whose type is \u{201c}\(inputType(for: element))\u{201d}.", for: element, locations: locations, messages: &messages)
             } else if element.name == "input", role == "spinbutton" {
                 appendWarningMessage("The \u{201c}spinbutton\u{201d} role is unnecessary for element \u{201c}input\u{201d} whose type is \u{201c}number\u{201d}.", for: element, locations: locations, messages: &messages)
+            } else if "img" == element.name,
+                      "img" != element.attributeValue("role") || (element.hasAttribute("alt") && (element.attributeValue("alt") ?? "").isEmpty) {
+                // Review item 3: upstream calls role="img" unnecessary on an
+                // <img> only when the attribute is exactly "img" (not "IMG",
+                // " img " or "img button"; it compares the attribute as
+                // written), and not when the <img>'s alt is empty (its own
+                // role would be presentation then).
             } else {
                 appendWarningMessage("The \u{201c}\(role)\u{201d} role is unnecessary for element \u{201c}\(element.name)\u{201d}.", for: element, locations: locations, messages: &messages)
             }
@@ -2674,18 +2901,22 @@ struct HTMLGeneralAttributeChecker {
         }
     }
 
-    private func appendImageARIAMessages(
+    /// Review item 3: upstream's rules for an <img>'s text alternative
+    /// (Assertions.java), in its order (see ImageTextAlternativeFacts). With
+    /// no alt, aria-label or aria-labelledby attribute: a role is "must also
+    /// have an accessible name"; otherwise any other aria-* attribute with a
+    /// value is the ARIA version of that; otherwise a non-empty title is
+    /// enough, and without one the <img> needs an alt attribute, which this
+    /// returns true for. With one of them and a role: an empty alt is an
+    /// error, and so is a role of none or presentation with any other. The
+    /// port used to report a missing alt regardless, and to count title (but
+    /// not an empty alt) as an accessible name for the role and ARIA
+    /// messages, which upstream doesn't.
+    private func appendImageTextAlternativeMessages(
         for element: HTMLStartElement,
-        role: String?,
         locations: SourceLocationMap,
         messages: inout [ValidationMessage]
-    ) {
-        guard element.name == "img" else { return }
-
-        if element.hasAttribute("role"), element.attributeValue("alt") == "" {
-            appendMessage("An \u{201c}img\u{201d} element with a \u{201c}role\u{201d} attribute must not have an \u{201c}alt\u{201d} attribute whose value is the empty string.", for: element, locations: locations, messages: &messages)
-        }
-
+    ) -> Bool {
         // Review item A13: this stands in for the schema's list of img
         // roles, so it judges the value the schema sees (the first
         // recognized role), not the first token: role="foo img" is an img.
@@ -2694,18 +2925,86 @@ struct HTMLGeneralAttributeChecker {
         if let schemaRole = knownSchemaRole(for: element), !Self.imgAllowedRoles.contains(schemaRole) {
             appendBadAttributeValue(schemaRole, attribute: "role", for: element, locations: locations, messages: &messages)
         }
-
-        if element.hasAttribute("role"), !hasAccessibleName(element) {
-            appendMessage("An \u{201c}img\u{201d} element with a \u{201c}role\u{201d} attribute must also have an accessible name (e.g., an \u{201c}alt\u{201d} attribute).", for: element, locations: locations, messages: &messages)
+        let facts = ImageTextAlternativeFacts(attributes: element.attributes)
+        if facts.lacksTextAlternativeAttributes {
+            if facts.hasRole {
+                appendMessage("An \u{201c}img\u{201d} element with a \u{201c}role\u{201d} attribute must also have an accessible name (e.g., an \u{201c}alt\u{201d} attribute).", for: element, locations: locations, messages: &messages)
+            } else if facts.hasOtherARIA {
+                appendMessage("An \u{201c}img\u{201d} element with any \u{201c}aria-*\u{201d} attributes other than \u{201c}aria-hidden\u{201d} must also have an accessible name. (e.g., an \u{201c}alt\u{201d} attribute).", for: element, locations: locations, messages: &messages)
+            }
+            return facts.needsAlt
         }
-
-        let hasRelevantARIA = element.attributes.contains { attribute in
-            attribute.name.hasPrefix("aria-") && attribute.name != "aria-hidden"
+        if facts.hasRole {
+            if "" == facts.alt {
+                appendMessage("An \u{201c}img\u{201d} element with a \u{201c}role\u{201d} attribute must not have an \u{201c}alt\u{201d} attribute whose value is the empty string.", for: element, locations: locations, messages: &messages)
+            } else {
+                // (Upstream's own wording, without a final period, for each
+                // token of the role as written, as Java's role.trim()
+                // .toLowerCase().split("\\s+") makes them: every code point
+                // up to U+0020 off both ends, then split at runs of space,
+                // tab, LF, VT, FF and CR, scalar by scalar, so that "\r\n",
+                // one Character in Swift, separates too.)
+                let scalars = facts.role.unicodeScalars
+                let trimmed = scalars.firstIndex(where: { $0.value > 0x20 }).flatMap { first in
+                    scalars.lastIndex(where: { $0.value > 0x20 }).map { String(Substring(scalars[first...$0])) }
+                } ?? ""
+                let tokens = trimmed.lowercased().unicodeScalars
+                    .split { " " == $0 || "\t" == $0 || "\n" == $0 || "\r" == $0 || "\u{0B}" == $0 || "\u{0C}" == $0 }
+                    .map { String(Substring($0)) }
+                for token in tokens where "none" == token || "presentation" == token {
+                    appendMessage("Bad value \u{201c}\(token)\u{201d} for attribute \u{201c}role\u{201d} on element \u{201c}img\u{201d}", for: element, locations: locations, messages: &messages)
+                }
+            }
         }
-        if hasRelevantARIA, !hasAccessibleName(element) {
-            appendMessage("An \u{201c}img\u{201d} element with any \u{201c}aria-*\u{201d} attributes other than \u{201c}aria-hidden\u{201d} must also have an accessible name. (e.g., an \u{201c}alt\u{201d} attribute).", for: element, locations: locations, messages: &messages)
+        return false
+    }
+
+    /// Review item 3: a figure's end, as upstream has it: the <img>
+    /// elements without a text alternative that the figure kept back are
+    /// reported, at each <img>, unless the figure's caption has text and
+    /// nothing else in it (other text, a second <img>, other embedded
+    /// content) does.
+    private func appendFigureAltMessages(
+        _ record: FigureAltRecord,
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) {
+        guard (record.figcaptionNeeded && !record.figcaptionContentFound) || record.textNodeFound || record.embeddedContentFound else { return }
+        for image in record.imagesLackingAlt {
+            appendMessage(ImageTextAlternativeFacts.missingAltMessage, for: image, locations: locations, messages: &messages)
         }
     }
+
+    /// Review item 3: whether text counts as text for upstream's figure
+    /// bookkeeping: anything but its whitespace (space, tab, CR and LF), as
+    /// upstream's checker sees it (see FigureAltContext): with character
+    /// references decoded where its tokenizer decodes them, and without a NUL
+    /// where its tree builder drops one. A form feed counts, but one written
+    /// as a reference doesn't: upstream's tokenizer turns that into a space.
+    private static func containsFigureText(_ text: String, decodingReferences: Bool, droppingNUL: Bool) -> Bool {
+        if text.unicodeScalars.contains("\u{0C}") {
+            return true
+        }
+        let seen = decodingReferences ? HTMLCharacterReferences.decode(text) : text
+        return seen.unicodeScalars.contains { !(" " == $0 || "\t" == $0 || "\r" == $0 || "\n" == $0 || "\u{0C}" == $0 || (droppingNUL && "\u{0}" == $0)) }
+    }
+
+    /// Review item 3: whether text is a CDATA section's (in SVG or MathML),
+    /// which the tokenizer hands on as text starting right after the
+    /// "<![CDATA[" (see HTMLTokenizer.tokenizeAndBuildTree); upstream reads
+    /// it as written.
+    private static func isCDATASection(_ range: HTMLSourceRange, locations: SourceLocationMap) -> Bool {
+        range.offset >= 9 && "<![CDATA[" == locations.extract(offset: range.offset - 9, length: 9, context: 0).text
+    }
+
+    /// Review item 3: the HTML elements whose text upstream's tokenizer reads
+    /// as raw text (or script data), with no character references.
+    static let rawTextElements: Set<String> = ["iframe", "noembed", "noframes", "plaintext", "script", "style", "xmp"]
+
+    /// Review item 3: the embedded content that keeps a figure's caption from
+    /// standing in for an <img>'s alt (upstream's list also names math and
+    /// svg, which are never HTML elements).
+    private static let figureEmbeddedContentElements: Set<String> = ["audio", "canvas", "embed", "iframe", "object", "video"]
 
     private func appendLabelARIAAssociationMessages(
         for element: HTMLStartElement,
@@ -3842,13 +4141,6 @@ struct HTMLGeneralAttributeChecker {
             return true
         }
         return false
-    }
-
-    private func hasAccessibleName(_ element: HTMLStartElement) -> Bool {
-        if let alt = element.attributeValue("alt"), !alt.isEmpty {
-            return true
-        }
-        return ["aria-label", "aria-labelledby", "title"].contains { element.hasAttribute($0) }
     }
 
     private func isLabelableElement(_ element: HTMLStartElement) -> Bool {
@@ -5815,10 +6107,13 @@ struct HTMLGeneralAttributeChecker {
     // select.attrs in upstream's web-forms.rnc.
     private static let selectSchemaRoles: Set<String> = ["combobox", "listbox", "menu"]
 
+    // img.attrs in upstream's embed.rnc. (Review item 3: math, none,
+    // presentation, radio and doc-cover were missing, so the very common
+    // <img alt="" role="presentation"> was a "Bad value".)
     private static let imgAllowedRoles: Set<String> = [
-        "button", "checkbox", "img", "link", "menuitem", "menuitemcheckbox", "menuitemradio",
-        "option", "progressbar", "scrollbar", "separator", "slider", "switch", "tab",
-        "treeitem"
+        "button", "checkbox", "doc-cover", "img", "link", "math", "menuitem", "menuitemcheckbox",
+        "menuitemradio", "none", "option", "presentation", "progressbar", "radio", "scrollbar",
+        "separator", "slider", "switch", "tab", "treeitem"
     ]
 
     private static let labelableElements: Set<String> = [

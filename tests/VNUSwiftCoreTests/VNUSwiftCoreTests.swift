@@ -266,6 +266,188 @@ func controlCharacterReferencesMatchUpstream(document: String, expected: [(Strin
     #expect(actual == expected.map { "\($0.0): \($0.1)" }.sorted(), "\(document)")
 }
 
+// Review item 3: an <img> element's text alternative, as upstream's
+// Assertions checks it. A title, an ARIA label, a role or other aria-*
+// attributes each make a missing alt something else, or nothing; a role
+// needs an accessible name, and none or presentation conflicts with a
+// non-empty alt. Inside a <figure>, a caption with text stands in for the
+// alt unless the figure has other text, a second <img> or other embedded
+// content (text in a heading counts as neither); upstream's quirk is
+// included, that after a nested figure ends an <img> in the outer one isn't
+// checked. Nothing is checked in a <template>. The expected messages are
+// vnu.jar's.
+@Test(arguments: [
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p id=d>d</p><p><img src=x.png></p>\n", [("error", "An \u{201c}img\u{201d} element must have an \u{201c}alt\u{201d} attribute, except under certain conditions. For details, consult guidance on providing text alternatives for images.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p id=d>d</p><p><img src=x.png title=t></p>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p id=d>d</p><p><img src=x.png title=\"\"></p>\n", [("error", "An \u{201c}img\u{201d} element must have an \u{201c}alt\u{201d} attribute, except under certain conditions. For details, consult guidance on providing text alternatives for images.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p id=d>d</p><p><img src=x.png title=\" \"></p>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p id=d>d</p><p><img src=x.png aria-label=x></p>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p id=d>d</p><p><img src=x.png aria-label=\"\"></p>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p id=d>d</p><p><img src=x.png aria-labelledby=d></p>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p id=d>d</p><p><img src=x.png role=img></p>\n", [("error", "An \u{201c}img\u{201d} element with a \u{201c}role\u{201d} attribute must also have an accessible name (e.g., an \u{201c}alt\u{201d} attribute)."), ("warning", "The \u{201c}img\u{201d} role is unnecessary for element \u{201c}img\u{201d}.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p id=d>d</p><p><img src=x.png role=\"\"></p>\n", [("error", "An \u{201c}img\u{201d} element with a \u{201c}role\u{201d} attribute must also have an accessible name (e.g., an \u{201c}alt\u{201d} attribute)."), ("error", "Bad value \u{201c}\u{201d} for attribute \u{201c}role\u{201d} on element \u{201c}img\u{201d}.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p id=d>d</p><p><img src=x.png aria-describedby=d></p>\n", [("error", "An \u{201c}img\u{201d} element with any \u{201c}aria-*\u{201d} attributes other than \u{201c}aria-hidden\u{201d} must also have an accessible name. (e.g., an \u{201c}alt\u{201d} attribute).")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p id=d>d</p><p><img src=x.png aria-hidden=true></p>\n", [("error", "An \u{201c}img\u{201d} element must have an \u{201c}alt\u{201d} attribute, except under certain conditions. For details, consult guidance on providing text alternatives for images.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p id=d>d</p><p><img src=x.png role=img title=t></p>\n", [("error", "An \u{201c}img\u{201d} element with a \u{201c}role\u{201d} attribute must also have an accessible name (e.g., an \u{201c}alt\u{201d} attribute)."), ("warning", "The \u{201c}img\u{201d} role is unnecessary for element \u{201c}img\u{201d}.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p id=d>d</p><p><img src=x.png aria-describedby=d title=t></p>\n", [("error", "An \u{201c}img\u{201d} element with any \u{201c}aria-*\u{201d} attributes other than \u{201c}aria-hidden\u{201d} must also have an accessible name. (e.g., an \u{201c}alt\u{201d} attribute).")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p id=d>d</p><p><img src=x.png role=img aria-describedby=d></p>\n", [("error", "An \u{201c}img\u{201d} element with a \u{201c}role\u{201d} attribute must also have an accessible name (e.g., an \u{201c}alt\u{201d} attribute)."), ("warning", "The \u{201c}img\u{201d} role is unnecessary for element \u{201c}img\u{201d}.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p id=d>d</p><p><img src=x.png alt=\"\" role=presentation></p>\n", [("error", "An \u{201c}img\u{201d} element with a \u{201c}role\u{201d} attribute must not have an \u{201c}alt\u{201d} attribute whose value is the empty string.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p id=d>d</p><p><img src=x.png alt=x role=presentation></p>\n", [("error", "Bad value \u{201c}presentation\u{201d} for attribute \u{201c}role\u{201d} on element \u{201c}img\u{201d}")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p id=d>d</p><p><img src=x.png alt=x role=none></p>\n", [("error", "Bad value \u{201c}none\u{201d} for attribute \u{201c}role\u{201d} on element \u{201c}img\u{201d}")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p id=d>d</p><p><img src=x.png alt=x role=img></p>\n", [("warning", "The \u{201c}img\u{201d} role is unnecessary for element \u{201c}img\u{201d}.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p id=d>d</p><p><img src=x.png aria-label=x role=presentation></p>\n", [("error", "Bad value \u{201c}presentation\u{201d} for attribute \u{201c}role\u{201d} on element \u{201c}img\u{201d}"), ("warning", "The \u{201c}presentation\u{201d} role does not affect elements that have global ARIA attributes.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p id=d>d</p><p><img src=x.png aria-label=x role=img></p>\n", [("warning", "The \u{201c}img\u{201d} role is unnecessary for element \u{201c}img\u{201d}.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p id=d>d</p><p><img src=x.png alt=\"\"></p>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p id=d>d</p><p><img src=x.png alt=\"\" aria-describedby=d></p>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p id=d>d</p><p><img src=x.png alt=\"\" role=img></p>\n", [("error", "An \u{201c}img\u{201d} element with a \u{201c}role\u{201d} attribute must not have an \u{201c}alt\u{201d} attribute whose value is the empty string.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p id=d>d</p><p><img src=x.png alt></p>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p id=d>d</p><p><img src=x.png title=t aria-hidden=true></p>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p id=d>d</p><p><img src=x.png alt=x role=\"none presentation\"></p>\n", [("error", "Bad value \u{201c}none\u{201d} for attribute \u{201c}role\u{201d} on element \u{201c}img\u{201d}"), ("error", "Bad value \u{201c}presentation\u{201d} for attribute \u{201c}role\u{201d} on element \u{201c}img\u{201d}")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p id=d>d</p><p><img src=x.png role=presentation></p>\n", [("error", "An \u{201c}img\u{201d} element with a \u{201c}role\u{201d} attribute must also have an accessible name (e.g., an \u{201c}alt\u{201d} attribute).")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p id=d>d</p><p><img src=x.png aria-label=x aria-describedby=d></p>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p id=d>d</p><p><img src=x.png ALT=x></p>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p id=d>d</p><p><img src=x.png alt=x role=NONE></p>\n", [("error", "Bad value \u{201c}NONE\u{201d} for attribute \u{201c}role\u{201d} on element \u{201c}img\u{201d}."), ("error", "Bad value \u{201c}none\u{201d} for attribute \u{201c}role\u{201d} on element \u{201c}img\u{201d}")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><img src=x.png><figcaption>Caption</figcaption></figure>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><img src=x.png></figure>\n", [("error", "An \u{201c}img\u{201d} element must have an \u{201c}alt\u{201d} attribute, except under certain conditions. For details, consult guidance on providing text alternatives for images.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><img src=x.png><figcaption></figcaption></figure>\n", [("error", "An \u{201c}img\u{201d} element must have an \u{201c}alt\u{201d} attribute, except under certain conditions. For details, consult guidance on providing text alternatives for images.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><img src=x.png><figcaption> </figcaption></figure>\n", [("error", "An \u{201c}img\u{201d} element must have an \u{201c}alt\u{201d} attribute, except under certain conditions. For details, consult guidance on providing text alternatives for images.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><img src=x.png>text<figcaption>C</figcaption></figure>\n", [("error", "An \u{201c}img\u{201d} element must have an \u{201c}alt\u{201d} attribute, except under certain conditions. For details, consult guidance on providing text alternatives for images.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><img src=x.png><img src=y.png alt=z><figcaption>C</figcaption></figure>\n", [("error", "An \u{201c}img\u{201d} element must have an \u{201c}alt\u{201d} attribute, except under certain conditions. For details, consult guidance on providing text alternatives for images.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><img src=x.png><svg width=1 height=1></svg><figcaption>C</figcaption></figure>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><p><img src=x.png></p><figcaption>C</figcaption></figure>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><img src=x.png><figcaption><b>C</b></figcaption></figure>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><img src=x.png><img src=y.png><figcaption>C</figcaption></figure>\n", [("error", "An \u{201c}img\u{201d} element must have an \u{201c}alt\u{201d} attribute, except under certain conditions. For details, consult guidance on providing text alternatives for images."), ("error", "An \u{201c}img\u{201d} element must have an \u{201c}alt\u{201d} attribute, except under certain conditions. For details, consult guidance on providing text alternatives for images.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><figure><img src=x.png><figcaption>C</figcaption></figure><figcaption>D</figcaption></figure>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><img src=x.png><figure><figcaption>X</figcaption></figure><figcaption>C</figcaption></figure>\n", [("error", "An \u{201c}img\u{201d} element must have an \u{201c}alt\u{201d} attribute, except under certain conditions. For details, consult guidance on providing text alternatives for images.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><figure></figure><img src=x.png><figcaption>C</figcaption></figure>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><figure></figure><img src=x.png></figure>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><img src=x.png><video src=v.mp4></video><figcaption>C</figcaption></figure>\n", [("error", "An \u{201c}img\u{201d} element must have an \u{201c}alt\u{201d} attribute, except under certain conditions. For details, consult guidance on providing text alternatives for images.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><img src=x.png title=t></figure>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><img src=x.png role=img><figcaption>C</figcaption></figure>\n", [("error", "An \u{201c}img\u{201d} element with a \u{201c}role\u{201d} attribute must also have an accessible name (e.g., an \u{201c}alt\u{201d} attribute)."), ("warning", "The \u{201c}img\u{201d} role is unnecessary for element \u{201c}img\u{201d}.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><img src=x.png><figcaption>&#12;</figcaption></figure>\n", [("error", "An \u{201c}img\u{201d} element must have an \u{201c}alt\u{201d} attribute, except under certain conditions. For details, consult guidance on providing text alternatives for images.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><a href=x><img src=x.png></a><figcaption>C</figcaption></figure>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><img src=x.png><figcaption><img src=y.png alt=c></figcaption></figure>\n", [("error", "An \u{201c}img\u{201d} element must have an \u{201c}alt\u{201d} attribute, except under certain conditions. For details, consult guidance on providing text alternatives for images.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><img src=x.png><math><mi>x</mi></math><figcaption>C</figcaption></figure>\n", [("error", "An \u{201c}img\u{201d} element must have an \u{201c}alt\u{201d} attribute, except under certain conditions. For details, consult guidance on providing text alternatives for images.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><img src=x.png>\n", [("error", "An \u{201c}img\u{201d} element must have an \u{201c}alt\u{201d} attribute, except under certain conditions. For details, consult guidance on providing text alternatives for images."), ("error", "End of file seen and there were open elements."), ("error", "Unclosed element \u{201c}figure\u{201d}.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><img src=x.png><iframe src=f.html></iframe><figcaption>C</figcaption></figure>\n", [("error", "An \u{201c}img\u{201d} element must have an \u{201c}alt\u{201d} attribute, except under certain conditions. For details, consult guidance on providing text alternatives for images.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><img src=x.png><canvas></canvas><figcaption>C</figcaption></figure>\n", [("error", "An \u{201c}img\u{201d} element must have an \u{201c}alt\u{201d} attribute, except under certain conditions. For details, consult guidance on providing text alternatives for images.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure>\n  <img src=x.png>\n  <figcaption>C</figcaption>\n</figure>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<template><img src=x.png></template>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p><image src=x.png title=t></p>\n", [("error", "Saw a start tag \u{201c}image\u{201d}.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<svg width=1 height=1><image href=x.png width=1 height=1/></svg>\n", [("error", "End tag \u{201c}svg\u{201d} did not match the name of the current open element (\u{201c}image\u{201d}).")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<a href=x><img src=x.png></a>\n", [("error", "An \u{201c}img\u{201d} element must have an \u{201c}alt\u{201d} attribute, except under certain conditions. For details, consult guidance on providing text alternatives for images.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<svg width=1 height=1><desc><img src=x.png></desc></svg>\n", [("error", "An \u{201c}img\u{201d} element must have an \u{201c}alt\u{201d} attribute, except under certain conditions. For details, consult guidance on providing text alternatives for images.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<img src=x.png controls title=t>\n", [("error", "The \u{201c}controls\u{201d} attribute must not be specified on an \u{201c}img\u{201d} element that does not have an \u{201c}alt\u{201d} attribute, or whose \u{201c}alt\u{201d} attribute\u{2019}s value is the empty string.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<img src=x.png usemap=#m><map name=m></map>\n", [("error", "An \u{201c}img\u{201d} element must have an \u{201c}alt\u{201d} attribute, except under certain conditions. For details, consult guidance on providing text alternatives for images.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><img src=x.png><h2>Title</h2><figcaption>C</figcaption></figure>\n", [("warning", "This document has heading elements but none of them has a computed heading level of 1.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><img src=x.png><script>var x;</script><figcaption>C</figcaption></figure>\n", [("error", "An \u{201c}img\u{201d} element must have an \u{201c}alt\u{201d} attribute, except under certain conditions. For details, consult guidance on providing text alternatives for images.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><img src=x.png><template>text<img src=y.png></template><figcaption>C</figcaption></figure>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><figure><img src=x.png></figure><figcaption>C</figcaption></figure>\n", [("error", "An \u{201c}img\u{201d} element must have an \u{201c}alt\u{201d} attribute, except under certain conditions. For details, consult guidance on providing text alternatives for images.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><table><tr><td><img src=x.png></td></tr></table><figcaption>C</figcaption></figure>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><img src=x.png><figcaption>A</figcaption></figure><figure><img src=y.png></figure>\n", [("error", "An \u{201c}img\u{201d} element must have an \u{201c}alt\u{201d} attribute, except under certain conditions. For details, consult guidance on providing text alternatives for images.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><img src=x.png><figcaption>&nbsp;</figcaption></figure>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><img src=x.png><figcaption>&#32;</figcaption></figure>\n", [("error", "An \u{201c}img\u{201d} element must have an \u{201c}alt\u{201d} attribute, except under certain conditions. For details, consult guidance on providing text alternatives for images.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><img src=x.png alt=a><img src=y.png><figcaption>C</figcaption></figure>\n", [("error", "An \u{201c}img\u{201d} element must have an \u{201c}alt\u{201d} attribute, except under certain conditions. For details, consult guidance on providing text alternatives for images.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><img src=x.png><object data=x>fallback</object><figcaption>C</figcaption></figure>\n", [("error", "An \u{201c}img\u{201d} element must have an \u{201c}alt\u{201d} attribute, except under certain conditions. For details, consult guidance on providing text alternatives for images.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><img src=x.png title=\"\"><figcaption>C</figcaption></figure>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><img src=x.png role=presentation></figure>\n", [("error", "An \u{201c}img\u{201d} element with a \u{201c}role\u{201d} attribute must also have an accessible name (e.g., an \u{201c}alt\u{201d} attribute).")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<template><figure><img src=x.png></figure></template>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><figure><img src=x.png alt=a><figcaption>C</figcaption></figure><img src=y.png></figure>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><img src=x.png><figure></figure>text<figcaption>C</figcaption></figure>\n", [("error", "An \u{201c}img\u{201d} element must have an \u{201c}alt\u{201d} attribute, except under certain conditions. For details, consult guidance on providing text alternatives for images.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><img src=x.png><figcaption>\u{a0}</figcaption></figure>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><img src=x.png><figcaption><!-- c --></figcaption></figure>\n", [("error", "An \u{201c}img\u{201d} element must have an \u{201c}alt\u{201d} attribute, except under certain conditions. For details, consult guidance on providing text alternatives for images.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><img src=x.png><svg width=1 height=1><text>t</text></svg><figcaption>C</figcaption></figure>\n", [("error", "An \u{201c}img\u{201d} element must have an \u{201c}alt\u{201d} attribute, except under certain conditions. For details, consult guidance on providing text alternatives for images.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><img src=x.png><figcaption><h3>Cap</h3></figcaption></figure>\n", [("error", "An \u{201c}img\u{201d} element must have an \u{201c}alt\u{201d} attribute, except under certain conditions. For details, consult guidance on providing text alternatives for images."), ("warning", "This document has heading elements but none of them has a computed heading level of 1.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><figcaption>Cap <img src=x.png></figcaption></figure>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><img src=x.png><embed src=x.swf><figcaption>C</figcaption></figure>\n", [("error", "An \u{201c}img\u{201d} element must have an \u{201c}alt\u{201d} attribute, except under certain conditions. For details, consult guidance on providing text alternatives for images.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><img src=x.png><audio src=a.mp3></audio><figcaption>C</figcaption></figure>\n", [("error", "An \u{201c}img\u{201d} element must have an \u{201c}alt\u{201d} attribute, except under certain conditions. For details, consult guidance on providing text alternatives for images.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><image src=x.png><figcaption>C</figcaption></figure>\n", [("error", "Saw a start tag \u{201c}image\u{201d}.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><img src=x.png><figure><p>inner</p></figure><figcaption>C</figcaption></figure>\n", [("error", "An \u{201c}img\u{201d} element must have an \u{201c}alt\u{201d} attribute, except under certain conditions. For details, consult guidance on providing text alternatives for images.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><svg width=1 height=1><desc><img src=x.png></desc></svg><figcaption>C</figcaption></figure>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><img src=x.png aria-hidden=true><figcaption>C</figcaption></figure>\n", []),
+    // (An aria-* attribute with an empty value, or none at all, doesn't make
+    // a missing alt the ARIA error.)
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p><img src=x.png aria-description=\"\"></p>\n", [("error", "An \u{201c}img\u{201d} element must have an \u{201c}alt\u{201d} attribute, except under certain conditions. For details, consult guidance on providing text alternatives for images.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p><img src=x.png aria-keyshortcuts=\"\"></p>\n", [("error", "An \u{201c}img\u{201d} element must have an \u{201c}alt\u{201d} attribute, except under certain conditions. For details, consult guidance on providing text alternatives for images.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p><img src=x.png aria-roledescription=\"\"></p>\n", [("error", "An \u{201c}img\u{201d} element must have an \u{201c}alt\u{201d} attribute, except under certain conditions. For details, consult guidance on providing text alternatives for images.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p><img src=x.png aria-atomic></p>\n", [("error", "An \u{201c}img\u{201d} element must have an \u{201c}alt\u{201d} attribute, except under certain conditions. For details, consult guidance on providing text alternatives for images.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p><img src=x.png aria-busy></p>\n", [("error", "An \u{201c}img\u{201d} element must have an \u{201c}alt\u{201d} attribute, except under certain conditions. For details, consult guidance on providing text alternatives for images.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p><img src=x.png aria-description></p>\n", [("error", "An \u{201c}img\u{201d} element must have an \u{201c}alt\u{201d} attribute, except under certain conditions. For details, consult guidance on providing text alternatives for images.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p><img src=x.png aria-details></p>\n", [("error", "An \u{201c}img\u{201d} element must have an \u{201c}alt\u{201d} attribute, except under certain conditions. For details, consult guidance on providing text alternatives for images.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p><img src=x.png aria-keyshortcuts></p>\n", [("error", "An \u{201c}img\u{201d} element must have an \u{201c}alt\u{201d} attribute, except under certain conditions. For details, consult guidance on providing text alternatives for images.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p><img src=x.png aria-live></p>\n", [("error", "An \u{201c}img\u{201d} element must have an \u{201c}alt\u{201d} attribute, except under certain conditions. For details, consult guidance on providing text alternatives for images.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p><img src=x.png aria-roledescription></p>\n", [("error", "An \u{201c}img\u{201d} element must have an \u{201c}alt\u{201d} attribute, except under certain conditions. For details, consult guidance on providing text alternatives for images.")]),
+    // (Text in a figure nested in another counts as text for the outer one
+    // too, even in the outer one's caption.)
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><img src=x.png><figcaption>C</figcaption><figure><p>inner</p></figure></figure>\n", [("error", "An \u{201c}img\u{201d} element must have an \u{201c}alt\u{201d} attribute, except under certain conditions. For details, consult guidance on providing text alternatives for images."), ("error", "Element \u{201c}figure\u{201d} not allowed as child of \u{201c}figure\u{201d} in this context.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><img src=x.png><figcaption>C <figure><p>inner</p></figure></figcaption></figure>\n", [("error", "An \u{201c}img\u{201d} element must have an \u{201c}alt\u{201d} attribute, except under certain conditions. For details, consult guidance on providing text alternatives for images.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><img src=x.png><figcaption>C <figure></figure></figcaption></figure>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><img src=x.png><figcaption>C <figure><figcaption>D</figcaption></figure></figcaption></figure>\n", [("error", "An \u{201c}img\u{201d} element must have an \u{201c}alt\u{201d} attribute, except under certain conditions. For details, consult guidance on providing text alternatives for images.")]),
+    // (Text in a figure as upstream's checker sees it: character references
+    // decoded in RCDATA but not in a <script> or a CDATA section; and a role's
+    // tokens split as Java's split("\\s+") splits them, at a CRLF too; and
+    // "The “img” role is unnecessary" only for the role written as "img".)
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><script>&#32;</script><img src=a.png><figcaption>Cap</figcaption></figure>\n", [("error", "An \u{201c}img\u{201d} element must have an \u{201c}alt\u{201d} attribute, except under certain conditions. For details, consult guidance on providing text alternatives for images.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><svg width=1 height=1><text><![CDATA[&#32;]]></text></svg><img src=a.png><figcaption>Cap</figcaption></figure>\n", [("error", "An \u{201c}img\u{201d} element must have an \u{201c}alt\u{201d} attribute, except under certain conditions. For details, consult guidance on providing text alternatives for images.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><img src=a.png><figcaption><script>&#32;</script></figcaption></figure>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<img src=a.png alt=x role=\"none\npresentation\">\n", [("error", "Bad value \u{201c}none\u{201d} for attribute \u{201c}role\u{201d} on element \u{201c}img\u{201d}"), ("error", "Bad value \u{201c}presentation\u{201d} for attribute \u{201c}role\u{201d} on element \u{201c}img\u{201d}")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<img src=a.png alt=x role=\"IMG\">\n", [("error", "Bad value \u{201c}IMG\u{201d} for attribute \u{201c}role\u{201d} on element \u{201c}img\u{201d}.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<img src=a.png alt=x role=\"img button\">\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<img src=a.png alt=x role=\" img \">\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<img src=a.png alt=x role=img>\n", [("warning", "The \u{201c}img\u{201d} role is unnecessary for element \u{201c}img\u{201d}.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><img src=a.png><textarea>&#32;</textarea><figcaption>Cap</figcaption></figure>\n", []),
+] as [(String, [(String, String)])])
+func imageTextAlternativesMatchUpstream(document: String, expected: [(String, String)]) {
+    let actual = checkHTML(document).messages
+        .filter { $0.type != "info" || $0.subType == "warning" }
+        .map { "\($0.type == "info" ? "warning" : "error"): \($0.message)" }
+        .sorted()
+    #expect(actual == expected.map { "\($0.0): \($0.1)" }.sorted(), "\(document)")
+}
+
+// Review item 3: two figures vnu.jar can't give the whole expectation for, as
+// it also reports something the port doesn't yet (the XML 1.0 warning for a
+// form feed; item 4's figure content model). A literal form feed in a caption
+// is caption text (a reference to one isn't), and a caption before the <img>
+// stands in for its alt as one after it does.
+@Test func figureCaptionStandsInForAltInTheseCasesToo() {
+    for body in ["<figure><img src=x.png><figcaption>\u{0C}</figcaption></figure>", "<figure><figcaption>C</figcaption><img src=x.png></figure>"] {
+        let messages = checkHTML("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n\(body)\n").messages.map(\.message)
+        #expect(!messages.contains { $0.hasPrefix("An \u{201c}img\u{201d} element must have an \u{201c}alt\u{201d} attribute") }, "\(body)")
+    }
+}
+
+// Review item 3: figures and roles where vnu.jar also reports something the
+// port doesn't yet ("Saw U+0000 in stream.", "Forbidden code point", a
+// content-model or CSS message), so only the img messages are compared, with
+// vnu.jar's answers. Upstream's tree builder drops a NUL in an HTML element
+// or an integration point (so it's neither caption text nor figure text
+// there) and turns it into U+FFFD elsewhere (script, SVG text), where it
+// counts; a <style>'s text is read as written; a figure in a figcaption gets
+// its own caption text; and a role's tokens come from Java's trim() and
+// split(), so a control character before "none" doesn't hide it, and a
+// combining mark after a space joins the next token.
+@Test(arguments: [
+    ("<figure><img src=a.png><figcaption>\u{0}</figcaption></figure>", true),
+    ("<figure><img src=a.png>\u{0}<figcaption>Cap</figcaption></figure>", false),
+    ("<figure><img src=a.png><svg width=1 height=1><text>\u{0}</text></svg><figcaption>Cap</figcaption></figure>", true),
+    ("<figure><img src=a.png><script>\u{0}</script><figcaption>Cap</figcaption></figure>", true),
+    ("<figure><img src=a.png><math><mtext>\u{0}</mtext></math><figcaption>Cap</figcaption></figure>", false),
+    ("<figure><img src=a.png><style>&#32;</style><figcaption>Cap</figcaption></figure>", true),
+    ("<figcaption><figure><img src=a.png>text</figure></figcaption>", false),
+])
+func figureTextCountsAsUpstreamSeesIt(_ body: String, _ reportsMissingAlt: Bool) {
+    let messages = checkHTML("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n\(body)\n").messages.map(\.message)
+    #expect(reportsMissingAlt == messages.contains(ImageTextAlternativeFacts.missingAltMessage), "\(body)")
+}
+
+@Test(arguments: ["<img src=a.png alt=x role=\"\u{1}none\">", "<img src=a.png alt=x role=\"none \u{301}presentation\">"])
+func imgRoleTokensComeFromJavasTrimAndSplit(_ body: String) {
+    let messages = checkHTML("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n\(body)\n").messages.map(\.message)
+    #expect(1 == messages.filter { $0.hasPrefix("Bad value \u{201c}") && $0.hasSuffix("\u{201d} for attribute \u{201c}role\u{201d} on element \u{201c}img\u{201d}") }.count, "\(body)")
+    #expect(messages.contains("Bad value \u{201c}none\u{201d} for attribute \u{201c}role\u{201d} on element \u{201c}img\u{201d}"), "\(body)")
+}
+
 @Test func htmlDocumentParserEmitsBalancedTreeEvents() {
     let source = "<!doctype html><ul><li>one<li>two</ul><br><p>x<div>y</div>"
     let locations = SourceLocationMap(source)
@@ -785,7 +967,9 @@ func controlCharacterReferencesMatchUpstream(document: String, expected: [(Strin
     #expect(result.messages.contains { $0.message == "The \u{201c}role\u{201d} attribute must not be used on any \u{201c}label\u{201d} element that is an ancestor of a labelable element." })
     #expect(result.messages.contains { $0.message == "The \u{201c}aria-label\u{201d} attribute must not be used on any \u{201c}label\u{201d} element that is associated with a labelable element." })
     #expect(result.messages.contains { $0.message == "An \u{201c}img\u{201d} element with a \u{201c}role\u{201d} attribute must not have an \u{201c}alt\u{201d} attribute whose value is the empty string." })
-    #expect(result.messages.contains { $0.message == "Bad value \u{201c}none\u{201d} for attribute \u{201c}role\u{201d} on element \u{201c}img\u{201d}." })
+    // (Review item 3: upstream's Assertions wording, which has no final
+    // period, as vnu.jar reports it; the schema allows role=none on <img>.)
+    #expect(result.messages.contains { $0.message == "Bad value \u{201c}none\u{201d} for attribute \u{201c}role\u{201d} on element \u{201c}img\u{201d}" })
     #expect(result.messages.contains { $0.message == "Element \u{201c}select\u{201d} is missing required attribute \u{201c}aria-expanded\u{201d}." })
     #expect(result.messages.contains { $0.message == "The \u{201c}aria-label\u{201d} attribute must not be used on a \u{201c}button\u{201d} element that is a child of a \u{201c}select\u{201d} element." })
 }

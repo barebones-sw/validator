@@ -28,14 +28,6 @@
       "category" : "haswarn",
       "failure" : "Expected a warning only but encountered error “A “figure” element with a “figcaption” descendant must not have a “role” attribute.”."
     },
-    "html-aria/misc/img-aria-relevant-no-alt-novalid.html" : {
-      "category" : "invalid",
-      "failure" : "Expected “An “img” element with any “aria-*” attributes other than “aria-hidden” must also have an accessible name. (e.g., an “alt” attribute).” but instead encountered “An “img” element must have an “alt” attribute, except under certain conditions. For details, consult guidance on providing text alternatives for images.”."
-    },
-    "html-aria/misc/img-role-no-alt-novalid.html" : {
-      "category" : "invalid",
-      "failure" : "Expected “An “img” element with a “role” attribute must also have an accessible name (e.g., an “alt” attribute).” but instead encountered “An “img” element must have an “alt” attribute, except under certain conditions. For details, consult guidance on providing text alternatives for images.”."
-    },
     "html-aria/misc/input-checkbox-role-switch-aria-expanded-isvalid.html" : {
       "category" : "valid",
       "failure" : "Expected no errors or warnings but encountered error “Attribute “aria-readonly” not allowed on element “input” at this point.”."
@@ -408,18 +400,6 @@
       "category" : "haswarn",
       "failure" : "Expected a warning only but encountered error “Bad value “data:text/html,test#test” for attribute “src” on element “iframe”.”."
     },
-    "html/elements/img/alt-with-role-none-novalid.html" : {
-      "category" : "invalid",
-      "failure" : "Expected “Bad value “none” for attribute “role” on element “img”” but instead encountered “Bad value “none” for attribute “role” on element “img”.”."
-    },
-    "html/elements/img/alt-with-role-presentation-novalid.html" : {
-      "category" : "invalid",
-      "failure" : "Expected “Bad value “presentation” for attribute “role” on element “img”” but instead encountered “Bad value “presentation” for attribute “role” on element “img”.”."
-    },
-    "html/elements/img/aria-without-alt-novalid.html" : {
-      "category" : "invalid",
-      "failure" : "Expected “An “img” element with any “aria-*” attributes other than “aria-hidden” must also have an accessible name. (e.g., an “alt” attribute).” but instead encountered “An “img” element must have an “alt” attribute, except under certain conditions. For details, consult guidance on providing text alternatives for images.”."
-    },
     "html/elements/img/controls-without-alt-novalid.html" : {
       "category" : "invalid",
       "failure" : "Expected “The “controls” attribute must not be specified on an “img” element that does not have an “alt” attribute, or whose “alt” attribute’s value is the empty string.” but instead encountered “An “img” element must have an “alt” attribute, except under certain conditions. For details, consult guidance on providing text alternatives for images.”."
@@ -431,14 +411,6 @@
     "html/elements/img/model-novalid.html" : {
       "category" : "invalid",
       "failure" : "Expected “Bad value “url” for attribute “usemap” on element “img”.” but instead encountered “Stray end tag “img”.”."
-    },
-    "html/elements/img/role-with-aria-label-novalid.html" : {
-      "category" : "invalid",
-      "failure" : "Expected “Bad value “none” for attribute “role” on element “img”” but instead encountered “An “img” element must have an “alt” attribute, except under certain conditions. For details, consult guidance on providing text alternatives for images.”."
-    },
-    "html/elements/img/role-without-accessible-name-novalid.html" : {
-      "category" : "invalid",
-      "failure" : "Expected “An “img” element with a “role” attribute must also have an accessible name (e.g., an “alt” attribute).” but instead encountered “An “img” element must have an “alt” attribute, except under certain conditions. For details, consult guidance on providing text alternatives for images.”."
     },
     "html/elements/img/sizes-auto-with-fallback-loading-lazy-isvalid.html" : {
       "category" : "valid",
@@ -762,7 +734,7 @@
   "passCounts" : {
     "hasinfo" : 5,
     "haswarn" : 137,
-    "invalid" : 3576,
+    "invalid" : 3583,
     "valid" : 1714
   },
   "version" : 2

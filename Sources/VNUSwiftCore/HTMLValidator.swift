@@ -1090,8 +1090,19 @@ public final class HTMLValidator: Sendable {
             }
         }
 
-        if name == "img", attr["alt"] == nil {
-            appendError("An \u{201c}img\u{201d} element must have an \u{201c}alt\u{201d} attribute, except under certain conditions. For details, consult guidance on providing text alternatives for images.", offset: offset, length: length, locations: locations, messages: &messages)
+        // Review item 3: an <img> without a text alternative, by upstream's
+        // rules (see ImageTextAlternativeFacts: a title, an ARIA label, a role
+        // or other aria-* attributes each make it something else). This used
+        // to be reported for every <img> without an alt attribute. One inside
+        // a <figure> is left to HTMLGeneralAttributeChecker, which reports it
+        // when the figure ends unless the figure's caption can stand in for
+        // it; and nothing is reported in a <template>, where upstream checks
+        // nothing. (It's reported here, as upstream does as it reads the tag,
+        // so it keeps its place among this checker's messages.)
+        if "img" == name, .html == namespace, ImageTextAlternativeFacts(attributes: attributes).needsAlt,
+           !Self.childFlags(of: contentStack.last, childNamespace: .html).contains(.inTemplateContents),
+           !contentStack.contains(where: { .html == $0.namespace && "figure" == $0.name }) {
+            appendError(ImageTextAlternativeFacts.missingAltMessage, offset: offset, length: length, locations: locations, messages: &messages)
         }
 
         if name == "input", attr["type"]?.lowercased() == "image", attr["alt"] == nil {
