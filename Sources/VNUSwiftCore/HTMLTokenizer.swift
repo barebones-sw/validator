@@ -898,10 +898,16 @@ final class HTMLTokenizer {
             appendError("Character reference expands to a surrogate.", at: index, length: 1, to: &tokens)
         case 0x110000...UInt32.max:
             appendError("Character reference outside the permissible Unicode range.", at: index, length: 1, to: &tokens)
-        case 0xFDD0:
+        // Upstream reports the whole U+FDD0–U+FDEF block this way; this used to
+        // catch only U+FDD0, and the rest got no error at all.
+        case 0xFDD0...0xFDEF:
             appendError("Character reference expands to a permanently unassigned code point.", at: index, length: 1, to: &tokens)
         default:
-            if value < 0x20 || value == 0x7F {
+            // The C0 controls other than tab, line feed, form feed and carriage
+            // return (which has its own message above), and DEL, as upstream's
+            // tokenizer has them. This used to include tab, LF and FF, so a
+            // multi-line tooltip, title="line 1&#10;line 2", was an error.
+            if value <= 0x08 || 0x0B == value || (0x0E...0x1F).contains(value) || 0x7F == value {
                 appendError("Character reference expands to a control character (\(uPlus(value))).", at: index, length: 1, to: &tokens)
             } else if isAstralNonCharacter(value) {
                 appendError("Character reference expands to an astral non-character (\(uPlus(value))).", at: index, length: 1, to: &tokens)

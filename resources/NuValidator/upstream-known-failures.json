@@ -152,10 +152,6 @@
       "category" : "valid",
       "failure" : "Expected no errors or warnings but encountered error “Attribute “aria-selected” not allowed on element “div” at this point.”."
     },
-    "html-rdfa/0131-novalid.html" : {
-      "category" : "invalid",
-      "failure" : "Expected “A numeric character reference expanded to carriage return.” but instead encountered “Character reference expands to a control character (U+0009).”."
-    },
     "html-rdfa/0281-isvalid.html" : {
       "category" : "valid",
       "failure" : "Expected no errors or warnings but encountered error “Bad value “2012” for attribute “datetime” on element “time”.”."
@@ -227,10 +223,6 @@
     "html-rdfalite/0327-isvalid.html" : {
       "category" : "valid",
       "failure" : "Expected no errors or warnings but encountered error “A “link” element must have an “href” or “imagesrcset” attribute, or both.”."
-    },
-    "html-svg/coords-transformattr-01-f-novalid.html" : {
-      "category" : "invalid",
-      "failure" : "Expected “A numeric character reference expanded to carriage return.” but instead encountered “Character reference expands to a control character (U+0009).”."
     },
     "html-svg/linking-a-09-b-novalid.html" : {
       "category" : "invalid",
@@ -770,7 +762,7 @@
   "passCounts" : {
     "hasinfo" : 5,
     "haswarn" : 137,
-    "invalid" : 3574,
+    "invalid" : 3576,
     "valid" : 1714
   },
   "version" : 2

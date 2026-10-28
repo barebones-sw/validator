@@ -194,6 +194,78 @@ import Testing
     #expect(result.messages.contains { $0.message == "Character reference expands to an astral non-character (U+10ffff)." })
 }
 
+// Numeric references to tab, line feed and form feed are fine, in text and in
+// attribute values (title="line 1&#10;line 2" is a common way to write a
+// multi-line tooltip, and used to be reported as a control character); the
+// other C0 controls and DEL are errors, carriage return has its own message,
+// and the whole U+FDD0–U+FDEF block is unassigned, as in upstream's
+// tokenizer. The expected messages are vnu.jar's.
+@Test(arguments: [
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p title=\"a&#9;b\">x</p>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p title=\"a&#10;b\">x</p>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p title=\"a&#12;b\">x</p>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p title=\"a&#13;b\">x</p>\n", [("error", "A numeric character reference expanded to carriage return.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p title=\"a&#11;b\">x</p>\n", [("error", "Character reference expands to a control character (U+000b).")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p title=\"a&#x1f;b\">x</p>\n", [("error", "Character reference expands to a control character (U+001f).")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p title=\"a&#x7f;b\">x</p>\n", [("error", "Character reference expands to a control character (U+007f).")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p title=\"a&#xfdd5;b\">x</p>\n", [("error", "Character reference expands to a permanently unassigned code point.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p title=\"a&#xfdef;b\">x</p>\n", [("error", "Character reference expands to a permanently unassigned code point.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p title=\"a&#xfdf0;b\">x</p>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p>a&#9;b</p>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p>a&#10;b</p>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p>a&#12;b</p>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p>a&#13;b</p>\n", [("error", "A numeric character reference expanded to carriage return.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p>a&#11;b</p>\n", [("error", "Character reference expands to a control character (U+000b).")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p>a&#x1f;b</p>\n", [("error", "Character reference expands to a control character (U+001f).")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p>a&#x7f;b</p>\n", [("error", "Character reference expands to a control character (U+007f).")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p>a&#xfdd5;b</p>\n", [("error", "Character reference expands to a permanently unassigned code point.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p>a&#xfdef;b</p>\n", [("error", "Character reference expands to a permanently unassigned code point.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p>a&#xfdf0;b</p>\n", []),
+    // And the rest of upstream's classification, in text, in an attribute
+    // value and in a <textarea>, decimal or hexadecimal, with or without the
+    // semicolon: zero, the C1 range, surrogates, non-characters, and values
+    // out of range (a UInt32's overflow included); and nothing where
+    // references aren't parsed at all (comments, script and CDATA).
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p>a&#x0;b</p>\n<p title=\"a&#x0;b\">x</p>\n<textarea>a&#x0;b</textarea>\n", [("error", "Character reference expands to zero."), ("error", "Character reference expands to zero."), ("error", "Character reference expands to zero.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p>a&#10 b</p>\n<p title=\"a&#10 b\">x</p>\n", [("error", "Character reference was not terminated by a semicolon."), ("error", "Character reference was not terminated by a semicolon.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p>a&#11;b</p>\n<p title=\"a&#11;b\">x</p>\n<textarea>a&#11;b</textarea>\n", [("error", "Character reference expands to a control character (U+000b)."), ("error", "Character reference expands to a control character (U+000b)."), ("error", "Character reference expands to a control character (U+000b).")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p>a&#xb b</p>\n<p title=\"a&#xb b\">x</p>\n", [("error", "Character reference expands to a control character (U+000b)."), ("error", "Character reference expands to a control character (U+000b)."), ("error", "Character reference was not terminated by a semicolon."), ("error", "Character reference was not terminated by a semicolon.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p>a&#13 b</p>\n<p title=\"a&#13 b\">x</p>\n", [("error", "A numeric character reference expanded to carriage return."), ("error", "A numeric character reference expanded to carriage return."), ("error", "Character reference was not terminated by a semicolon."), ("error", "Character reference was not terminated by a semicolon.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p>a&#x7e;b</p>\n<p title=\"a&#x7e;b\">x</p>\n<textarea>a&#x7e;b</textarea>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p>a&#x80;b</p>\n<p title=\"a&#x80;b\">x</p>\n<textarea>a&#x80;b</textarea>\n", [("error", "A numeric character reference expanded to the C1 controls range."), ("error", "A numeric character reference expanded to the C1 controls range."), ("error", "A numeric character reference expanded to the C1 controls range.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p>a&#x80 b</p>\n<p title=\"a&#x80 b\">x</p>\n", [("error", "A numeric character reference expanded to the C1 controls range."), ("error", "A numeric character reference expanded to the C1 controls range."), ("error", "Character reference was not terminated by a semicolon."), ("error", "Character reference was not terminated by a semicolon.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p>a&#x9f;b</p>\n<p title=\"a&#x9f;b\">x</p>\n<textarea>a&#x9f;b</textarea>\n", [("error", "A numeric character reference expanded to the C1 controls range."), ("error", "A numeric character reference expanded to the C1 controls range."), ("error", "A numeric character reference expanded to the C1 controls range.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p>a&#xa0;b</p>\n<p title=\"a&#xa0;b\">x</p>\n<textarea>a&#xa0;b</textarea>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p>a&#xd800;b</p>\n<p title=\"a&#xd800;b\">x</p>\n<textarea>a&#xd800;b</textarea>\n", [("error", "Character reference expands to a surrogate."), ("error", "Character reference expands to a surrogate."), ("error", "Character reference expands to a surrogate.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p>a&#57343;b</p>\n<p title=\"a&#57343;b\">x</p>\n<textarea>a&#57343;b</textarea>\n", [("error", "Character reference expands to a surrogate."), ("error", "Character reference expands to a surrogate."), ("error", "Character reference expands to a surrogate.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p>a&#xfffd;b</p>\n<p title=\"a&#xfffd;b\">x</p>\n<textarea>a&#xfffd;b</textarea>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p>a&#xfffe;b</p>\n<p title=\"a&#xfffe;b\">x</p>\n<textarea>a&#xfffe;b</textarea>\n", [("error", "Character reference expands to a non-character (U+fffe)."), ("error", "Character reference expands to a non-character (U+fffe)."), ("error", "Character reference expands to a non-character (U+fffe).")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p>a&#65535;b</p>\n<p title=\"a&#65535;b\">x</p>\n<textarea>a&#65535;b</textarea>\n", [("error", "Character reference expands to a non-character (U+ffff)."), ("error", "Character reference expands to a non-character (U+ffff)."), ("error", "Character reference expands to a non-character (U+ffff).")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p>a&#x1fffe;b</p>\n<p title=\"a&#x1fffe;b\">x</p>\n<textarea>a&#x1fffe;b</textarea>\n", [("error", "Character reference expands to an astral non-character (U+1fffe)."), ("error", "Character reference expands to an astral non-character (U+1fffe)."), ("error", "Character reference expands to an astral non-character (U+1fffe).")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p>a&#x10ffff;b</p>\n<p title=\"a&#x10ffff;b\">x</p>\n<textarea>a&#x10ffff;b</textarea>\n", [("error", "Character reference expands to an astral non-character (U+10ffff)."), ("error", "Character reference expands to an astral non-character (U+10ffff)."), ("error", "Character reference expands to an astral non-character (U+10ffff).")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p>a&#x110000;b</p>\n<p title=\"a&#x110000;b\">x</p>\n<textarea>a&#x110000;b</textarea>\n", [("error", "Character reference outside the permissible Unicode range."), ("error", "Character reference outside the permissible Unicode range."), ("error", "Character reference outside the permissible Unicode range.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p>a&#x100000000;b</p>\n<p title=\"a&#x100000000;b\">x</p>\n<textarea>a&#x100000000;b</textarea>\n", [("error", "Character reference outside the permissible Unicode range."), ("error", "Character reference outside the permissible Unicode range."), ("error", "Character reference outside the permissible Unicode range.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p>a&#x0;b</p>\n<p title=\"a&#x0;b\">x</p>\n", [("error", "Character reference expands to zero."), ("error", "Character reference expands to zero.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p>a&#X1F;b</p>\n<p title=\"a&#X1F;b\">x</p>\n", [("error", "Character reference expands to a control character (U+001f)."), ("error", "Character reference expands to a control character (U+001f).")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p>a&#0000010;b</p>\n<p title=\"a&#0000010;b\">x</p>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p>a&#x000A;b</p>\n<p title=\"a&#x000A;b\">x</p>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<svg width=1 height=1><title>a&#10;b</title><rect width=1 height=1 aria-label=\"a&#10;b&#11;c\"/></svg>\n", [("error", "Character reference expands to a control character (U+000b).")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<!-- a&#11;b&#10;c -->\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<script>var s = \"&#11;&#10;\";</script>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<svg width=1 height=1><text><![CDATA[a&#11;b]]></text></svg>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<img src=x alt=\"a&#12;b\">\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<textarea>a&#11;b&#10;c</textarea>\n", [("error", "Character reference expands to a control character (U+000b).")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<math><mi>&#11;</mi><mi>&#10;</mi></math>\n", [("error", "Character reference expands to a control character (U+000b).")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p>&#9;&#10;&#12;&#13;&#11;&#127;&#128;&#xfdd0;&#xfdef;</p>\n", [("error", "A numeric character reference expanded to carriage return."), ("error", "A numeric character reference expanded to the C1 controls range."), ("error", "Character reference expands to a control character (U+000b)."), ("error", "Character reference expands to a control character (U+007f)."), ("error", "Character reference expands to a permanently unassigned code point."), ("error", "Character reference expands to a permanently unassigned code point.")]),
+] as [(String, [(String, String)])])
+func controlCharacterReferencesMatchUpstream(document: String, expected: [(String, String)]) {
+    let actual = checkHTML(document).messages
+        .filter { $0.type != "info" || $0.subType == "warning" }
+        .map { "\($0.type == "info" ? "warning" : "error"): \($0.message)" }
+        .sorted()
+    #expect(actual == expected.map { "\($0.0): \($0.1)" }.sorted(), "\(document)")
+}
+
 @Test func htmlDocumentParserEmitsBalancedTreeEvents() {
     let source = "<!doctype html><ul><li>one<li>two</ul><br><p>x<div>y</div>"
     let locations = SourceLocationMap(source)
