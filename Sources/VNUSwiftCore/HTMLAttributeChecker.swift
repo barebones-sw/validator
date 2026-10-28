@@ -100,8 +100,15 @@ struct HTMLURLAttributeChecker {
     }
 
     private func isAcceptableURLValue(_ value: String, rule: URLAttributeRule) -> Bool {
+        // Review item A15: whether an empty value is allowed is now up to
+        // requiresNonEmptyValue alone. It used to be refused whenever an
+        // absolute URL was required too, but the only such rule that allows
+        // empty is input type=url's value, whose schema (web-forms2.rnc) is
+        // `"" | common.data.uri.absolute`: WordPress's comment form, for
+        // one, has <input type="url" value="">. (itemtype, the other
+        // absolute-URL rule, still requires a value.)
         if value.isEmpty {
-            return !rule.requiresNonEmptyValue && !rule.requiresAbsoluteURL
+            return !rule.requiresNonEmptyValue
         }
         if rule.requiresNonEmptyValue && value.unicodeScalars.allSatisfy(isASCIIWhitespace) {
             return false
@@ -2702,14 +2709,25 @@ struct HTMLGeneralAttributeChecker {
         locations: SourceLocationMap,
         messages: inout [ValidationMessage]
     ) {
-        if type == "color", let value = element.attributeValue("value"), !isValidColorInputValue(value) {
+        // Review item A15: the schema's color value is `"" | form.data.color`
+        // (web-forms2.rnc), so an empty value is valid, as it already was for
+        // number.
+        if type == "color", let value = element.attributeValue("value"), !value.isEmpty, !isValidColorInputValue(value) {
             appendBadAttributeValue(value, attribute: "value", for: element, locations: locations, messages: &messages)
         }
         if type == "number", let value = element.attributeValue("value"), !value.isEmpty, !isValidFloatingPointNumber(value) {
             appendBadAttributeValue(value, attribute: "value", for: element, locations: locations, messages: &messages)
         }
-        if type == "range", let min = element.attributeValue("min"), !min.isEmpty, !isValidFloatingPointNumber(min) {
-            appendBadAttributeValue(min, attribute: "min", for: element, locations: locations, messages: &messages)
+        // For range, though, min, max and value are all plain
+        // common.data.float, with no empty alternative. The port checked only
+        // min, and let an empty one through, so it missed errors upstream
+        // reports, such as <input type=range value="">.
+        if type == "range" {
+            for attribute in ["min", "max", "value"] {
+                if let value = element.attributeValue(attribute), !isValidFloatingPointNumber(value) {
+                    appendBadAttributeValue(value, attribute: attribute, for: element, locations: locations, messages: &messages)
+                }
+            }
         }
         appendInputDateTimeValueMessages(for: element, type: type, locations: locations, messages: &messages)
         if Self.inputStepTypes.contains(type), let step = element.attributeValue("step"), !isValidStepValue(step) {

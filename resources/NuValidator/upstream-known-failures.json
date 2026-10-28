@@ -2716,10 +2716,6 @@
       "category" : "haswarn",
       "failure" : "Expected a warning only but encountered error “Bad value “data:text/html,test#test” for attribute “formaction” on element “input”.”."
     },
-    "html/elements/input/type-url-value-empty-isvalid.html" : {
-      "category" : "valid",
-      "failure" : "Expected no errors or warnings but encountered error “Bad value “” for attribute “value” on element “input”.”."
-    },
     "html/elements/input/type-url-value/scheme-data-contains-fragment-haswarn.html" : {
       "category" : "haswarn",
       "failure" : "Expected a warning only but encountered error “Bad value “data:text/html,test#test” for attribute “value” on element “input”.”."
@@ -3055,7 +3051,7 @@
     "hasinfo" : 5,
     "haswarn" : 132,
     "invalid" : 3527,
-    "valid" : 1195
+    "valid" : 1196
   },
   "version" : 2
 }

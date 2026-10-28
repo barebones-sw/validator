@@ -889,6 +889,31 @@ func roleAttributeMessagesMatchUpstream(markup: String, expected: [(String, Stri
     #expect(!upper.messages.contains { $0.message == missing })
 }
 
+// Review item A15: input value datatypes follow upstream's schema
+// (web-forms2.rnc): url and color (like number and the date and time types)
+// allow an empty value; range's min, max and value don't. Each case is its own
+// document; every expectation was confirmed against vnu.jar.
+@Test(arguments: [
+    // WordPress's comment form, which the port used to reject.
+    ("<form><p><input id=url name=url type=url value=\"\" size=30 aria-label=f></p></form>", nil),
+    ("<input type=URL value=\"\" aria-label=f>", nil),
+    ("<input type=color value=\"\" aria-label=f>", nil),
+    ("<input type=number value=\"\" aria-label=f>", nil),
+    ("<input type=range min=0 max=10 value=5 aria-label=f>", nil),
+    // Still errors.
+    ("<input type=url value=\" \" aria-label=f>", "Bad value \u{201c} \u{201d} for attribute \u{201c}value\u{201d} on element \u{201c}input\u{201d}."),
+    ("<input type=color value=\"red\" aria-label=f>", "Bad value \u{201c}red\u{201d} for attribute \u{201c}value\u{201d} on element \u{201c}input\u{201d}."),
+    // range errors the port used to miss.
+    ("<input type=range value=\"\" aria-label=f>", "Bad value \u{201c}\u{201d} for attribute \u{201c}value\u{201d} on element \u{201c}input\u{201d}."),
+    ("<input type=range max=\"abc\" aria-label=f>", "Bad value \u{201c}abc\u{201d} for attribute \u{201c}max\u{201d} on element \u{201c}input\u{201d}."),
+    ("<input type=range min=\"\" aria-label=f>", "Bad value \u{201c}\u{201d} for attribute \u{201c}min\u{201d} on element \u{201c}input\u{201d}."),
+] as [(String, String?)])
+func inputValueDatatypesMatchUpstream(markup: String, expected: String?) {
+    let result = checkHTML("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\(markup)")
+    let badValues = result.messages.filter { $0.type == "error" && $0.message.hasPrefix("Bad value") }.map(\.message)
+    #expect(badValues == (expected.map { [$0] } ?? []), "\(markup)")
+}
+
 @Test func generalAttributeCheckerCoversARIAMiscRoleRules() {
     let result = checkHTML("""
         <!doctype html><html lang=en><meta charset=utf-8><title>T</title>
