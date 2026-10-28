@@ -229,7 +229,7 @@ public final class HTMLValidator: Sendable {
         } else if !HTMLVocabulary.elements.contains(name) {
             let currentParent = stack.last?.name
             let parent = currentParent == nil || currentParent == "html" ? "body" : currentParent!
-            appendError("Element \u{201c}\(name)\u{201d} not allowed as child of \u{201c}\(parent)\u{201d} in this context.", offset: offset, length: length, locations: locations, messages: &messages)
+            appendError(HTMLVocabulary.notAllowedAsChildMessage(name, parent: parent), offset: offset, length: length, locations: locations, messages: &messages)
         }
 
         if name == "img", attr["alt"] == nil {
@@ -274,7 +274,7 @@ public final class HTMLValidator: Sendable {
             let parent = stack.last?.name
             if parent != "ol" && parent != "ul" && parent != "menu" {
                 let parentName = parent == nil || parent == "html" ? "body" : parent!
-                return "Element \u{201c}li\u{201d} not allowed as child of \u{201c}\(parentName)\u{201d} in this context."
+                return HTMLVocabulary.notAllowedAsChildMessage("li", parent: parentName)
             }
         }
         if child == "picture" {
@@ -285,14 +285,20 @@ public final class HTMLValidator: Sendable {
                 return "Element \u{201c}picture\u{201d} not allowed as child of \u{201c}\(parent)\u{201d} in this context."
             }
         }
-        guard HTMLVocabulary.flowButNotPhrasing.contains(child) else { return nil }
-        if let parent = stack.last?.name, HTMLVocabulary.phrasingOnlyContainers.contains(parent) {
-            return "Element \u{201c}\(child)\u{201d} not allowed as child of \u{201c}\(parent)\u{201d} in this context."
-        }
-        if let transparentParent = stack.last(where: { HTMLVocabulary.transparentElements.contains($0.name) }),
-           let inheritedParent = stack.reversed().first(where: { !HTMLVocabulary.transparentElements.contains($0.name) })?.name,
-           HTMLVocabulary.phrasingOnlyContainers.contains(inheritedParent) {
-            return "Element \u{201c}\(child)\u{201d} not allowed as child of \u{201c}\(transparentParent.name)\u{201d} in this context. Note: The \u{201c}\(transparentParent.name)\u{201d} element has a transparent content model; its allowed content is inherited from its parent element."
+        guard HTMLVocabulary.flowButNotPhrasing.contains(child), let parent = stack.last?.name else { return nil }
+        // Review item A4: a, ins and del have transparent content models, so
+        // what they may contain is whatever their own parent may contain. The
+        // port used to list them as phrasing-only containers and check that
+        // first, so a block inside one was always an error: card links
+        // (<a href><div>…</div></a>) and <ins><p>…</p></ins> were rejected
+        // even directly in body. Now the check looks through any transparent
+        // ancestors to the nearest element whose content model isn't
+        // transparent, as upstream's schema does, and the message names the
+        // immediate parent (with the transparent-model Note when that parent
+        // is transparent).
+        let inheritedFrom = stack.last(where: { !HTMLVocabulary.transparentElements.contains($0.name) })?.name
+        if let inheritedFrom, HTMLVocabulary.phrasingOnlyContainers.contains(inheritedFrom) {
+            return HTMLVocabulary.notAllowedAsChildMessage(child, parent: parent)
         }
         return nil
     }
@@ -1474,16 +1480,34 @@ enum HTMLVocabulary {
         "noframes", "param", "plaintext", "rb", "rtc", "strike", "tt", "xmp"
     ]
 
+    // Upstream's TRANSPARENT_ELEMENTS (MessageEmitterAdapter.java), which
+    // had slot and the port's list didn't.
     static let transparentElements: Set<String> = [
-        "a", "audio", "canvas", "del", "ins", "map", "object", "video"
+        "a", "audio", "canvas", "del", "ins", "map", "object", "slot", "video"
     ]
 
+    // Elements whose content model is phrasing content only. a, ins and del
+    // used to be listed here, but their content model is transparent (see
+    // transparentElements and contentModelMessage).
     static let phrasingOnlyContainers: Set<String> = [
-        "a", "abbr", "b", "bdi", "bdo", "button", "cite", "code", "data",
-        "del", "dfn", "em", "h1", "h2", "h3", "h4", "h5", "h6", "i", "ins",
+        "abbr", "b", "bdi", "bdo", "button", "cite", "code", "data",
+        "dfn", "em", "h1", "h2", "h3", "h4", "h5", "h6", "i",
         "kbd", "label", "mark", "p", "q", "s", "samp", "small", "span",
         "strong", "sub", "sup", "time", "u", "var"
     ]
+
+    // Review item A4: upstream's MessageEmitterAdapter appends the
+    // transparent-model Note to every "not allowed as child" error whose
+    // parent is in its TRANSPARENT_ELEMENTS, because the parent's allowed
+    // content comes from further up. Building those messages here keeps the
+    // Note the same wherever the port reports one.
+    static func notAllowedAsChildMessage(_ child: String, parent: String) -> String {
+        var message = "Element \u{201c}\(child)\u{201d} not allowed as child of \u{201c}\(parent)\u{201d} in this context."
+        if transparentElements.contains(parent) {
+            message += " Note: The \u{201c}\(parent)\u{201d} element has a transparent content model; its allowed content is inherited from its parent element."
+        }
+        return message
+    }
 
     static let flowButNotPhrasing: Set<String> = [
         "address", "article", "aside", "blockquote", "details", "dialog",

@@ -3356,7 +3356,8 @@ struct HTMLGeneralAttributeChecker {
         guard element.hasAttribute("scoped") else { return }
         if let parent, parent != "head" {
             appendMessage(
-                "Element \u{201c}style\u{201d} not allowed as child of \u{201c}\(parent)\u{201d} in this context.",
+                // Review item A4: with upstream's Note when the parent is transparent.
+                HTMLVocabulary.notAllowedAsChildMessage("style", parent: parent),
                 for: element,
                 locations: locations,
                 messages: &messages

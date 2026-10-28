@@ -2672,14 +2672,6 @@
       "category" : "haswarn",
       "failure" : "Expected a warning only but encountered error “Bad value “data:text/html,test#test” for attribute “href” on element “a”.”."
     },
-    "html/elements/a/model-isvalid.html" : {
-      "category" : "valid",
-      "failure" : "Expected no errors or warnings but encountered error “Element “p” not allowed as child of “a” in this context.”."
-    },
-    "html/elements/a/model-novalid.html" : {
-      "category" : "invalid",
-      "failure" : "Expected “Element “p” not allowed as child of “a” in this context. Note: The “a” element has a transparent content model; its allowed content is inherited from its parent element.” but instead encountered “Element “p” not allowed as child of “a” in this context.”."
-    },
     "html/elements/area/href/scheme-data-contains-fragment-haswarn.html" : {
       "category" : "haswarn",
       "failure" : "Expected a warning only but encountered error “Bad value “data:text/html,test#test” for attribute “href” on element “area”.”."
@@ -2768,14 +2760,6 @@
       "category" : "haswarn",
       "failure" : "Expected a warning only but encountered error “Bad value “2011-11-12T00:00:00+1500” for attribute “datetime” on element “del”.”."
     },
-    "html/elements/del/model-isvalid.html" : {
-      "category" : "valid",
-      "failure" : "Expected no errors or warnings but encountered error “Element “p” not allowed as child of “del” in this context.”."
-    },
-    "html/elements/del/transparent-model-novalid.html" : {
-      "category" : "invalid",
-      "failure" : "Expected “Element “div” not allowed as child of “del” in this context. Note: The “del” element has a transparent content model; its allowed content is inherited from its parent element.” but instead encountered “Element “div” not allowed as child of “del” in this context.”."
-    },
     "html/elements/dl/div-contains-dl-novalid.html" : {
       "category" : "invalid",
       "failure" : "Expected “Element “dl” not allowed as child of “div” in this context.” but instead encountered “Stray end tag “div”.”."
@@ -2807,10 +2791,6 @@
     "html/elements/header/role-banner-section-scope-isvalid.html" : {
       "category" : "valid",
       "failure" : "Expected no errors or warnings but encountered warning “The “banner” role is unnecessary for element “header”.”."
-    },
-    "html/elements/html/lang-detection/short-doc-with-foreign-words-isvalid.html" : {
-      "category" : "valid",
-      "failure" : "Expected no errors or warnings but encountered error “Element “div” not allowed as child of “a” in this context.”."
     },
     "html/elements/iframe/src/scheme-data-contains-fragment-haswarn.html" : {
       "category" : "haswarn",
@@ -2919,14 +2899,6 @@
     "html/elements/ins/global-date-and-time-timezone-plus-1500-haswarn.html" : {
       "category" : "haswarn",
       "failure" : "Expected a warning only but encountered error “Bad value “2011-11-12T00:00:00+1500” for attribute “datetime” on element “ins”.”."
-    },
-    "html/elements/ins/model-isvalid.html" : {
-      "category" : "valid",
-      "failure" : "Expected no errors or warnings but encountered error “Element “p” not allowed as child of “ins” in this context.”."
-    },
-    "html/elements/ins/transparent-model-novalid.html" : {
-      "category" : "invalid",
-      "failure" : "Expected “Element “div” not allowed as child of “ins” in this context. Note: The “ins” element has a transparent content model; its allowed content is inherited from its parent element.” but instead encountered “Element “div” not allowed as child of “ins” in this context.”."
     },
     "html/elements/label/for-with-non-matching-descendant-novalid.html" : {
       "category" : "invalid",
@@ -3226,8 +3198,8 @@
   "passCounts" : {
     "hasinfo" : 5,
     "haswarn" : 132,
-    "invalid" : 3523,
-    "valid" : 1156
+    "invalid" : 3526,
+    "valid" : 1160
   },
   "version" : 2
 }

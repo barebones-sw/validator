@@ -751,6 +751,40 @@ func ariaNamingProhibitionMatchesUpstream(markup: String, element: String, prohi
     #expect(namingErrors.isEmpty != prohibited, "\(markup): \(namingErrors.map(\.message))")
 }
 
+// Review item A4: a, ins, del (and map, object, slot, ...) have transparent
+// content models, so block content in them is valid wherever their parent
+// allows it; an error names the immediate parent and, when that parent is
+// transparent, carries upstream's Note. Each case is its own document, and
+// every expected message was confirmed against vnu.jar.
+private func transparentNote(_ parent: String) -> String {
+    " Note: The \u{201c}\(parent)\u{201d} element has a transparent content model; its allowed content is inherited from its parent element."
+}
+
+@Test(arguments: [
+    // Valid: the transparent element's own parent allows flow content.
+    ("<a href=/p><div><h2>T</h2><p>x</p></div></a>", nil),
+    ("<ins><p>x</p></ins>", nil),
+    ("<del><div>x</div></del>", nil),
+    ("<a href=/><table><tr><td>x</td></tr></table></a>", nil),
+    ("<a href=/><ins><div>x</div></ins></a>", nil),
+    ("<div><a href=/><section><h2>S</h2></section></a></div>", nil),
+    ("<ul><li><a href=/><div>x</div></a></li></ul>", nil),
+    ("<div><slot><div>x</div></slot></div>", nil),
+    // Invalid: the content is inherited from a phrasing-only ancestor.
+    ("<span><div>x</div></span>", "Element \u{201c}div\u{201d} not allowed as child of \u{201c}span\u{201d} in this context."),
+    ("<span><a href=/><div>x</div></a></span>", "Element \u{201c}div\u{201d} not allowed as child of \u{201c}a\u{201d} in this context." + transparentNote("a")),
+    ("<button><ins><div>x</div></ins></button>", "Element \u{201c}div\u{201d} not allowed as child of \u{201c}ins\u{201d} in this context." + transparentNote("ins")),
+    ("<span><a href=/><ins><div>x</div></ins></a></span>", "Element \u{201c}div\u{201d} not allowed as child of \u{201c}ins\u{201d} in this context." + transparentNote("ins")),
+    ("<span><slot><div>x</div></slot></span>", "Element \u{201c}div\u{201d} not allowed as child of \u{201c}slot\u{201d} in this context." + transparentNote("slot")),
+    // The Note goes on any "not allowed as child" error with a transparent parent.
+    ("<a href=/><li>x</li></a>", "Element \u{201c}li\u{201d} not allowed as child of \u{201c}a\u{201d} in this context." + transparentNote("a")),
+] as [(String, String?)])
+func transparentContentModelsMatchUpstream(markup: String, expected: String?) {
+    let result = checkHTML("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\(markup)")
+    let childErrors = result.messages.filter { $0.type == "error" && $0.message.contains("not allowed as child of") }.map(\.message)
+    #expect(childErrors == (expected.map { [$0] } ?? []), "\(markup)")
+}
+
 @Test func generalAttributeCheckerCoversARIAMiscRoleRules() {
     let result = checkHTML("""
         <!doctype html><html lang=en><meta charset=utf-8><title>T</title>
