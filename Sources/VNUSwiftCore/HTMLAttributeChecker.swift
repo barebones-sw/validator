@@ -12,7 +12,9 @@ struct HTMLURLAttributeChecker {
         var messages: [ValidationMessage] = []
 
         for event in document.events {
-            guard case let .startElement(element) = event else { continue }
+            // Review item A2 (U16): these are HTML's URL attributes; an SVG
+            // <a href> or <image href> isn't checked by these rules upstream.
+            guard case let .startElement(element) = event, .html == element.namespace else { continue }
             for rule in rules(for: element) {
                 guard let value = element.attributeValue(rule.attributeName) else { continue }
                 appendURLMessages(value: value, rule: rule, element: element, locations: locations, messages: &messages)
@@ -273,15 +275,19 @@ struct HTMLMicrodataAttributeChecker {
         for event in document.events {
             switch event {
             case let .startElement(element):
-                appendMicrodataMessages(
-                    for: element,
-                    hasItemAncestor: itemScopeStack.contains(true),
-                    idValues: idValues,
-                    referencedItemIDs: referencedItemIDs,
-                    locations: locations,
-                    messages: &messages
-                )
-                itemScopeStack.append(element.hasAttribute("itemscope"))
+                // Review item A2 (U16): microdata is an HTML feature; upstream's
+                // MicrodataChecker ignores elements in other namespaces.
+                if .html == element.namespace {
+                    appendMicrodataMessages(
+                        for: element,
+                        hasItemAncestor: itemScopeStack.contains(true),
+                        idValues: idValues,
+                        referencedItemIDs: referencedItemIDs,
+                        locations: locations,
+                        messages: &messages
+                    )
+                }
+                itemScopeStack.append(.html == element.namespace && element.hasAttribute("itemscope"))
             case .endElement:
                 if !itemScopeStack.isEmpty {
                     _ = itemScopeStack.popLast()
@@ -413,6 +419,23 @@ struct HTMLGeneralAttributeChecker {
     func validate(document: HTMLParsedDocument, locations: SourceLocationMap) -> [ValidationMessage] {
         var messages: [ValidationMessage] = []
         var stack: [String] = []
+        // Review item A2 (U16): each open element's namespace, kept beside
+        // `stack` (pushed and popped with it).
+        var namespaceStack: [HTMLNamespace] = []
+        // Review item A2: for each open element, kept beside `stack` like
+        // namespaceStack, whether it's in content upstream's schema accepts
+        // unchecked (anything in an SVG <desc>; a non-MathML element in a
+        // MathML <annotation-xml>, and everything in it), inside a <template>
+        // (where upstream checks nothing at all), and whether it's a foreign
+        // element the schema rejects, or inside one (where upstream's schema
+        // reports nothing more). HTMLValidator's OpenElement keeps the same
+        // flags.
+        var anyElementContentStack: [Bool] = []
+        var templateContentsStack: [Bool] = []
+        var rejectedForeignStack: [Bool] = []
+        // Review item A2: the open MathML <annotation-xml> elements whose
+        // content upstream's schema checks (see the .characters case).
+        var annotationXMLStack: [AnnotationXMLState] = []
         var roleStack: [String?] = []
         var anchorHrefStack: [Bool] = []
         var labelStack: [LabelState] = []
@@ -428,11 +451,16 @@ struct HTMLGeneralAttributeChecker {
         var firstHeadingElement: HTMLStartElement?
         var rubyStack: [RubyState] = []
         var optgroupStack: [OptgroupState] = []
+        var mathArityStack: [MathArityState] = []
+        var svgSequenceStack: [SVGChildSequenceState] = []
         var scriptContent: ScriptContentState?
         var styleContent: StyleContentState?
         var titleCapture: TitleCapture?
         var htmlElement: HTMLStartElement?
         var languageCounts = LanguageCounts()
+        // Review item A2 (U16): text waiting for the end of its element; see
+        // the .endElement case.
+        var pendingLanguageText = ""
         var sawTitle = false
         var activeRoleTabElement: HTMLStartElement?
         var sawRoleTabpanel = false
@@ -451,76 +479,136 @@ struct HTMLGeneralAttributeChecker {
             case let .startElement(element):
                 let parent = stack.last
                 let role = firstRoleToken(for: element)
+                // Review item A2 (U16): most of these checks are HTML's (in
+                // upstream, its Assertions checker runs them for HTML elements
+                // only), and elements inside inline SVG or MathML used to get
+                // them too: SVG <a>, <title>, <style> and <script> share HTML's
+                // names, and lang, target, event handlers and so on were all
+                // judged by HTML's rules. Foreign elements now get only the
+                // namespace-neutral checks and their own SVG or MathML rules.
+                let isHTML = .html == element.namespace
+                // The parent's namespace: the name-keyed state machines below
+                // (ruby, picture, figure, details, optgroup...) are HTML's, and
+                // an SVG element named, say, option or picture isn't part of
+                // them (review item A2).
+                let parentIsHTML = .html == (namespaceStack.last ?? .html)
+                // Review item A2: see anyElementContentStack. The SVG and MathML
+                // rules below are the schema's (path data, child counts and
+                // order, required attributes, role), so they apply only where
+                // upstream's schema checks this element.
+                let parentNamespace = namespaceStack.last ?? .html
+                let inAnyElementContent = (anyElementContentStack.last ?? false)
+                    || (.svg == parentNamespace && "desc" == parent)
+                    || (.mathML == parentNamespace && "annotation-xml" == parent && .mathML != element.namespace)
+                let inTemplateContents = (templateContentsStack.last ?? false) || (.html == parentNamespace && "template" == parent)
+                // (Inside a rejected element, everything is, HTML included, as
+                // with Jing's suppressDepth; see HTMLValidator's
+                // OpenElement.Flags.inRejectedSubtree. An HTML element, or an
+                // <svg>, can be rejected too, in a MathML token element; see
+                // HTMLForeignContent.tokenElementRejects. A MathML child of
+                // one is mglyph or malignmark, or a <math>, which
+                // schemaRejects judges.)
+                let isRejectedForeign = (rejectedForeignStack.last ?? false)
+                    || (.html != element.namespace && HTMLForeignContent.schemaRejects(element.name, namespace: element.namespace, parent: parent, parentNamespace: parentNamespace))
+                    || (.mathML != element.namespace && HTMLForeignContent.tokenElementRejects(element.name, parent: parent, parentNamespace: parentNamespace))
+                let foreignSchemaChecksApply = !inAnyElementContent && !inTemplateContents && !isRejectedForeign
                 if element.name == "html" {
                     htmlElement = element
                 }
-                updateCSPState(from: element, state: &cspState)
-                appendCSPMessages(for: element, state: cspState, locations: locations, messages: &messages)
+                if isHTML {
+                    updateCSPState(from: element, state: &cspState)
+                    appendCSPMessages(for: element, state: cspState, locations: locations, messages: &messages)
+                }
                 if role == "tab", normalizedAttributeValue("aria-selected", for: element) == "true" {
                     activeRoleTabElement = element
                 }
                 if role == "tabpanel" {
                     sawRoleTabpanel = true
                 }
-                if Self.sectioningHeadingElements.contains(element.name) {
+                if isHTML, Self.sectioningHeadingElements.contains(element.name) {
                     for index in sectioningStack.indices {
                         sectioningStack[index].hasHeading = true
                     }
                 }
-                if let level = Self.headingLevel(for: element.name) {
+                if isHTML, let level = Self.headingLevel(for: element.name) {
                     headingStack.append(HeadingState(element: element, level: level))
                 }
-                if let rubyIndex = rubyStack.indices.last, parent == "ruby" {
+                if let rubyIndex = rubyStack.indices.last, parentIsHTML, parent == "ruby" {
                     rubyStack[rubyIndex].directChildNames.append(element.name)
                     if !Self.rubyAnnotationElements.contains(element.name) {
                         rubyStack[rubyIndex].sawBaseContent = true
                     }
                 }
-                if parent == "optgroup", element.name == "legend", let optgroupIndex = optgroupStack.indices.last {
+                if isHTML, parentIsHTML, parent == "optgroup", element.name == "legend", let optgroupIndex = optgroupStack.indices.last {
                     optgroupStack[optgroupIndex].sawLegend = true
                 }
-                appendDisallowedAttributeMessages(for: element, parent: parent, locations: locations, messages: &messages)
-                appendRoleTokenMessages(for: element, parent: parent, stack: stack, locations: locations, messages: &messages)
-                appendDatatypeAttributeMessages(for: element, locations: locations, messages: &messages)
-                appendGlobalAttributeMessages(for: element, locations: locations, messages: &messages)
-                appendBaseMessages(for: element, sawBodyContentBeforeBase: sawBodyContentBeforeBase, sawBaseBlockingElement: sawBaseBlockingElement, locations: locations, messages: &messages)
-                appendStructuralAssertionMessages(for: element, stack: stack, mapNames: mapNames, locations: locations, messages: &messages)
-                appendElementSpecificMessages(for: element, stack: stack, locations: locations, messages: &messages)
-                appendForeignContentMessages(for: element, parent: parent, stack: stack, locations: locations, messages: &messages)
-                appendLabelForReferenceMessages(for: element, idLabelableElementNames: idLabelableElementNames, locations: locations, messages: &messages)
-                appendAutofocusMessages(for: element, autofocusCount: &autofocusCount, locations: locations, messages: &messages)
-                appendARIAAttributeMessages(
+                // (Review item A2: for an SVG element, srcset on <image> is the
+                // one disallowed attribute, a schema rule; see
+                // foreignSchemaChecksApply.)
+                if isHTML || foreignSchemaChecksApply {
+                    appendDisallowedAttributeMessages(for: element, parent: parent, locations: locations, messages: &messages)
+                }
+                appendRoleTokenMessages(for: element, parent: parent, stack: stack, foreignSchemaChecksApply: foreignSchemaChecksApply, inTemplateContents: inTemplateContents, locations: locations, messages: &messages)
+                if isHTML {
+                    appendDatatypeAttributeMessages(for: element, locations: locations, messages: &messages)
+                    appendGlobalAttributeMessages(for: element, locations: locations, messages: &messages)
+                    appendBaseMessages(for: element, sawBodyContentBeforeBase: sawBodyContentBeforeBase, sawBaseBlockingElement: sawBaseBlockingElement, locations: locations, messages: &messages)
+                    appendStructuralAssertionMessages(for: element, stack: stack, mapNames: mapNames, locations: locations, messages: &messages)
+                    appendElementSpecificMessages(for: element, stack: stack, locations: locations, messages: &messages)
+                }
+                appendForeignContentMessages(
                     for: element,
-                    role: role,
-                    idElementNames: idElementNames,
-                    stack: stack,
-                    roleStack: roleStack,
-                    labelStack: labelStack,
-                    visibleMainCount: &visibleMainCount,
-                    visibleRoleMainCount: &visibleRoleMainCount,
+                    parent: parent,
+                    hasSVGAncestorA: "a" == element.name && .svg == element.namespace && zip(stack, namespaceStack).contains { "a" == $0.0 && .svg == $0.1 },
+                    foreignSchemaChecksApply: foreignSchemaChecksApply,
+                    inTemplateContents: inTemplateContents,
                     locations: locations,
                     messages: &messages
                 )
-                appendLanguageAttributeMessages(for: element, locations: locations, messages: &messages)
-                appendDateTimeAttributeMessages(for: element, locations: locations, messages: &messages)
-                appendInputAttributeMessages(for: element, idElementNames: idElementNames, locations: locations, messages: &messages)
-                appendImageMessages(for: element, stack: stack, anchorHrefStack: anchorHrefStack, mapNames: mapNames, locations: locations, messages: &messages)
-                appendEmbeddedContentMessages(for: element, locations: locations, messages: &messages)
-                appendMeterMessages(for: element, locations: locations, messages: &messages)
-                appendProgressMessages(for: element, locations: locations, messages: &messages)
-                appendTextareaMessages(for: element, locations: locations, messages: &messages)
-                appendSelectAttributeMessages(for: element, locations: locations, messages: &messages)
-                appendSelectChildMessages(for: element, parent: parent, selectStack: selectStack, locations: locations, messages: &messages)
-                appendTrackMessages(for: element, mediaStack: &mediaStack, locations: locations, messages: &messages)
-                appendScriptAttributeMessages(for: element, locations: locations, messages: &messages)
-                appendStyleElementMessages(for: element, parent: parent, locations: locations, messages: &messages)
-                appendMediaAttributeMessages(for: element, locations: locations, messages: &messages)
-                appendResponsiveImageMessages(for: element, stack: stack, locations: locations, messages: &messages)
-                appendLabelDescendantMessages(for: element, labelStack: &labelStack, locations: locations, messages: &messages)
-                if parent == "picture", let pictureIndex = pictureStack.indices.last {
+                if isHTML {
+                    appendLabelForReferenceMessages(for: element, idLabelableElementNames: idLabelableElementNames, locations: locations, messages: &messages)
+                    appendAutofocusMessages(for: element, autofocusCount: &autofocusCount, locations: locations, messages: &messages)
+                }
+                // (Review item A2: on an SVG or MathML element, these are the
+                // schema's, so not where it checks nothing; see
+                // foreignSchemaChecksApply. vnu.jar reports nothing for
+                // aria-checked on a <g role="img"> in an SVG <desc>.)
+                if isHTML || foreignSchemaChecksApply {
+                    appendARIAAttributeMessages(
+                        for: element,
+                        role: role,
+                        idElementNames: idElementNames,
+                        stack: stack,
+                        roleStack: roleStack,
+                        labelStack: labelStack,
+                        visibleMainCount: &visibleMainCount,
+                        visibleRoleMainCount: &visibleRoleMainCount,
+                        locations: locations,
+                        messages: &messages
+                    )
+                }
+                if isHTML {
+                    appendLanguageAttributeMessages(for: element, locations: locations, messages: &messages)
+                    appendDateTimeAttributeMessages(for: element, locations: locations, messages: &messages)
+                    appendInputAttributeMessages(for: element, idElementNames: idElementNames, locations: locations, messages: &messages)
+                    appendImageMessages(for: element, stack: stack, anchorHrefStack: anchorHrefStack, mapNames: mapNames, locations: locations, messages: &messages)
+                    appendEmbeddedContentMessages(for: element, locations: locations, messages: &messages)
+                    appendMeterMessages(for: element, locations: locations, messages: &messages)
+                    appendProgressMessages(for: element, locations: locations, messages: &messages)
+                    appendTextareaMessages(for: element, locations: locations, messages: &messages)
+                    appendSelectAttributeMessages(for: element, locations: locations, messages: &messages)
+                    appendSelectChildMessages(for: element, parent: parent, selectStack: selectStack, locations: locations, messages: &messages)
+                    appendTrackMessages(for: element, mediaStack: &mediaStack, locations: locations, messages: &messages)
+                    appendScriptAttributeMessages(for: element, locations: locations, messages: &messages)
+                    appendStyleElementMessages(for: element, parent: parent, locations: locations, messages: &messages)
+                    appendMediaAttributeMessages(for: element, locations: locations, messages: &messages)
+                    appendResponsiveImageMessages(for: element, stack: stack, locations: locations, messages: &messages)
+                    appendLabelDescendantMessages(for: element, labelStack: &labelStack, locations: locations, messages: &messages)
+                }
+                if parentIsHTML, parent == "picture", let pictureIndex = pictureStack.indices.last {
                     appendPictureChildMessages(for: element, state: &pictureStack[pictureIndex], locations: locations, messages: &messages)
                 }
-                if element.name == "figcaption", let figureIndex = figureStack.indices.last {
+                if isHTML, element.name == "figcaption", let figureIndex = figureStack.indices.last {
                     if figureStack[figureIndex].figcaptionCount > 0 {
                         appendMessage("Element \u{201c}figcaption\u{201d} not allowed as child of \u{201c}figure\u{201d} in this context.", for: element, locations: locations, messages: &messages)
                     }
@@ -530,19 +618,19 @@ struct HTMLGeneralAttributeChecker {
                         appendMessage("A \u{201c}figure\u{201d} element with a \u{201c}figcaption\u{201d} descendant must not have a \u{201c}role\u{201d} attribute.", for: figureStack[figureIndex].element, locations: locations, messages: &messages)
                         figureStack[figureIndex].reportedRoleWithFigcaption = true
                     }
-                } else if parent == "figure", let figureIndex = figureStack.indices.last, figureStack[figureIndex].sawFigcaption {
+                } else if parentIsHTML, parent == "figure", let figureIndex = figureStack.indices.last, figureStack[figureIndex].sawFigcaption {
                     appendMessage("Element \u{201c}\(element.name)\u{201d} not allowed as child of \u{201c}figure\u{201d} in this context.", for: element, locations: locations, messages: &messages)
                 }
-                if element.name == "caption", stack.contains("figure"), stack.contains("table") {
+                if isHTML, element.name == "caption", stack.contains("figure"), stack.contains("table") {
                     appendWarningMessage("When a \u{201c}table\u{201d} element is the only content in a \u{201c}figure\u{201d} element other than the \u{201c}figcaption\u{201d}, the \u{201c}caption\u{201d} element should be omitted in favor of the \u{201c}figcaption\u{201d}.", for: element, locations: locations, messages: &messages)
                 }
-                if element.name == "audio" || element.name == "video" {
+                if isHTML, element.name == "audio" || element.name == "video" {
                     mediaStack.append(MediaState(element: element))
                 }
-                if element.name == "select" {
+                if isHTML, element.name == "select" {
                     selectStack.append(SelectState(element: element))
                 }
-                if element.name == "option", let selectIndex = selectStack.indices.last {
+                if isHTML, element.name == "option", let selectIndex = selectStack.indices.last {
                     selectStack[selectIndex].optionCount += 1
                     if element.hasAttribute("selected") {
                         selectStack[selectIndex].selectedOptionCount += 1
@@ -551,10 +639,10 @@ struct HTMLGeneralAttributeChecker {
                         selectStack[selectIndex].firstOptionValue = element.attributeValue("value")
                     }
                 }
-                if element.name == "option" {
+                if isHTML, element.name == "option" {
                     optionStack.append(OptionState(element: element, hasLabel: element.hasAttribute("label")))
                 }
-                if parent == "details", let detailsIndex = detailsStack.indices.last {
+                if parentIsHTML, parent == "details", let detailsIndex = detailsStack.indices.last {
                     if element.name == "summary" {
                         if detailsStack[detailsIndex].sawSummary {
                             appendMessage("Element \u{201c}summary\u{201d} not allowed as child of \u{201c}details\u{201d} in this context.", for: element, locations: locations, messages: &messages)
@@ -567,35 +655,38 @@ struct HTMLGeneralAttributeChecker {
                         detailsStack[detailsIndex].sawNonSummaryChild = true
                     }
                 }
-                if element.name == "script" {
+                // (HTML elements only: an SVG <title> isn't the document's title,
+                // so it used to hide a missing one, and an empty one was an
+                // error; SVG <script> and <style> aren't HTML's either.)
+                if isHTML, element.name == "script" {
                     scriptContent = scriptContentState(for: element)
                 }
-                if element.name == "style" {
+                if isHTML, element.name == "style" {
                     styleContent = StyleContentState(element: element)
                 }
-                if element.name == "title" {
+                if isHTML, element.name == "title" {
                     sawTitle = true
                     titleCapture = TitleCapture(element: element)
                 }
-                if element.name == "picture" {
+                if isHTML, element.name == "picture" {
                     pictureStack.append(PictureState(element: element))
                 }
-                if element.name == "figure" {
+                if isHTML, element.name == "figure" {
                     figureStack.append(FigureState(element: element, hasRole: element.hasAttribute("role")))
                 }
-                if element.name == "details" {
+                if isHTML, element.name == "details" {
                     detailsStack.append(DetailsState(element: element))
                 }
-                if element.name == "ruby" {
+                if isHTML, element.name == "ruby" {
                     rubyStack.append(RubyState(element: element))
                 }
-                if element.name == "optgroup" {
+                if isHTML, element.name == "optgroup" {
                     optgroupStack.append(OptgroupState(element: element, hasLabel: element.hasAttribute("label")))
                 }
-                if element.name == "article" || element.name == "section" {
+                if isHTML, element.name == "article" || element.name == "section" {
                     sectioningStack.append(SectioningState(element: element))
                 }
-                if element.name == "label" {
+                if isHTML, element.name == "label" {
                     labelStack.append(LabelState(
                         element: element,
                         forValue: element.attributeValue("for"),
@@ -604,58 +695,122 @@ struct HTMLGeneralAttributeChecker {
                         hasAriaHidden: element.hasAttribute("aria-hidden")
                     ))
                 }
+                // Review item A2: a child the schema rejects (reported by
+                // HTMLValidator) doesn't count toward its parent's children or
+                // their order: Jing goes on as if it weren't there. Counting it
+                // gave a false "not allowed" for the next child, hid a missing
+                // one, and reported the rejected child twice.
+                let childIsRejected = .html != element.namespace && HTMLForeignContent.schemaRejects(element.name, namespace: element.namespace, parent: parent, parentNamespace: parentNamespace)
+                if !childIsRejected, let index = mathArityStack.indices.last, mathArityStack[index].stackIndex == stack.count - 1 {
+                    mathArityStack[index].childCount += 1
+                    if mathArityStack[index].childCount > mathArityStack[index].arity, !mathArityStack[index].reportedExtraChild {
+                        appendMessage(HTMLVocabulary.notAllowedAsChildMessage(element.displayName, parent: mathArityStack[index].element.name), for: element, locations: locations, messages: &messages)
+                        mathArityStack[index].reportedExtraChild = true
+                    }
+                }
+                if foreignSchemaChecksApply, .mathML == element.namespace, let arity = Self.mathElementArity[element.name] {
+                    mathArityStack.append(MathArityState(element: element, arity: arity, stackIndex: stack.count))
+                }
+                if !childIsRejected, let index = svgSequenceStack.indices.last, svgSequenceStack[index].stackIndex == stack.count - 1 {
+                    appendSVGSequenceMessages(forChild: element, state: &svgSequenceStack[index], locations: locations, messages: &messages)
+                }
+                if foreignSchemaChecksApply, .svg == element.namespace, "fecomponenttransfer" == element.name || "font" == element.name {
+                    svgSequenceStack.append(SVGChildSequenceState(element: element, stackIndex: stack.count, position: ("font" == element.name) ? 0 : -1))
+                }
+                if foreignSchemaChecksApply, .mathML == element.namespace, "annotation-xml" == element.name {
+                    annotationXMLStack.append(AnnotationXMLState(stackIndex: stack.count))
+                }
                 updateBaseState(afterStarting: element, sawBodyContentBeforeBase: &sawBodyContentBeforeBase, sawBaseBlockingElement: &sawBaseBlockingElement)
                 stack.append(element.name)
+                namespaceStack.append(element.namespace)
+                anyElementContentStack.append(inAnyElementContent)
+                templateContentsStack.append(inTemplateContents)
+                rejectedForeignStack.append(isRejectedForeign)
                 roleStack.append(role)
-                anchorHrefStack.append(element.name == "a" && element.hasAttribute("href"))
+                anchorHrefStack.append(isHTML && "a" == element.name && element.hasAttribute("href"))
             case let .endElement(name, _, _):
-                if name == "script", let content = scriptContent {
+                // Review item A2: whether the element ending is HTML, for the
+                // name-keyed state below, which only HTML elements start.
+                let endedIsHTML = stack.lastIndex(of: name).map { .html == namespaceStack[$0] } ?? true
+                if endedIsHTML, name == "script", let content = scriptContent {
                     appendScriptContentMessages(content, locations: locations, messages: &messages)
                     scriptContent = nil
                 }
-                if name == "style", let content = styleContent {
+                if endedIsHTML, name == "style", let content = styleContent {
                     appendStyleContentMessages(content, locations: locations, messages: &messages)
                     styleContent = nil
                 }
-                if name == "select", let state = selectStack.popLast() {
+                if endedIsHTML, name == "select", let state = selectStack.popLast() {
                     appendSelectMessages(state, locations: locations, messages: &messages)
                 }
-                if name == "option", let state = optionStack.popLast() {
+                if endedIsHTML, name == "option", let state = optionStack.popLast() {
                     appendOptionMessages(state, locations: locations, messages: &messages)
                 }
-                if name == "picture", let state = pictureStack.popLast() {
+                if endedIsHTML, name == "picture", let state = pictureStack.popLast() {
                     appendPictureMessages(state, locations: locations, messages: &messages)
                 }
-                if name == "figure", !figureStack.isEmpty {
+                if endedIsHTML, name == "figure", !figureStack.isEmpty {
                     _ = figureStack.popLast()
                 }
-                if name == "audio" || name == "video", !mediaStack.isEmpty {
+                if endedIsHTML, name == "audio" || name == "video", !mediaStack.isEmpty {
                     _ = mediaStack.popLast()
                 }
-                if name == "details", let state = detailsStack.popLast(), state.sawNonSummaryChild, !state.sawSummary, !state.reportedMissingSummary {
+                if endedIsHTML, name == "details", let state = detailsStack.popLast(), state.sawNonSummaryChild, !state.sawSummary, !state.reportedMissingSummary {
                     appendMessage("Element \u{201c}details\u{201d} is missing a required instance of child element \u{201c}summary\u{201d}.", for: state.element, locations: locations, messages: &messages)
                 }
-                if (name == "article" || name == "section"), let state = sectioningStack.popLast(), !state.hasHeading {
+                if endedIsHTML, (name == "article" || name == "section"), let state = sectioningStack.popLast(), !state.hasHeading {
                     appendSectioningHeadingWarning(for: state.element, locations: locations, messages: &messages)
                 }
-                if Self.headingElements.contains(name), let state = headingStack.popLast() {
+                if endedIsHTML, Self.headingElements.contains(name), let state = headingStack.popLast() {
                     appendHeadingMessages(state, headingLevels: &headingLevels, firstHeadingElement: &firstHeadingElement, locations: locations, messages: &messages)
                 }
-                if name == "ruby", let state = rubyStack.popLast() {
+                if endedIsHTML, name == "ruby", let state = rubyStack.popLast() {
                     appendRubyMessages(state, locations: locations, messages: &messages)
                 }
-                if name == "optgroup", let state = optgroupStack.popLast() {
+                if endedIsHTML, name == "optgroup", let state = optgroupStack.popLast() {
                     appendOptgroupMessages(state, locations: locations, messages: &messages)
                 }
-                if name == "title", let capture = titleCapture {
+                if endedIsHTML, name == "title", let capture = titleCapture {
                     appendTitleMessages(capture, locations: locations, messages: &messages)
                     titleCapture = nil
                 }
-                if name == "label", !labelStack.isEmpty {
+                if endedIsHTML, name == "label", !labelStack.isEmpty {
                     _ = labelStack.popLast()
+                }
+                if let state = svgSequenceStack.last, state.element.name == name, stack.lastIndex(of: name) == state.stackIndex {
+                    svgSequenceStack.removeLast()
+                    if "font" == name, state.position < 1 {
+                        appendMessage(fontMissingChildMessage("font-face"), for: state.element, locations: locations, messages: &messages)
+                    }
+                    if "font" == name, state.position < 2 {
+                        appendMessage(fontMissingChildMessage("missing-glyph"), for: state.element, locations: locations, messages: &messages)
+                    }
+                }
+                if let state = mathArityStack.last, state.element.name == name, stack.lastIndex(of: name) == state.stackIndex {
+                    mathArityStack.removeLast()
+                    if state.childCount < state.arity {
+                        appendMessage(mathMissingChildrenMessage(for: state.element.name), for: state.element, locations: locations, messages: &messages)
+                    }
+                }
+                // Review item A2 (U16): as in upstream's LanguageDetectingChecker,
+                // text collected since the last end tag counts when an HTML
+                // element ends and is dropped when a foreign one does. So text
+                // in an SVG <text>, directly in a <foreignObject>, or just before
+                // an </svg> doesn't count, while a <p> inside a <foreignObject>
+                // does (both as vnu.jar reports them).
+                if let index = stack.lastIndex(of: name), .html != namespaceStack[index] {
+                    pendingLanguageText = ""
+                } else {
+                    languageCounts.add(pendingLanguageText)
+                    pendingLanguageText = ""
                 }
                 if let index = stack.lastIndex(of: name) {
                     stack.removeSubrange(index...)
+                    namespaceStack.removeSubrange(index...)
+                    anyElementContentStack.removeSubrange(index...)
+                    templateContentsStack.removeSubrange(index...)
+                    rejectedForeignStack.removeSubrange(index...)
+                    annotationXMLStack.removeAll { $0.stackIndex >= index }
                     roleStack.removeSubrange(index...)
                     anchorHrefStack.removeSubrange(index...)
                 }
@@ -669,8 +824,11 @@ struct HTMLGeneralAttributeChecker {
                 if scriptContent == nil, styleContent == nil {
                     appendNormalizationWarningIfNeeded(content, range: range, locations: locations, messages: &messages)
                 }
+                // Review item A2 (U16): held until its element ends (see the
+                // .endElement case), so that text in inline SVG or MathML
+                // doesn't sway the language guess.
                 if stack.contains("body"), !stack.contains("pre"), scriptContent == nil, styleContent == nil {
-                    languageCounts.add(content)
+                    pendingLanguageText += content
                 }
                 if let selectIndex = selectStack.indices.last,
                    selectStack[selectIndex].optionCount == 1,
@@ -680,13 +838,32 @@ struct HTMLGeneralAttributeChecker {
                 if let optionIndex = optionStack.indices.last {
                     optionStack[optionIndex].text += content
                 }
+                // Review item A2: one message for each piece of the text that
+                // upstream's schema validator sees (see nonSpaceTextPieces).
+                // This used to be one per element, however many pieces.
+                if let index = mathArityStack.indices.last, mathArityStack[index].stackIndex == stack.count - 1 {
+                    for piece in Self.nonSpaceTextPieces(in: content) {
+                        appendMessage("Text not allowed in \u{201c}\(mathArityStack[index].element.name)\u{201d} in this context.", range: HTMLSourceRange(offset: range.offset + piece.lowerBound, length: piece.count), locations: locations, messages: &messages)
+                    }
+                }
+                // Review item A2: text directly in a MathML <annotation-xml>,
+                // whatever its encoding: MathML 3's annotation-xml.model is
+                // MathML expressions or (non-MathML) elements, never text, so
+                // upstream's schema reports it, for each piece as above. The
+                // port accepted it.
+                if let index = annotationXMLStack.indices.last, annotationXMLStack[index].stackIndex == stack.count - 1 {
+                    for piece in Self.nonSpaceTextPieces(in: content) {
+                        appendMessage("Text not allowed in \u{201c}annotation-xml\u{201d} in this context.", range: HTMLSourceRange(offset: range.offset + piece.lowerBound, length: piece.count), locations: locations, messages: &messages)
+                    }
+                }
                 for index in headingStack.indices {
                     headingStack[index].text += content
                 }
-                if stack.last == "ruby", !content.unicodeScalars.allSatisfy(isASCIIWhitespace), let rubyIndex = rubyStack.indices.last {
+                let currentIsHTML = .html == (namespaceStack.last ?? .html)
+                if currentIsHTML, stack.last == "ruby", !content.unicodeScalars.allSatisfy(isASCIIWhitespace), let rubyIndex = rubyStack.indices.last {
                     rubyStack[rubyIndex].sawBaseContent = true
                 }
-                if stack.last == "picture", pictureStack.indices.last != nil, !content.unicodeScalars.allSatisfy(isASCIIWhitespace) {
+                if currentIsHTML, stack.last == "picture", pictureStack.indices.last != nil, !content.unicodeScalars.allSatisfy(isASCIIWhitespace) {
                     appendMessage(
                         "Text not allowed in \u{201c}picture\u{201d} in this context.",
                         range: range,
@@ -694,7 +871,7 @@ struct HTMLGeneralAttributeChecker {
                         messages: &messages
                     )
                 }
-                if stack.last == "figure", let figureIndex = figureStack.indices.last,
+                if currentIsHTML, stack.last == "figure", let figureIndex = figureStack.indices.last,
                    figureStack[figureIndex].sawFigcaption,
                    !content.unicodeScalars.allSatisfy(isASCIIWhitespace) {
                     appendMessage(
@@ -704,7 +881,7 @@ struct HTMLGeneralAttributeChecker {
                         messages: &messages
                     )
                 }
-                if stack.contains("iframe"), !content.unicodeScalars.allSatisfy(isASCIIWhitespace) {
+                if zip(stack, namespaceStack).contains(where: { "iframe" == $0.0 && .html == $0.1 }), !content.unicodeScalars.allSatisfy(isASCIIWhitespace) {
                     appendMessage(
                         "Text not allowed in \u{201c}iframe\u{201d} in this context.",
                         range: range,
@@ -729,6 +906,7 @@ struct HTMLGeneralAttributeChecker {
         if !headingLevels.isEmpty, !headingLevels.contains(1), let firstHeadingElement {
             appendWarningMessage("This document has heading elements but none of them has a computed heading level of 1.", for: firstHeadingElement, locations: locations, messages: &messages)
         }
+        languageCounts.add(pendingLanguageText)
         appendLanguageDetectionWarning(htmlElement: htmlElement, counts: languageCounts, locations: locations, messages: &messages)
         return messages
     }
@@ -966,27 +1144,98 @@ struct HTMLGeneralAttributeChecker {
     private func appendForeignContentMessages(
         for element: HTMLStartElement,
         parent: String?,
-        stack: [String],
+        hasSVGAncestorA: Bool,
+        foreignSchemaChecksApply: Bool,
+        inTemplateContents: Bool,
         locations: SourceLocationMap,
         messages: inout [ValidationMessage]
     ) {
-        appendRDFaAttributeMessages(for: element, locations: locations, messages: &messages)
+        // Review item A2: by namespace now. These used to go by whether an
+        // <svg> or <math> was open anywhere above, so HTML inside
+        // <foreignObject> or <mtext> got SVG's or MathML's rules, and the
+        // RDFa and col/dt rules below applied to SVG's elements too.
+        switch element.namespace {
+        case .html:
+            appendRDFaAttributeMessages(for: element, locations: locations, messages: &messages)
+            if parent == "colgroup", element.name == "col" {
+                appendMessage("Element \u{201c}col\u{201d} not allowed as child of \u{201c}colgroup\u{201d} in this context.", for: element, locations: locations, messages: &messages)
+            }
+            if parent == "dialog", element.name == "dt" {
+                appendMessage("Element \u{201c}dt\u{201d} not allowed as child of \u{201c}dialog\u{201d} in this context.", for: element, locations: locations, messages: &messages)
+            }
+        case .svg:
+            appendSVGMessages(for: element, parent: parent, hasSVGAncestorA: hasSVGAncestorA, foreignSchemaChecksApply: foreignSchemaChecksApply, inTemplateContents: inTemplateContents, locations: locations, messages: &messages)
+            if foreignSchemaChecksApply {
+                appendForeignIDMessages(for: element, locations: locations, messages: &messages)
+            }
+        case .mathML:
+            // (All of these are the schema's; see foreignSchemaChecksApply.)
+            if foreignSchemaChecksApply {
+                appendMathMessages(for: element, parent: parent, locations: locations, messages: &messages)
+                appendForeignIDMessages(for: element, locations: locations, messages: &messages)
+            }
+        }
+    }
 
-        if parent == "colgroup", element.name == "col" {
-            appendMessage("Element \u{201c}col\u{201d} not allowed as child of \u{201c}colgroup\u{201d} in this context.", for: element, locations: locations, messages: &messages)
+    /// Review item A2: an SVG or MathML element's id, which upstream's SVG and
+    /// MathML schemas type as an XML 1.0 name (vnu.jar's xml-name datatype),
+    /// not as HTML's "anything but whitespace": "1icon", "-a" and "a b" are
+    /// all bad values there. Since A2 the HTML id check covers HTML elements
+    /// only, so a bad SVG or MathML id went unreported (before A2, HTML's rule
+    /// applied to them, which caught a space but not a leading digit). The
+    /// value is checked as the schema sees it, character references decoded.
+    private func appendForeignIDMessages(
+        for element: HTMLStartElement,
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) {
+        // (A valueless id is an empty one, which isn't a name either.)
+        guard element.hasAttribute("id") else { return }
+        let value = HTMLCharacterReferences.decode(element.attributeValue("id") ?? "")
+        if !Self.isXMLName(value) {
+            appendBadAttributeValue(value, attribute: "id", for: element, locations: locations, messages: &messages)
         }
-        if parent == "dialog", element.name == "dt" {
-            appendMessage("Element \u{201c}dt\u{201d} not allowed as child of \u{201c}dialog\u{201d} in this context.", for: element, locations: locations, messages: &messages)
-        }
+    }
 
-        let inSVG = element.name == "svg" || stack.contains("svg")
-        let inMath = element.name == "math" || stack.contains("math")
-        if inSVG {
-            appendSVGMessages(for: element, parent: parent, stack: stack, locations: locations, messages: &messages)
+    /// Review item A2: whether `value` is an XML 1.0 name, after the fourth
+    /// edition's character tables, as upstream's XmlName datatype has them.
+    /// ASCII follows the tables exactly: a letter, "_" or ":" first, and then
+    /// also digits, "." and "-". Beyond ASCII, the tables' classes are
+    /// approximated with Unicode's general categories: letters (and letter
+    /// numbers) first, and then also marks, decimal digits and the two
+    /// extenders that aren't letters (U+00B7 and U+0387). That may accept a
+    /// name the tables reject, such as one with a letter newer than they are,
+    /// but rejects spaces and punctuation, NBSP included, as they do.
+    private static func isXMLName(_ value: String) -> Bool {
+        let isNameStart: (Unicode.Scalar) -> Bool = { scalar in
+            if scalar.isASCII {
+                return ("a"..."z").contains(scalar) || ("A"..."Z").contains(scalar) || "_" == scalar || ":" == scalar
+            }
+            switch scalar.properties.generalCategory {
+            case .uppercaseLetter, .lowercaseLetter, .titlecaseLetter, .modifierLetter, .otherLetter, .letterNumber:
+                return true
+            default:
+                return false
+            }
         }
-        if inMath {
-            appendMathMessages(for: element, parent: parent, stack: stack, locations: locations, messages: &messages)
+        let isNameTrail: (Unicode.Scalar) -> Bool = { scalar in
+            if isNameStart(scalar) {
+                return true
+            }
+            if scalar.isASCII {
+                return ("0"..."9").contains(scalar) || "." == scalar || "-" == scalar
+            }
+            switch scalar.properties.generalCategory {
+            case .nonspacingMark, .spacingMark, .enclosingMark, .decimalNumber:
+                return true
+            default:
+                return "\u{00B7}" == scalar || "\u{0387}" == scalar
+            }
         }
+        guard let first = value.unicodeScalars.first, isNameStart(first) else {
+            return false
+        }
+        return value.unicodeScalars.dropFirst().allSatisfy(isNameTrail)
     }
 
     private func appendRDFaAttributeMessages(
@@ -994,12 +1243,8 @@ struct HTMLGeneralAttributeChecker {
         locations: SourceLocationMap,
         messages: inout [ValidationMessage]
     ) {
-        for attribute in element.attributes {
-            if attribute.name.hasPrefix("xmlns:") {
-                appendMessage("Attribute \u{201c}\(attribute.name)\u{201d} not allowed here.", for: element, locations: locations, messages: &messages)
-            }
-        }
-
+        // (Review item A2: "xmlns:" attributes are now checked, by namespace,
+        // in HTMLValidator.validateNamespaceDeclarations.)
         let rdfaDisallowed: [String: Set<String>] = [
             "a": ["src"],
             "div": ["href"],
@@ -1026,17 +1271,27 @@ struct HTMLGeneralAttributeChecker {
     private func appendSVGMessages(
         for element: HTMLStartElement,
         parent: String?,
-        stack: [String],
+        hasSVGAncestorA: Bool,
+        foreignSchemaChecksApply: Bool,
+        inTemplateContents: Bool,
         locations: SourceLocationMap,
         messages: inout [ValidationMessage]
     ) {
-        if let xmlns = element.attributeValue("xmlns"), xmlns != "http://www.w3.org/2000/svg" {
-            appendMessage("Bad value \u{201c}\(xmlns)\u{201d} for the attribute \u{201c}xmlns\u{201d} (only \u{201c}http://www.w3.org/2000/svg\u{201d} permitted here).", for: element, locations: locations, messages: &messages)
+        // (Review item A2: xmlns and xmlns:xlink are now checked by namespace in
+        // HTMLValidator.validateNamespaceDeclarations; these checks applied the
+        // SVG rule to HTML inside <foreignObject> too.)
+        //
+        // Review item A2: an SVG <a> inside another is upstream's Assertions
+        // check, which applies everywhere but in a <template>; the rest are
+        // its schema's, which apply only where it checks this element at all
+        // (not in an SVG <desc> or a MathML <annotation-xml>, a template, or
+        // an element it has rejected; see foreignSchemaChecksApply).
+        // (Only SVG <a> ancestors count, as in upstream's
+        // numberOfSvgAelementsDeep; an HTML <a> around an SVG used to.)
+        if !inTemplateContents, "a" == element.name, hasSVGAncestorA {
+            appendMessage("The SVG element \u{201c}a\u{201d} must not appear as a descendant of another SVG element \u{201c}a\u{201d}.", for: element, locations: locations, messages: &messages)
         }
-        if let link = element.attributeValue("xmlns:xlink"), link != "http://www.w3.org/1999/xlink" {
-            appendMessage("Bad value \u{201c}\(link)\u{201d} for the attribute \u{201c}xmlns:link\u{201d} (only \u{201c}http://www.w3.org/1999/xlink\u{201d} permitted here).", for: element, locations: locations, messages: &messages)
-        }
-
+        guard foreignSchemaChecksApply else { return }
         let disallowedAttributes: [String: Set<String>] = [
             "circle": ["foo"],
             "clippath": ["x"],
@@ -1059,9 +1314,10 @@ struct HTMLGeneralAttributeChecker {
             }
         }
 
-        if parent == "fecomponenttransfer", element.name == "fefuncr" {
-            appendMessage("Element \u{201c}feFuncR\u{201d} not allowed as child of \u{201c}feComponentTransfer\u{201d} in this context.", for: element, locations: locations, messages: &messages)
-        }
+        // (Review item A2/U19: feComponentTransfer's and font's children are
+        // now checked in order as they arrive; see SVGChildSequenceState.
+        // These rules reported every feFuncR in a feComponentTransfer, and
+        // every font as missing its missing-glyph.)
         if element.name == "feconvolvematrix", !element.hasAttribute("order") {
             appendMessage("Element \u{201c}feConvolveMatrix\u{201d} is missing required attribute \u{201c}order\u{201d}.", for: element, locations: locations, messages: &messages)
         }
@@ -1069,12 +1325,12 @@ struct HTMLGeneralAttributeChecker {
             if !element.hasAttribute("horiz-adv-x") {
                 appendMessage("Element \u{201c}font\u{201d} is missing required attribute \u{201c}horiz-adv-x\u{201d}.", for: element, locations: locations, messages: &messages)
             }
-            appendMessage("Element \u{201c}font\u{201d} is missing a required instance of child element \u{201c}missing-glyph\u{201d}.", for: element, locations: locations, messages: &messages)
         }
-        if element.name == "a", stack.contains("a") {
-            appendMessage("The SVG element \u{201c}a\u{201d} must not appear as a descendant of another SVG element \u{201c}a\u{201d}.", for: element, locations: locations, messages: &messages)
-        }
-        if element.name == "path", let d = element.attributeValue("d"), badSVGPathData(d) {
+        // Review item A2/U19: d on path, and on SVG fonts' glyph and
+        // missing-glyph, is upstream's SVG path data datatype. It's decoded
+        // first, as upstream's value is, so that d="M0 0&#10;L1 1" parses and a
+        // bad value is shown as vnu.jar shows it ("M0 0 & L1 1", not "&amp;").
+        if ["path", "glyph", "missing-glyph"].contains(element.name), let d = element.attributeValue("d").map(HTMLCharacterReferences.decode), !SVGPathData.isValid(d) {
             appendBadAttributeValue(d, attribute: "d", for: element, locations: locations, messages: &messages)
         }
     }
@@ -1082,25 +1338,31 @@ struct HTMLGeneralAttributeChecker {
     private func appendMathMessages(
         for element: HTMLStartElement,
         parent: String?,
-        stack: [String],
         locations: SourceLocationMap,
         messages: inout [ValidationMessage]
     ) {
-        if stack.contains("math"), HTMLVocabulary.elements.contains(element.name), element.name != "math" {
-            appendMessage("HTML start tag \u{201c}\(element.name)\u{201d} in a foreign namespace context.", for: element, locations: locations, messages: &messages)
-        }
-        if element.name == "math", stack.contains("head") {
-            appendMessage("Stray end tag \u{201c}head\u{201d}.", for: element, locations: locations, messages: &messages)
-        }
+        // Review item A2: "HTML start tag ... in a foreign namespace context"
+        // is now reported by HTMLValidator, where a breakout tag actually ends
+        // foreign content. This check reported any HTML-named element inside
+        // <math>, including the HTML that <mtext> may contain.
+        // (A2 removed a rule that reported "Stray end tag “head”" for a
+        // <math> with <head> open: in the head, a <math> start tag now implies
+        // </head> in both element stacks, as upstream's does. Inside
+        // <head><noscript>, though, upstream reports "Bad start tag in “math”
+        // in “noscript” in “head”" and the stray end tags that follow, as it
+        // does for an <img>, <iframe> or <div> there. The port doesn't model
+        // that insertion mode for any element (an existing gap), and the old
+        // rule only ever gave one of those four errors, for <math> alone.)
         if element.name == "math", let display = element.attributeValue("display"), display != "block" && display != "inline" {
             appendBadAttributeValue(display, attribute: "display", for: element, locations: locations, messages: &messages)
         }
         if element.name == "math", let overflow = element.attributeValue("overflow"), overflow == "wrap" {
             appendBadAttributeValue(overflow, attribute: "overflow", for: element, locations: locations, messages: &messages)
         }
-        if Self.mathFixedArityElements.contains(element.name) {
-            appendMessage(mathMissingChildrenMessage(for: element.name), for: element, locations: locations, messages: &messages)
-        }
+        // (Review item A2/U19: the fixed-arity elements' child counts are now
+        // checked as their children arrive and when they end; see
+        // MathArityState. This used to report every mfrac, msup and so on
+        // as missing its children, however many it had.)
     }
 
     private func appendLanguageDetectionWarning(
@@ -1154,12 +1416,10 @@ struct HTMLGeneralAttributeChecker {
         value.range(of: #"^[A-Za-z][A-Za-z0-9+.-]*:"#, options: .regularExpression) != nil
     }
 
-    private func badSVGPathData(_ value: String) -> Bool {
-        value.contains("#") || value.range(of: #"\ba[0-9., -]*\s[2-9]\s"#, options: [.regularExpression, .caseInsensitive]) != nil
-    }
-
     private func svgDisplayName(_ name: String) -> String {
-        Self.svgElementDisplayNames[name] ?? name
+        // Review item A2 (U18): the full table, rather than the four names
+        // this checker used to list.
+        HTMLForeignContent.displayName(name, namespace: .svg)
     }
 
     private func mathMissingChildrenMessage(for elementName: String) -> String {
@@ -1231,6 +1491,187 @@ struct HTMLGeneralAttributeChecker {
         var element: HTMLStartElement
         var hasLabel: Bool
         var sawLegend = false
+    }
+
+    /// Review item A2/U19: an open SVG element whose children must come in a
+    /// set order (upstream's svg11 schema): feComponentTransfer takes at most
+    /// one each of feFuncR, feFuncG, feFuncB and feFuncA, in that order, and
+    /// nothing else; font takes desc, title or metadata, then a required
+    /// font-face, then a required missing-glyph, then glyph, hkern or vkern.
+    /// A child out of place is "not allowed as child"; a required child that
+    /// was skipped is "missing", where the next child shows it or when the
+    /// element ends (all as vnu.jar reports them).
+    private struct SVGChildSequenceState {
+        var element: HTMLStartElement
+        /// Where the element sits in the checker's stack of open elements.
+        var stackIndex: Int
+        /// feComponentTransfer: the rank of the last feFunc child (R 0, G 1,
+        /// B 2, A 3). font: 0 before font-face, 1 before missing-glyph, 2 after.
+        var position: Int
+    }
+
+    private static let feFuncRanks: [String: Int] = ["fefuncr": 0, "fefuncg": 1, "fefuncb": 2, "fefunca": 3]
+    private static let svgDescriptiveElements: Set<String> = ["desc", "title", "metadata"]
+    private static let svgGlyphElements: Set<String> = ["glyph", "hkern", "vkern"]
+
+    private func fontMissingChildMessage(_ child: String) -> String {
+        "Element \u{201c}font\u{201d} is missing a required instance of child element \u{201c}\(child)\u{201d}."
+    }
+
+    /// Checks the next child of a feComponentTransfer or font.
+    private func appendSVGSequenceMessages(
+        forChild child: HTMLStartElement,
+        state: inout SVGChildSequenceState,
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) {
+        let notAllowed = HTMLVocabulary.notAllowedAsChildMessage(child.displayName, parent: state.element.displayName)
+        if "fecomponenttransfer" == state.element.name {
+            if let rank = Self.feFuncRanks[child.name], rank > state.position {
+                state.position = rank
+            } else {
+                appendMessage(notAllowed, for: child, locations: locations, messages: &messages)
+            }
+            return
+        }
+        // font
+        switch (state.position, child.name) {
+        case (0, let name) where Self.svgDescriptiveElements.contains(name):
+            break
+        case (0, "font-face"):
+            state.position = 1
+        case (0, "missing-glyph"):
+            appendMessage(fontMissingChildMessage("font-face"), for: state.element, locations: locations, messages: &messages)
+            state.position = 2
+        case (0, let name) where Self.svgGlyphElements.contains(name):
+            // Only the first required child that was skipped is reported here,
+            // as Jing does when a child from a later group arrives (vnu.jar
+            // gives just the font-face message for <font><glyph/></font>); at
+            // the end of the element, both missing children are reported
+            // (<font></font>). This used to add the missing-glyph message too.
+            appendMessage(fontMissingChildMessage("font-face"), for: state.element, locations: locations, messages: &messages)
+            state.position = 2
+        case (1, "missing-glyph"):
+            state.position = 2
+        case (1, let name) where Self.svgGlyphElements.contains(name):
+            appendMessage(fontMissingChildMessage("missing-glyph"), for: state.element, locations: locations, messages: &messages)
+            state.position = 2
+        case (2, let name) where Self.svgGlyphElements.contains(name):
+            break
+        default:
+            appendMessage(notAllowed, for: child, locations: locations, messages: &messages)
+        }
+    }
+
+    /// Review item A2/U19: an open MathML element that takes a fixed number of
+    /// child elements (mfrac, msup, ...). Too few is reported when it ends,
+    /// with upstream's "missing a required instance" message; the first child
+    /// too many is "not allowed as child", and text directly inside it is "not
+    /// allowed" either (all as vnu.jar reports them).
+    /// Review item A2: see annotationXMLStack.
+    private struct AnnotationXMLState {
+        /// Where the element sits in the checker's stack of open elements.
+        var stackIndex: Int
+    }
+
+    /// Review item A2: the pieces of non-space text upstream's schema
+    /// validator sees in `text` (as UTF-16 offsets into it), for "Text not
+    /// allowed", which it reports for each piece. Upstream's tokenizer hands
+    /// text on in pieces, splitting it at every "&" and at a "<" that doesn't
+    /// start a tag: the text before it, the character reference (or what it
+    /// tried as one, or the "<") and the text after it reach the validator
+    /// separately (its tree builder passes each piece straight on), and a
+    /// piece that's all XML whitespace (a reference to a space or line break
+    /// included) is fine. So vnu.jar reports "a&amp;b" in an <msub> three
+    /// times, and the port reported it once. (Upstream also splits text at
+    /// its input buffer's boundaries, and after the longest name it knows
+    /// in an unterminated reference such as "&notit;"; this follows neither,
+    /// nor its exact split of a name that isn't a reference at all.)
+    private static func nonSpaceTextPieces(in text: String) -> [Range<Int>] {
+        let scalars = Array(text.unicodeScalars)
+        // Each scalar's UTF-16 offset, and the text's length at the end.
+        var offsets = [0]
+        offsets.reserveCapacity(scalars.count + 1)
+        for scalar in scalars {
+            offsets.append(offsets[offsets.count - 1] + UTF16.width(scalar))
+        }
+        let isXMLSpace: (Unicode.Scalar) -> Bool = { " " == $0 || "\t" == $0 || "\n" == $0 || "\r" == $0 }
+        var pieces: [Range<Int>] = []
+        var pieceStart = 0
+        var index = 0
+        while index <= scalars.count {
+            guard index < scalars.count, "&" != scalars[index], "<" != scalars[index] else {
+                // The end of a piece of ordinary text.
+                if scalars[pieceStart..<index].contains(where: { !isXMLSpace($0) }) {
+                    pieces.append(offsets[pieceStart]..<offsets[index])
+                }
+                guard index < scalars.count else {
+                    break
+                }
+                // Then the reference (or the "&" or "<") as a piece of its own.
+                let end = ("&" == scalars[index]) ? referencePieceEnd(in: scalars, at: index) : index + 1
+                var piece = String.UnicodeScalarView()
+                piece.append(contentsOf: scalars[index..<end])
+                if !HTMLCharacterReferences.decode(String(piece)).unicodeScalars.allSatisfy(isXMLSpace) {
+                    pieces.append(offsets[index]..<offsets[end])
+                }
+                index = end
+                pieceStart = end
+                continue
+            }
+            index += 1
+        }
+        return pieces
+    }
+
+    /// Review item A2: where the piece of text that upstream's tokenizer
+    /// makes of the "&" at `start` ends (see nonSpaceTextPieces): past a
+    /// numeric reference and its semicolon, or past the "&#" or "&#x" alone
+    /// when no digits follow; past a name and its semicolon; and otherwise
+    /// just past the "&".
+    private static func referencePieceEnd(in scalars: [Unicode.Scalar], at start: Int) -> Int {
+        let isDigit: (Unicode.Scalar, Bool) -> Bool = { scalar, hexadecimal in
+            ("0"..."9").contains(scalar) || (hexadecimal && (("a"..."f").contains(scalar) || ("A"..."F").contains(scalar)))
+        }
+        let isAlphanumeric: (Unicode.Scalar) -> Bool = { ("0"..."9").contains($0) || ("a"..."z").contains($0) || ("A"..."Z").contains($0) }
+        var cursor = start + 1
+        guard cursor < scalars.count else {
+            return cursor
+        }
+        if "#" == scalars[cursor] {
+            cursor += 1
+            let hexadecimal = cursor < scalars.count && ("x" == scalars[cursor] || "X" == scalars[cursor])
+            if hexadecimal {
+                cursor += 1
+            }
+            let digitsStart = cursor
+            while cursor < scalars.count, isDigit(scalars[cursor], hexadecimal) {
+                cursor += 1
+            }
+            if cursor > digitsStart, cursor < scalars.count, ";" == scalars[cursor] {
+                cursor += 1
+            }
+            return cursor
+        }
+        guard isAlphanumeric(scalars[cursor]) else {
+            return cursor
+        }
+        while cursor < scalars.count, isAlphanumeric(scalars[cursor]) {
+            cursor += 1
+        }
+        if cursor < scalars.count, ";" == scalars[cursor] {
+            cursor += 1
+        }
+        return cursor
+    }
+
+    private struct MathArityState {
+        var element: HTMLStartElement
+        var arity: Int
+        /// Where the element sits in the checker's stack of open elements.
+        var stackIndex: Int
+        var childCount = 0
+        var reportedExtraChild = false
     }
 
     private struct LabelState {
@@ -1412,6 +1853,13 @@ struct HTMLGeneralAttributeChecker {
     // appendRoleTokenMessages: where role isn't allowed at all, the schema
     // never judges its value.)
     private func disallowedAttributes(for element: HTMLStartElement, parent: String?) -> Set<String> {
+        // Review item A2 (U16): these are HTML's rules. The one that matters
+        // in SVG is srcset, which SVG's <image> doesn't have (an HTML <image>
+        // start tag is parsed as <img>, so srcsetDisallowedElements's "image"
+        // was really about SVG all along).
+        guard .html == element.namespace else {
+            return ("image" == element.name && element.hasAttribute("srcset")) ? ["srcset"] : []
+        }
         let disallowed: Set<String>
         if element.name == "picture" {
             disallowed = Self.pictureDisallowedAttributes
@@ -1731,7 +2179,8 @@ struct HTMLGeneralAttributeChecker {
         messages: inout [ValidationMessage]
     ) {
         appendMessage(
-            "Attribute \u{201c}\(attribute)\u{201d} not allowed on element \u{201c}\(element.name)\u{201d} at this point.",
+            // (Review item A2: displayName spells SVG names as upstream does.)
+            "Attribute \u{201c}\(attribute)\u{201d} not allowed on element \u{201c}\(element.displayName)\u{201d} at this point.",
             for: element,
             locations: locations,
             messages: &messages
@@ -1746,7 +2195,7 @@ struct HTMLGeneralAttributeChecker {
         messages: inout [ValidationMessage]
     ) {
         appendMessage(
-            "Bad value \u{201c}\(value)\u{201d} for attribute \u{201c}\(attribute)\u{201d} on element \u{201c}\(element.name)\u{201d}.",
+            "Bad value \u{201c}\(value)\u{201d} for attribute \u{201c}\(attribute)\u{201d} on element \u{201c}\(element.displayName)\u{201d}.",
             for: element,
             locations: locations,
             messages: &messages
@@ -1767,7 +2216,9 @@ struct HTMLGeneralAttributeChecker {
     ) {
         appendRoleEffectMessages(for: element, role: role, locations: locations, messages: &messages)
         appendUnnecessaryRoleMessages(for: element, role: role, locations: locations, messages: &messages)
-        appendARIANamingMessages(for: element, locations: locations, messages: &messages)
+        if .html == element.namespace {
+            appendARIANamingMessages(for: element, locations: locations, messages: &messages)
+        }
         appendSelectRoleMessages(for: element, stack: stack, locations: locations, messages: &messages)
         appendSummaryARIAMessages(for: element, stack: stack, locations: locations, messages: &messages)
         appendARIAPropertyMessages(for: element, role: role, idElementNames: idElementNames, locations: locations, messages: &messages)
@@ -1775,7 +2226,7 @@ struct HTMLGeneralAttributeChecker {
         appendLabelARIAAssociationMessages(for: element, idElementNames: idElementNames, labelStack: labelStack, locations: locations, messages: &messages)
         appendARIAStructureMessages(for: element, role: role, stack: stack, roleStack: roleStack, locations: locations, messages: &messages)
 
-        if element.name == "main", !isHidden(element) {
+        if .html == element.namespace, element.name == "main", !isHidden(element) {
             visibleMainCount += 1
             if visibleMainCount > 1 {
                 appendMessage("A document must not include more than one visible \u{201c}main\u{201d} element.", for: element, locations: locations, messages: &messages)
@@ -1796,6 +2247,8 @@ struct HTMLGeneralAttributeChecker {
         for element: HTMLStartElement,
         parent: String?,
         stack: [String],
+        foreignSchemaChecksApply: Bool,
+        inTemplateContents: Bool,
         locations: SourceLocationMap,
         messages: inout [ValidationMessage]
     ) {
@@ -1814,14 +2267,20 @@ struct HTMLGeneralAttributeChecker {
         // reports before its other checks' messages for the same element.
         // Where each stage applies was matched against vnu.jar:
         guard let rawValue = roleAttributeValue(for: element) else { return }
-        // - Nothing at all inside a template's contents.
-        guard !stack.contains("template") else { return }
-        let inSVG = element.name == "svg" || stack.contains("svg")
+        // - Nothing at all inside a template's contents. (Review item A2: an
+        //   HTML template's; an SVG element named template is no such
+        //   thing, and this used to go by the name alone.)
+        guard !inTemplateContents else { return }
+        let inSVG = .svg == element.namespace
         // - MathML isn't filtered: the math element may have exactly
         //   role="math" (appendUnnecessaryRoleMessages warns that it's not
         //   needed), so anything else is a "Bad value" as written, and the
         //   elements inside it may not have a role at all.
-        if !inSVG, element.name == "math" || stack.contains("math") {
+        //   (Review item A2: these are the schema's, so not in an SVG <desc>
+        //   or a MathML <annotation-xml>, or in a rejected element; see
+        //   foreignSchemaChecksApply.)
+        if .mathML == element.namespace {
+            guard foreignSchemaChecksApply else { return }
             if element.name == "math" {
                 if rawValue != "math" {
                     appendBadAttributeValue(rawValue, attribute: "role", for: element, locations: locations, messages: &messages)
@@ -1851,12 +2310,25 @@ struct HTMLGeneralAttributeChecker {
             )
         }
         // - The schema judges the value only on elements it knows, and where
-        //   role is allowed at all: not on obsolete or unknown HTML elements
-        //   (or unknown, hyphenated SVG ones), and not where
-        //   appendDisallowedAttributeMessages reports role as not allowed.
-        let schemaKnowsElement = inSVG
-            ? !element.name.contains("-")
-            : (HTMLVocabulary.elements.contains(element.name) && !HTMLVocabulary.obsoleteElements.contains(element.name))
+        //   role is allowed at all: not on obsolete or unknown HTML elements,
+        //   and not where appendDisallowedAttributeMessages reports role as
+        //   not allowed.
+        // - On an SVG element, the schema judges nothing where it doesn't
+        //   check the element at all: an unknown one, one inside an element
+        //   it has rejected, or one in an SVG <desc> or a MathML
+        //   <annotation-xml> (see foreignSchemaChecksApply). This used to give
+        //   "Bad value" for role on an unknown SVG element (review item A2).
+        // - On an SVG element that doesn't take ARIA attributes (in upstream's
+        //   svg11 schema, only the 19 in svgARIAElements do), the schema's
+        //   error is that role isn't allowed at all (review item A2).
+        if inSVG {
+            guard foreignSchemaChecksApply else { return }
+            if !Self.svgARIAElements.contains(element.name) {
+                appendAttributeNotAllowed("role", for: element, locations: locations, messages: &messages)
+                return
+            }
+        }
+        let schemaKnowsElement = inSVG || (HTMLVocabulary.elements.contains(element.name) && !HTMLVocabulary.obsoleteElements.contains(element.name))
         guard schemaKnowsElement, !disallowedAttributes(for: element, parent: parent).contains("role") else { return }
         if filtered.roleValue == "directory" {
             // Deprecated in ARIA 1.2: upstream's schema no longer lists it,
@@ -1947,10 +2419,12 @@ struct HTMLGeneralAttributeChecker {
         locations: SourceLocationMap,
         messages: inout [ValidationMessage]
     ) {
-        guard role == "none" || role == "presentation" else { return }
+        // Review item A2 (U16): not for MathML; and on SVG elements, only a
+        // non-empty aria-* value counts (both as vnu.jar reports them).
+        guard role == "none" || role == "presentation", .mathML != element.namespace else { return }
         let hasTabindex = element.hasAttribute("tabindex")
         let hasGlobalARIA = element.attributes.contains { attribute in
-            attribute.name.hasPrefix("aria-") && attribute.name != "aria-hidden"
+            attribute.name.hasPrefix("aria-") && attribute.name != "aria-hidden" && (.html == element.namespace || !(attribute.value ?? "").isEmpty)
         }
         guard hasTabindex || hasGlobalARIA else { return }
 
@@ -1981,6 +2455,9 @@ struct HTMLGeneralAttributeChecker {
             }
             return
         }
+        // Review item A2 (U16): the rest are about HTML elements (an SVG <a
+        // href> isn't a "link" by default the way HTML's is).
+        guard .html == element.namespace else { return }
         if let expected = unnecessaryRole(for: element), expected == role,
            element.name != "select" || expected == element.attributeValue("role") {
             if element.name == "a", role == "link" {
@@ -2419,15 +2896,19 @@ struct HTMLGeneralAttributeChecker {
         locations: SourceLocationMap,
         messages: inout [ValidationMessage]
     ) {
-        if element.name == "a", element.hasAttribute("href"),
+        // Review item A2 (U16): the option, cell and row rules apply in every
+        // namespace, as vnu.jar applies them; the others are about HTML
+        // elements (and HTML headings), so a foreign element skips them.
+        let isHTML = .html == element.namespace
+        if isHTML, "a" == element.name, element.hasAttribute("href"),
            let ancestorRole = roleStack.compactMap({ $0 }).last(where: { Self.prohibitedInteractiveAncestorRoles.contains($0) }) {
             appendMessage("The element \u{201c}a\u{201d} with the attribute \u{201c}href\u{201d} must not appear as a descendant of an element with the attribute \u{201c}role=\(ancestorRole)\u{201d}.", for: element, locations: locations, messages: &messages)
         }
-        if element.hasAttribute("tabindex"),
+        if isHTML, element.hasAttribute("tabindex"),
            let ancestorRole = roleStack.compactMap({ $0 }).last(where: { $0 == "option" || $0 == "tab" }) {
             appendMessage("An element with the attribute \u{201c}tabindex\u{201d} must not appear as a descendant of an element with the attribute \u{201c}role=\(ancestorRole)\u{201d}.", for: element, locations: locations, messages: &messages)
         }
-        if let role, Self.headingProhibitedRoles.contains(role), stack.contains(where: { Self.headingElements.contains($0) }) {
+        if isHTML, let role, Self.headingProhibitedRoles.contains(role), stack.contains(where: { Self.headingElements.contains($0) }) {
             appendMessage("An element with the attribute \u{201c}role=\(role)\u{201d} must not appear as a descendant of an \u{201c}h1\u{201d}, \u{201c}h2\u{201d}, \u{201c}h3\u{201d}, \u{201c}h4\u{201d}, \u{201c}h5\u{201d}, or \u{201c}h6\u{201d} element.", for: element, locations: locations, messages: &messages)
         }
         if role == "option", !roleStack.contains(where: { $0 == "listbox" }) {
@@ -2439,7 +2920,7 @@ struct HTMLGeneralAttributeChecker {
         if role == "row", !roleStack.contains(where: { $0 == "treegrid" || $0 == "grid" || $0 == "rowgroup" || $0 == "table" }) {
             appendMessage("An element with \u{201c}role=row\u{201d} must be contained in, or owned by, an element with the \u{201c}role\u{201d} value \u{201c}treegrid\u{201d}, \u{201c}grid\u{201d}, \u{201c}rowgroup\u{201d}, or \u{201c}table\u{201d}.", for: element, locations: locations, messages: &messages)
         }
-        if role == "group", roleStack.last == "list" {
+        if isHTML, role == "group", roleStack.last == "list" {
             appendMessage("An element with \u{201c}role=group\u{201d} must not be a child of an element with \u{201c}role=list\u{201d}.", for: element, locations: locations, messages: &messages)
         }
         if element.name == "div", stack.last == "dl", let role, role != "presentation", role != "none" {
@@ -2459,7 +2940,7 @@ struct HTMLGeneralAttributeChecker {
                 appendMessage("An \u{201c}li\u{201d} element that is a descendant of a \u{201c}role=tree\u{201d} element must not have any \u{201c}role\u{201d} value other than \u{201c}treeitem\u{201d}.", for: element, locations: locations, messages: &messages)
             }
         }
-        if roleStack.last == "group", let role {
+        if isHTML, roleStack.last == "group", let role {
             if roleStack.contains(where: { $0 == "menu" || $0 == "menubar" }),
                !["menuitem", "menuitemcheckbox", "menuitemradio"].contains(role) {
                 appendMessage("An element with \u{201c}role=group\u{201d} that is a descendant of an element with \u{201c}role=menu\u{201d} or \u{201c}role=menubar\u{201d} must contain only elements with \u{201c}role=menuitem\u{201d}, \u{201c}role=menuitemcheckbox\u{201d}, or \u{201c}role=menuitemradio\u{201d}.", for: element, locations: locations, messages: &messages)
@@ -2468,7 +2949,7 @@ struct HTMLGeneralAttributeChecker {
                 appendMessage("An element with \u{201c}role=group\u{201d} that is a descendant of an element with \u{201c}role=tree\u{201d} must contain only elements with \u{201c}role=treeitem\u{201d}.", for: element, locations: locations, messages: &messages)
             }
         }
-        if roleStack.last == "rowgroup", role != "row" {
+        if isHTML, roleStack.last == "rowgroup", role != "row" {
             appendMessage("An element that is a child of an element with \u{201c}role=rowgroup\u{201d} must have \u{201c}role=row\u{201d}.", for: element, locations: locations, messages: &messages)
         }
         if let ancestorRole = roleStack.compactMap({ $0 }).last(where: { ["button", "img", "math", "progressbar", "separator", "slider"].contains($0) }) {
@@ -5100,15 +5581,19 @@ struct HTMLGeneralAttributeChecker {
         "audio", "image", "input", "link", "object", "track", "video"
     ]
 
-    private static let svgElementDisplayNames: [String: String] = [
-        "clippath": "clipPath",
-        "fecomponenttransfer": "feComponentTransfer",
-        "feconvolvematrix": "feConvolveMatrix",
-        "fefuncr": "feFuncR"
+    // Review item A2: the SVG elements whose attribute lists include ARIA's
+    // (common.attrs.aria) in upstream's svg11 schema, lowercased as the
+    // tokenizer produces them.
+    private static let svgARIAElements: Set<String> = [
+        "a", "altglyph", "circle", "ellipse", "foreignobject", "g", "glyph", "glyphref", "image",
+        "line", "path", "polygon", "polyline", "rect", "svg", "symbol", "text", "tspan", "use"
     ]
 
-    private static let mathFixedArityElements: Set<String> = [
-        "mfrac", "mover", "mroot", "msub", "msubsup", "msup", "munder", "munderover"
+    // Review item A2/U19: how many child elements these MathML elements take
+    // (upstream's mathml3-presentation.rnc).
+    private static let mathElementArity: [String: Int] = [
+        "mfrac": 2, "mover": 2, "mroot": 2, "msub": 2, "msup": 2, "munder": 2,
+        "msubsup": 3, "munderover": 3
     ]
 
     private static let mathRequiredChildren: [String] = [
@@ -5467,5 +5952,153 @@ struct HTMLGeneralAttributeChecker {
             && !value.contains("--")
             && !value.hasSuffix("-")
             && !value.hasPrefix("-")
+    }
+}
+
+/// Review item A2/U19: SVG path data, accepted and rejected as upstream's
+/// SvgPathData datatype does (it follows Batik's path parser). The port used
+/// a pattern fitted to a few fixtures, which rejected any arc whose radius
+/// or rotation had a digit from 2 to 9 ("A 5 5 0 0 1 20 50"), so ordinary
+/// icons were errors, and accepted most malformed data.
+///
+/// The rules: commands may come in any order, separated by whitespace (space,
+/// tab, CR, LF); Z takes no arguments; every other command takes one or more
+/// groups of arguments (M, L, T: 2; H, V: 1; Q, S: 4; C: 6; A: rx, ry,
+/// rotation, two flags, x, y). Arguments are separated by whitespace and at
+/// most one comma; after a group, a comma means another group must follow.
+/// A number is an optional sign, then digits with an optional fraction
+/// ("1." is fine) or a fraction alone (".5"), then an optional exponent; one
+/// number can end where the next begins ("1-2", "0.5.5"). An arc flag is a
+/// single "0" or "1". The empty string is valid. (And one quirk: see
+/// parseNumber.)
+enum SVGPathData {
+    static func isValid(_ value: String) -> Bool {
+        var parser = Parser(scalars: Array(value.unicodeScalars))
+        return parser.parse()
+    }
+
+    private struct Parser {
+        let scalars: [Unicode.Scalar]
+        var index = 0
+
+        init(scalars: [Unicode.Scalar]) {
+            self.scalars = scalars
+        }
+
+        private var current: Unicode.Scalar? {
+            index < scalars.count ? scalars[index] : nil
+        }
+
+        private static func isSpace(_ scalar: Unicode.Scalar?) -> Bool {
+            guard let scalar else { return false }
+            return " " == scalar || "\t" == scalar || "\r" == scalar || "\n" == scalar
+        }
+
+        private static func isDigit(_ scalar: Unicode.Scalar?) -> Bool {
+            guard let scalar else { return false }
+            return ("0"..."9").contains(scalar)
+        }
+
+        private static func startsNumber(_ scalar: Unicode.Scalar?) -> Bool {
+            guard let scalar else { return false }
+            return isDigit(scalar) || "+" == scalar || "-" == scalar || "." == scalar
+        }
+
+        /// How many arguments one group of each command has, with the arc
+        /// flags' positions marked.
+        private static let groupSizes: [Unicode.Scalar: Int] = [
+            "m": 2, "l": 2, "t": 2, "h": 1, "v": 1, "q": 4, "s": 4, "c": 6, "a": 7
+        ]
+
+        mutating func parse() -> Bool {
+            while let scalar = current {
+                if Self.isSpace(scalar) || "z" == scalar || "Z" == scalar {
+                    index += 1
+                } else if scalar.isASCII, let size = Self.groupSizes[Unicode.Scalar(UInt8(scalar.value) | 0x20)] {
+                    index += 1
+                    guard parseGroups(size: size, isArc: 7 == size) else { return false }
+                } else {
+                    return false
+                }
+            }
+            return true
+        }
+
+        /// One or more groups of a command's arguments.
+        private mutating func parseGroups(size: Int, isArc: Bool) -> Bool {
+            skipSpaces()
+            var expectGroup = true
+            while true {
+                guard Self.startsNumber(current) else { return !expectGroup }
+                for argument in 0..<size {
+                    if isArc, 3 == argument || 4 == argument {
+                        guard let flag = current, "0" == flag || "1" == flag else { return false }
+                        index += 1
+                    } else {
+                        guard parseNumber() else { return false }
+                    }
+                    if argument < size - 1 {
+                        _ = skipCommaSpaces()
+                    }
+                }
+                expectGroup = skipCommaSpaces()
+            }
+        }
+
+        private mutating func skipSpaces() {
+            while Self.isSpace(current) {
+                index += 1
+            }
+        }
+
+        /// Whitespace and at most one comma; returns whether there was a comma.
+        private mutating func skipCommaSpaces() -> Bool {
+            skipSpaces()
+            guard "," == current else { return false }
+            index += 1
+            skipSpaces()
+            return true
+        }
+
+        private mutating func parseNumber() -> Bool {
+            if "+" == current || "-" == current {
+                index += 1
+            }
+            var sawIntegerDigits = false
+            var sawFractionDigits = false
+            var fractionIsAllZeros = true
+            while Self.isDigit(current) {
+                index += 1
+                sawIntegerDigits = true
+            }
+            if "." == current {
+                index += 1
+                while let digit = current, Self.isDigit(digit) {
+                    if "0" != digit {
+                        fractionIsAllZeros = false
+                    }
+                    index += 1
+                    sawFractionDigits = true
+                }
+            }
+            guard sawIntegerDigits || sawFractionDigits else { return false }
+            // Batik's quirk, which upstream keeps: a fraction made only of
+            // zeros, with no integer part (".0"), ends the number before any
+            // exponent, so ".0e1" is invalid while "0.0e1" and ".5e1" are fine.
+            if !sawIntegerDigits, fractionIsAllZeros {
+                return true
+            }
+            if "e" == current || "E" == current {
+                index += 1
+                if "+" == current || "-" == current {
+                    index += 1
+                }
+                guard Self.isDigit(current) else { return false }
+                while Self.isDigit(current) {
+                    index += 1
+                }
+            }
+            return true
+        }
     }
 }

@@ -7,8 +7,152 @@ struct HTMLAttribute: Equatable, Sendable {
     var offset: Int
 }
 
+/// Review item A2: attribute values are kept as written, character references
+/// and all (the tokenizer only checks the references), but upstream's checks
+/// see values its tokenizer has already decoded. A check that compares or
+/// parses a value has to decode it first: A2's namespace check reported
+/// xmlns="http&#x3a;//www.w3.org/1999/xhtml" as a bad value, and its SVG path
+/// data check rejected d="M0 0&#10;L1 1", both of which vnu.jar accepts.
+///
+/// This decodes every numeric reference, and the named references that stand
+/// for an ASCII character (such as &amp;, &colon; and &sol;). For namespace
+/// URIs, encodings and path data that's all that matters: a value written
+/// with any other named reference doesn't match or parse whether it's decoded
+/// or not. IDs aren't so simple: id="caf&eacute;" and id="café" are the same
+/// ID upstream, but not here, since the port has no table of HTML's other
+/// named references to decode them with. Anything else, including a named
+/// reference without its semicolon, is left as written. (Numeric references in
+/// the C1 range aren't remapped to windows-1252 characters as the tokenizer
+/// would; nothing checked here can tell the difference.)
+enum HTMLCharacterReferences {
+    static func decode(_ value: String) -> String {
+        // The usual case: nothing to decode, and no copy made.
+        guard value.contains("&") else {
+            return value
+        }
+        let scalars = Array(value.unicodeScalars)
+        var output = String.UnicodeScalarView()
+        var index = 0
+        while index < scalars.count {
+            if "&" == scalars[index], let decoded = reference(in: scalars, at: index) {
+                output.append(decoded.scalar)
+                index = decoded.next
+            } else {
+                output.append(scalars[index])
+                index += 1
+            }
+        }
+        return String(output)
+    }
+
+    /// The reference starting at `start` (an "&"): its character, and the
+    /// index just past it. nil if it isn't one this decodes.
+    private static func reference(in scalars: [Unicode.Scalar], at start: Int) -> (scalar: Unicode.Scalar, next: Int)? {
+        var cursor = start + 1
+        guard cursor < scalars.count else {
+            return nil
+        }
+        if "#" == scalars[cursor] {
+            cursor += 1
+            var radix: UInt32 = 10
+            if cursor < scalars.count, "x" == scalars[cursor] || "X" == scalars[cursor] {
+                radix = 16
+                cursor += 1
+            }
+            let digitsStart = cursor
+            var code: UInt32 = 0
+            while cursor < scalars.count, let digit = digitValue(of: scalars[cursor], radix: radix) {
+                // Past U+10FFFF no more digits can bring it back into range,
+                // so stop accumulating there, which also means this can't
+                // overflow (see review item A10's `&#4294967296;`).
+                if code <= 0x10FFFF {
+                    code = code * radix + digit
+                }
+                cursor += 1
+            }
+            guard cursor > digitsStart else {
+                return nil
+            }
+            // A numeric reference counts even without its semicolon (the
+            // tokenizer reports that), as upstream's does.
+            if cursor < scalars.count, ";" == scalars[cursor] {
+                cursor += 1
+            }
+            // As in the tokenizer: NUL, surrogates and anything past U+10FFFF
+            // become U+FFFD.
+            let scalar = (0 == code) ? nil : Unicode.Scalar(code)
+            return (scalar ?? "\u{FFFD}", cursor)
+        }
+        // A named reference: ASCII letters and digits, then a semicolon. (The
+        // longest name in HTML's list has 31 characters; stop well past that.)
+        let nameStart = cursor
+        while cursor < scalars.count, cursor - nameStart < 40, isASCIIAlphanumeric(scalars[cursor]) {
+            cursor += 1
+        }
+        guard cursor > nameStart, cursor < scalars.count, ";" == scalars[cursor] else {
+            return nil
+        }
+        var name = String.UnicodeScalarView()
+        name.append(contentsOf: scalars[nameStart..<cursor])
+        guard let scalar = asciiNamedReferences[String(name)] else {
+            return nil
+        }
+        return (scalar, cursor + 1)
+    }
+
+    private static func digitValue(of scalar: Unicode.Scalar, radix: UInt32) -> UInt32? {
+        switch scalar.value {
+        case 0x30...0x39:
+            return scalar.value - 0x30
+        case 0x41...0x46 where 16 == radix:
+            return scalar.value - 0x41 + 10
+        case 0x61...0x66 where 16 == radix:
+            return scalar.value - 0x61 + 10
+        default:
+            return nil
+        }
+    }
+
+    private static func isASCIIAlphanumeric(_ scalar: Unicode.Scalar) -> Bool {
+        switch scalar.value {
+        case 0x30...0x39, 0x41...0x5A, 0x61...0x7A:
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// HTML's named references for ASCII characters (from the HTML
+    /// standard's list), by name without the "&" and ";".
+    private static let asciiNamedReferences: [String: Unicode.Scalar] = [
+        "amp": "&", "AMP": "&", "quot": "\"", "QUOT": "\"", "apos": "'",
+        "lt": "<", "LT": "<", "gt": ">", "GT": ">",
+        "colon": ":", "sol": "/", "bsol": "\\", "period": ".", "comma": ",", "semi": ";",
+        "excl": "!", "quest": "?", "num": "#", "dollar": "$", "percnt": "%",
+        "plus": "+", "equals": "=", "commat": "@", "ast": "*", "midast": "*",
+        "lpar": "(", "rpar": ")", "lsqb": "[", "lbrack": "[", "rsqb": "]", "rbrack": "]",
+        "lcub": "{", "lbrace": "{", "rcub": "}", "rbrace": "}",
+        "verbar": "|", "vert": "|", "VerticalLine": "|",
+        "lowbar": "_", "UnderBar": "_", "Hat": "^", "grave": "`", "DiacriticalGrave": "`",
+        "Tab": "\t", "NewLine": "\n",
+    ]
+}
+
+/// Review item A2: which namespace an element is in. The tokenizer works this
+/// out for every start tag (see HTMLTreeEventBuilder.namespace(forStartTag:
+/// attributes:)), and the tree builder and the checkers use it to apply
+/// HTML's rules (its vocabulary, content models, void elements and
+/// self-closing syntax) to HTML elements only.
+/// Before, everything inside inline <svg> or <math> was checked as HTML, so
+/// every icon's <path/> and <circle/> was reported twice over.
+enum HTMLNamespace: Equatable, Sendable {
+    case html
+    case svg
+    case mathML
+}
+
 enum HTMLToken: Equatable, Sendable {
-    case startTag(name: String, attributes: [HTMLAttribute], selfClosing: Bool, offset: Int, length: Int)
+    case startTag(name: String, attributes: [HTMLAttribute], selfClosing: Bool, namespace: HTMLNamespace, offset: Int, length: Int)
     case endTag(name: String, offset: Int, length: Int)
     case doctype(offset: Int, length: Int)
     case text(content: String, offset: Int, length: Int)
@@ -26,7 +170,12 @@ final class HTMLTokenizer {
         self.locations = locations
     }
 
-    func tokenize() -> [HTMLToken] {
+    /// The tokens, and the events HTMLTreeEventBuilder builds from them.
+    /// Review item A2: the tree builder runs as the tokens are produced,
+    /// because the namespace of each start tag's element, and whether
+    /// "<![CDATA[" starts a CDATA section, depend on its current node (see
+    /// HTMLTreeEventBuilder).
+    func tokenizeAndBuildTree() -> (tokens: [HTMLToken], events: [HTMLDocumentEvent]) {
         // Case 554591: the whole-source diagnostics (character references and
         // forbidden code points) are now computed after the main loop, which
         // collects the ranges where the HTML tokenizer never parses character
@@ -34,9 +183,18 @@ final class HTMLTokenizer {
         // sections. "&#" in JavaScript or "&nbsp" in CSS used to be errors.
         var tokens: [HTMLToken] = []
         var noCharacterReferenceRanges: [Range<String.Index>] = []
-        // Which namespace the tree builder is in (HTML, or inline SVG/MathML);
-        // see ForeignContentTracker.
-        var foreignContent = ForeignContentTracker()
+        // Review item A2: the tree builder, and how many of `tokens` it has
+        // consumed. It's caught up just before each question it's asked, so it
+        // consumes every token, in order, exactly as it did when it ran after
+        // the tokenizer (nothing here changes a token once it's appended).
+        var treeBuilder = HTMLTreeEventBuilder()
+        var tokensConsumedByTreeBuilder = 0
+        func catchUpTreeBuilder() {
+            while tokensConsumedByTreeBuilder < tokens.count {
+                treeBuilder.consume(tokens[tokensConsumedByTreeBuilder])
+                tokensConsumedByTreeBuilder += 1
+            }
+        }
         var index = source.startIndex
         while index < source.endIndex {
             guard source[index] == "<" else {
@@ -74,7 +232,8 @@ final class HTMLTokenizer {
             // Case 554591: in SVG/MathML, "<![CDATA[...]]>" is a CDATA section
             // (text), e.g. the CSS in an exported SVG's <style>. It used to be
             // reported as a bogus comment. (In HTML content it still is one.)
-            if foreignContent.isInForeignContent, consumePrefix("<![CDATA[", from: &index) {
+            catchUpTreeBuilder()
+            if treeBuilder.isCDATAAllowed, consumePrefix("<![CDATA[", from: &index) {
                 let contentStart = index
                 let contentEnd = source[index...].range(of: "]]>")
                 appendText(from: contentStart, to: contentEnd?.lowerBound ?? source.endIndex, to: &tokens)
@@ -141,7 +300,6 @@ final class HTMLTokenizer {
                     tokens.append(.bogusMarkup(offset: offset, length: max(1, locations.offset(of: index) - offset)))
                 } else {
                     tokens.append(.endTag(name: name, offset: offset, length: max(1, locations.offset(of: index) - offset)))
-                    foreignContent.endTag(name)
                 }
                 continue
             }
@@ -296,7 +454,14 @@ final class HTMLTokenizer {
                 appendError(message, at: start, length: max(1, locations.offset(of: source.endIndex) - locations.offset(of: start)), to: &tokens)
             }
             let offset = locations.offset(of: start)
-            tokens.append(.startTag(name: name, attributes: attributes, selfClosing: selfClosing, offset: offset, length: max(1, locations.offset(of: index) - offset)))
+            // Review item A2: the element's namespace goes on the token, from
+            // the tree builder's current node. (An HTML <image> keeps its
+            // name here: the tree builder handles it as <img>, and
+            // HTMLValidator reports it, under the name it was written with
+            // where upstream does.)
+            catchUpTreeBuilder()
+            let namespace = treeBuilder.namespace(forStartTag: name, attributes: attributes)
+            tokens.append(.startTag(name: name, attributes: attributes, selfClosing: selfClosing, namespace: namespace, offset: offset, length: max(1, locations.offset(of: index) - offset)))
 
             // Case 554591: the contents of <script>, <style>, <title>,
             // <textarea> and a few obsolete elements aren't markup; the HTML
@@ -310,17 +475,24 @@ final class HTMLTokenizer {
             // contents are ordinary markup; upstream's tree builder never
             // switches the tokenizer state for them.
             //
-            // A self-closing tag is left alone: in HTML the slash is ignored
-            // and the contents would still be text, but HTMLValidator doesn't
-            // put self-closing elements on its stack, so its end tag would
-            // then be reported as stray. (The self-closing error itself is
-            // reported elsewhere.)
-            let isHTMLElement = foreignContent.startTag(name, attributes: attributes, selfClosing: selfClosing)
-            if tagClosed, !selfClosing, isHTMLElement, let kind = TextContentKind(elementName: name) {
+            // A self-closing tag is no different: on an HTML element the slash
+            // is ignored, so <script/>'s contents are still script. (This used
+            // to be skipped because HTMLValidator didn't keep self-closed
+            // elements open; review item A2 fixed that. The self-closing error
+            // itself is reported elsewhere.)
+            if tagClosed, .html == namespace, let kind = TextContentKind(elementName: name) {
                 consumeTextContent(of: name, kind: kind, from: &index, to: &tokens, noCharacterReferenceRanges: &noCharacterReferenceRanges)
             }
         }
-        return sourceDiagnostics(skippingCharacterReferencesIn: noCharacterReferenceRanges) + tokens
+        catchUpTreeBuilder()
+        // (Review item A2: the tree builder finishes first, and the whole-source
+        // diagnostics go in front of the tokens in place. Building a third
+        // array, a copy of every token, while the tokens and the finished
+        // events were all alive raised the peak memory for a large document
+        // by 30–60%.)
+        let events = treeBuilder.finish()
+        tokens.insert(contentsOf: sourceDiagnostics(skippingCharacterReferencesIn: noCharacterReferenceRanges), at: 0)
+        return (tokens, events)
     }
 
     /// Which tokenizer state an element's contents are read in.
@@ -625,7 +797,7 @@ final class HTMLTokenizer {
     }
 
     /// Whole-source diagnostics. `noCharacterReferenceRanges` (ascending, from
-    /// tokenize()) are the places where "&" is just a character.
+    /// tokenizeAndBuildTree()) are the places where "&" is just a character.
     private func sourceDiagnostics(skippingCharacterReferencesIn noCharacterReferenceRanges: [Range<String.Index>]) -> [HTMLToken] {
         var tokens: [HTMLToken] = []
         var index = source.startIndex
@@ -842,39 +1014,16 @@ private extension String {
     }
 }
 
-/// Case 554591: a minimal model of which namespace the tree builder is in, so
-/// the tokenizer can tell HTML content from inline SVG/MathML ("foreign
-/// content") without a full tree builder. It matters in two places:
-/// <script>, <style>, <title>, <textarea> etc. are text-only elements only
-/// in HTML (in SVG they're foreign elements with ordinary markup inside),
-/// and "<![CDATA[" starts a CDATA section only in foreign content.
-///
-/// Tracked: open svg/math subtrees, the HTML integration points inside them
-/// (whose children are HTML again), the start tags that break out of foreign
-/// content, and the </p> and </br> end tags that do the same. Valid documents
-/// always close their <svg>/<math> elements explicitly, which is what keeps
-/// this simple model in step with the real tree.
-private struct ForeignContentTracker {
-    private enum Namespace {
-        case svg
-        case math
-    }
-
-    private struct Entry {
-        var name: String
-        var namespace: Namespace
-        /// HTML integration points (svg foreignObject/desc/title, MathML
-        /// annotation-xml with an HTML encoding) and MathML text integration
-        /// points (mi, mo, mn, ms, mtext) have HTML children.
-        var childrenAreHTML: Bool
-    }
-
-    private var entries: [Entry] = []
-
+/// Review item A2: upstream's tree-builder rules for foreign content (SVG and
+/// MathML), shared by the element stacks in HTMLTreeEventBuilder (which the
+/// tokenizer also asks for each start tag's namespace) and HTMLValidator, so
+/// that they agree on which elements are foreign and where HTML content
+/// resumes.
+enum HTMLForeignContent {
     /// Start tags that end foreign content (TreeBuilder's "breakout" list);
     /// upstream reports them as HTML start tags in a foreign context and pops
     /// back to the nearest HTML context. (<font> only with color/face/size.)
-    private static let breakoutStartTags: Set<String> = [
+    static let breakoutStartTags: Set<String> = [
         "b", "big", "blockquote", "body", "br", "center", "code", "dd", "div",
         "dl", "dt", "em", "embed", "h1", "h2", "h3", "h4", "h5", "h6", "head",
         "hr", "i", "img", "li", "listing", "menu", "meta", "nobr", "ol", "p",
@@ -882,78 +1031,268 @@ private struct ForeignContentTracker {
         "table", "tt", "u", "ul", "var"
     ]
 
-    /// Whether the next token is parsed as foreign content.
-    var isInForeignContent: Bool {
-        guard let last = entries.last else {
+    /// Whether a start tag is handled as foreign content rather than as HTML:
+    /// a foreign element, other than the <svg> or <math> that starts foreign
+    /// content where HTML is allowed (the tree builder handles that tag as an
+    /// HTML start tag, implied end tags included). `parentChildrenAreHTML` is
+    /// whether the current node is an HTML element or an integration point.
+    static func isHandledAsForeign(_ name: String, namespace: HTMLNamespace, parentChildrenAreHTML: Bool) -> Bool {
+        .html != namespace && !(parentChildrenAreHTML && nil != rootNamespace(of: name))
+    }
+
+    /// Upstream's exception for MathML text integration points: inside mi,
+    /// mo, mn, ms or mtext, an <mglyph> or <malignmark> start tag is MathML.
+    static func staysMathML(_ name: String, inside parent: String, namespace: HTMLNamespace) -> Bool {
+        .mathML == namespace && ("mglyph" == name || "malignmark" == name) && mathMLTextIntegrationPoints.contains(parent)
+    }
+
+    static let mathMLTextIntegrationPoints: Set<String> = ["mi", "mo", "mn", "ms", "mtext"]
+
+    /// Review item A2 (U18): SVG element names that have capitals, from the
+    /// HTML spec's table (upstream's ElementName), keyed by the lowercased
+    /// name the tokenizer produces. Messages use these, as upstream's do.
+    static let svgTagNameCase: [String: String] = [
+        "altglyph": "altGlyph",
+        "altglyphdef": "altGlyphDef",
+        "altglyphitem": "altGlyphItem",
+        "animatecolor": "animateColor",
+        "animatemotion": "animateMotion",
+        "animatetransform": "animateTransform",
+        "clippath": "clipPath",
+        "feblend": "feBlend",
+        "fecolormatrix": "feColorMatrix",
+        "fecomponenttransfer": "feComponentTransfer",
+        "fecomposite": "feComposite",
+        "feconvolvematrix": "feConvolveMatrix",
+        "fediffuselighting": "feDiffuseLighting",
+        "fedisplacementmap": "feDisplacementMap",
+        "fedistantlight": "feDistantLight",
+        "fedropshadow": "feDropShadow",
+        "feflood": "feFlood",
+        "fefunca": "feFuncA",
+        "fefuncb": "feFuncB",
+        "fefuncg": "feFuncG",
+        "fefuncr": "feFuncR",
+        "fegaussianblur": "feGaussianBlur",
+        "feimage": "feImage",
+        "femerge": "feMerge",
+        "femergenode": "feMergeNode",
+        "femorphology": "feMorphology",
+        "feoffset": "feOffset",
+        "fepointlight": "fePointLight",
+        "fespecularlighting": "feSpecularLighting",
+        "fespotlight": "feSpotLight",
+        "fetile": "feTile",
+        "feturbulence": "feTurbulence",
+        "foreignobject": "foreignObject",
+        "glyphref": "glyphRef",
+        "lineargradient": "linearGradient",
+        "radialgradient": "radialGradient",
+        "textpath": "textPath"
+    ]
+
+    /// An element's name as upstream's messages spell it.
+    static func displayName(_ name: String, namespace: HTMLNamespace) -> String {
+        (.svg == namespace) ? (svgTagNameCase[name] ?? name) : name
+    }
+
+    /// Every element upstream's MathML schema (schema/mml3) defines,
+    /// presentation and content MathML alike (193; "list" is written \list
+    /// there, as it's an RNC keyword). The schema accepts any of these where
+    /// a MathML expression may go, so only other names are "not allowed as
+    /// child" of a MathML element.
+    static let mathMLSchemaElements: Set<String> = [
+        "list",
+        "abs", "and", "annotation", "annotation-xml", "apply", "approx", "arccos", "arccosh",
+        "arccot", "arccoth", "arccsc", "arccsch", "arcsec", "arcsech", "arcsin", "arcsinh",
+        "arctan", "arctanh", "arg", "bind", "bvar", "card", "cartesianproduct", "cbytes",
+        "ceiling", "cerror", "ci", "cn", "codomain", "complexes", "compose", "condition",
+        "conjugate", "cos", "cosh", "cot", "coth", "cs", "csc", "csch", "csymbol", "curl",
+        "declare", "degree", "determinant", "diff", "divergence", "divide", "domain",
+        "domainofapplication", "emptyset", "eq", "equivalent", "eulergamma", "exists", "exp",
+        "exponentiale", "factorial", "factorof", "false", "floor", "fn", "forall", "gcd",
+        "geq", "grad", "gt", "ident", "image", "imaginary", "imaginaryi", "implies", "in",
+        "infinity", "int", "integers", "intersect", "interval", "inverse", "lambda",
+        "laplacian", "lcm", "leq", "limit", "ln", "log", "logbase", "lowlimit", "lt",
+        "maction", "maligngroup", "malignmark", "math", "matrix", "matrixrow", "max", "mean",
+        "median", "menclose", "merror", "mfenced", "mfrac", "mglyph", "mi", "min", "minus",
+        "mlabeledtr", "mlongdiv", "mmultiscripts", "mn", "mo", "mode", "moment", "momentabout",
+        "mover", "mpadded", "mphantom", "mprescripts", "mroot", "mrow", "ms", "mscarries",
+        "mscarry", "msgroup", "msline", "mspace", "msqrt", "msrow", "mstack", "mstyle", "msub",
+        "msubsup", "msup", "mtable", "mtd", "mtext", "mtr", "munder", "munderover",
+        "naturalnumbers", "neq", "none", "not", "notanumber", "notin", "notprsubset",
+        "notsubset", "or", "otherwise", "outerproduct", "partialdiff", "pi", "piece",
+        "piecewise", "plus", "power", "primes", "product", "prsubset", "quotient", "rationals",
+        "real", "reals", "reln", "rem", "root", "scalarproduct", "sdev", "sec", "sech",
+        "selector", "semantics", "sep", "set", "setdiff", "share", "sin", "sinh", "subset",
+        "sum", "tan", "tanh", "tendsto", "times", "transpose", "true", "union", "uplimit",
+        "variance", "vector", "vectorproduct", "xor"
+    ]
+
+    /// Review item A2: the MathML elements upstream's Assertions checker knows
+    /// (MATHML_ELEMENTS: presentation MathML); any other MathML element is "a
+    /// completely-unknown element", content MathML (apply, ci, cn, ...)
+    /// included, which the schema allows but vnu.jar reports anyway.
+    static let mathMLElements: Set<String> = [
+        "annotation", "annotation-xml", "maction", "maligngroup", "malignmark", "math",
+        "menclose", "merror", "mfenced", "mfrac", "mglyph", "mi", "mlabeledtr", "mlongdiv",
+        "mmultiscripts", "mn", "mo", "mover", "mpadded", "mphantom", "mprescripts", "mroot",
+        "mrow", "ms", "mscarries", "mscarry", "msgroup", "msline", "mspace", "msqrt", "msrow",
+        "mstack", "mstyle", "msub", "msubsup", "msup", "mtable", "mtd", "mtext", "mtr",
+        "munder", "munderover", "none", "semantics"
+    ]
+
+    /// Review item A2: the SVG elements upstream's Assertions checker knows
+    /// (SVG_ELEMENTS, in their camelCase spelling); any other SVG element is
+    /// "a completely-unknown element", and the schema checks none of its
+    /// attributes.
+    static let svgElements: Set<String> = [
+        "a", "altGlyph", "altGlyphDef", "altGlyphItem", "animate", "animateColor",
+        "animateMotion", "animateTransform", "circle", "clipPath", "color-profile", "cursor",
+        "defs", "desc", "ellipse", "feBlend", "feColorMatrix", "feComponentTransfer",
+        "feComposite", "feConvolveMatrix", "feDiffuseLighting", "feDisplacementMap",
+        "feDistantLight", "feDropShadow", "feFlood", "feFuncA", "feFuncB", "feFuncG",
+        "feFuncR", "feGaussianBlur", "feImage", "feMerge", "feMergeNode", "feMorphology",
+        "feOffset", "fePointLight", "feSpecularLighting", "feSpotLight", "feTile",
+        "feTurbulence", "filter", "font", "font-face", "font-face-format", "font-face-name",
+        "font-face-src", "font-face-uri", "foreignObject", "g", "glyph", "glyphRef", "hkern",
+        "image", "line", "linearGradient", "marker", "mask", "metadata", "missing-glyph",
+        "mpath", "path", "pattern", "polygon", "polyline", "radialGradient", "rect", "script",
+        "set", "stop", "style", "svg", "switch", "symbol", "text", "textPath", "title", "tref",
+        "tspan", "use", "view", "vkern"
+    ]
+
+    /// MathML elements that may only appear inside particular parents (in
+    /// upstream's schema): anywhere else, they're "not allowed as child".
+    static let mathMLRequiredParents: [String: Set<String>] = [
+        "annotation": ["semantics"],
+        "annotation-xml": ["semantics"],
+        "mprescripts": ["mmultiscripts"],
+        // (none is also an msrow, mscarries and mscarry child, in elementary
+        // math: MsrowExpression in mathml3-presentation.rnc.)
+        "none": ["mmultiscripts", "msrow", "mscarries", "mscarry"],
+        "mtr": ["mtable"],
+        "mlabeledtr": ["mtable"],
+        "mtd": ["mtr", "mlabeledtr"],
+        // Review item A2: the rest of the schema's elements that only some
+        // parents take. Before A2 every MathML element was "not allowed",
+        // which caught these by accident; once the vocabulary was known, an
+        // <mglyph> or <msline> directly in <math> went unreported. mglyph is
+        // token content (mi, mn, mo, ms, mtext) and content MathML's cn, ci
+        // and csymbol content; sep is cn's; elementary math's rows, lines,
+        // groups and carries go in mstack, mlongdiv or msgroup, and mscarry
+        // in mscarries; piece and otherwise in piecewise (from
+        // mathml3-presentation.rnc and mathml3-content.rnc).
+        "mglyph": ["mi", "mn", "mo", "ms", "mtext", "cn", "ci", "csymbol"],
+        "sep": ["cn"],
+        "msline": ["mstack", "mlongdiv", "msgroup"],
+        "msgroup": ["mstack", "mlongdiv", "msgroup"],
+        "msrow": ["mstack", "mlongdiv", "msgroup"],
+        "mscarries": ["mstack", "mlongdiv", "msgroup"],
+        "mscarry": ["mscarries"],
+        "piece": ["piecewise"],
+        "otherwise": ["piecewise"]
+    ]
+
+    /// Review item A2: whether upstream's schema rejects a foreign element
+    /// where it is ("not allowed as child"): an SVG element it doesn't know
+    /// (its SVG schema and its Assertions list know the same elements), a
+    /// MathML element the schema doesn't know, one in a parent that doesn't
+    /// take it (mathMLRequiredParents), or a <math> inside MathML. Upstream
+    /// reports nothing more inside such an element (see HTMLValidator's
+    /// OpenElement.Flags). (For HTML in MathML, see tokenElementRejects.)
+    static func schemaRejects(_ name: String, namespace: HTMLNamespace, parent: String?, parentNamespace: HTMLNamespace?) -> Bool {
+        switch namespace {
+        case .html:
+            return false
+        case .svg:
+            return !svgElements.contains(displayName(name, namespace: namespace))
+        case .mathML:
+            // (A <math> as a MathML element's child: math isn't one of the
+            // schema's MathML expressions, so "not allowed as child", except
+            // in <mtext>, whose content vnu.jar's schema extends with HTML's
+            // phrasing content, <math> included. A <math> in HTML, or in an
+            // SVG integration point, is fine.)
+            if !mathMLSchemaElements.contains(name) || ("math" == name && .mathML == parentNamespace && "mtext" != parent) {
+                return true
+            }
+            if let allowedParents = mathMLRequiredParents[name] {
+                return !allowedParents.contains(parent ?? "")
+            }
             return false
         }
-        return !last.childrenAreHTML
     }
 
-    /// Records a start tag (tag names arrive lowercased) and returns whether
-    /// the element it starts is in the HTML namespace.
-    mutating func startTag(_ name: String, attributes: [HTMLAttribute], selfClosing: Bool) -> Bool {
-        if let current = entries.last, !current.childrenAreHTML {
-            if Self.breaksOutOfForeignContent(name, attributes: attributes) {
-                popToHTMLContext()
-            } else {
-                // A foreign element in the current namespace, except that
-                // <svg> inside MathML annotation-xml starts SVG.
-                let namespace: Namespace = ("svg" == name && "annotation-xml" == current.name) ? .svg : current.namespace
-                if !selfClosing {
-                    entries.append(Entry(name: name, namespace: namespace, childrenAreHTML: Self.isIntegrationPoint(name, namespace: namespace, attributes: attributes)))
-                }
-                return false
-            }
-        }
+    /// Review item A2: MathML's token elements other than <mtext> (mi, mn, mo
+    /// and ms) take no HTML at all, not even an <svg>; mtext takes HTML's
+    /// phrasing content (vnu.jar's schema extends its content with that), so
+    /// what it doesn't take is flow content's blocks and the elements that
+    /// belong only in particular parents.
+    static let mathTokenElementsWithoutHTML: Set<String> = ["mi", "mn", "mo", "ms"]
+    static let htmlNotAllowedInMText: Set<String> = HTMLVocabulary.flowButNotPhrasing.union([
+        "caption", "col", "colgroup", "dd", "dt", "figcaption", "legend", "li", "optgroup", "option", "param", "rp",
+        "rt", "source", "summary", "tbody", "td", "tfoot", "th", "thead", "tr", "track"
+    ])
 
-        // HTML content: top level, or inside an integration point.
-        if "svg" == name || "math" == name {
-            if !selfClosing {
-                entries.append(Entry(name: name, namespace: ("svg" == name) ? .svg : .math, childrenAreHTML: false))
-            }
+    /// Review item A2: whether upstream's schema rejects a tag processed as
+    /// HTML (an HTML element, or the <svg> that starts foreign content) as a
+    /// MathML token element's child: "Element “b” not allowed as child of
+    /// “mi”". The token elements are MathML's text integration points, so the
+    /// tree builder puts HTML elements in them, and the port used to accept
+    /// them all. Upstream reports nothing more inside such an element. (For a
+    /// <math>, see schemaRejects; mglyph and malignmark stay MathML.)
+    static func tokenElementRejects(_ name: String, parent: String?, parentNamespace: HTMLNamespace?) -> Bool {
+        guard .mathML == parentNamespace, let parent else {
             return false
         }
-        return true
+        return mathTokenElementsWithoutHTML.contains(parent) || ("mtext" == parent && htmlNotAllowedInMText.contains(name))
     }
 
-    /// Records an end tag (name lowercased).
-    mutating func endTag(_ name: String) {
-        guard !entries.isEmpty else {
-            return
-        }
-        if isInForeignContent, "p" == name || "br" == name {
-            popToHTMLContext()
-            return
-        }
-        if let index = entries.lastIndex(where: { name == $0.name }) {
-            entries.removeSubrange(index...)
-        }
-    }
-
-    private mutating func popToHTMLContext() {
-        while let last = entries.last, !last.childrenAreHTML {
-            entries.removeLast()
-        }
-    }
-
-    private static func breaksOutOfForeignContent(_ name: String, attributes: [HTMLAttribute]) -> Bool {
+    /// Whether a start tag seen in foreign content ends it.
+    static func breaksOut(_ name: String, attributes: [HTMLAttribute]) -> Bool {
         if breakoutStartTags.contains(name) {
             return true
         }
         return "font" == name && attributes.contains { "color" == $0.name || "face" == $0.name || "size" == $0.name }
     }
 
-    private static func isIntegrationPoint(_ name: String, namespace: Namespace, attributes: [HTMLAttribute]) -> Bool {
+    /// The namespace an <svg> or <math> start tag in HTML content begins, or
+    /// nil for any other element (which is HTML).
+    static func rootNamespace(of name: String) -> HTMLNamespace? {
+        switch name {
+        case "svg":
+            return .svg
+        case "math":
+            return .mathML
+        default:
+            return nil
+        }
+    }
+
+    /// The namespace of an element started inside a foreign element: the
+    /// parent's, except that <svg> inside MathML annotation-xml starts SVG.
+    static func namespace(ofChild name: String, inForeignElement parent: String, namespace: HTMLNamespace) -> HTMLNamespace {
+        ("svg" == name && "annotation-xml" == parent) ? .svg : namespace
+    }
+
+    /// Whether a foreign element's children are HTML again: the HTML
+    /// integration points (svg foreignObject, desc and title; MathML
+    /// annotation-xml with an HTML encoding) and the MathML text integration
+    /// points (mi, mo, mn, ms, mtext). Upstream's scope checks also stop at
+    /// these, which is why HTML's implied end tags never reach past them.
+    static func childrenAreHTML(_ name: String, namespace: HTMLNamespace, attributes: [HTMLAttribute]) -> Bool {
         switch namespace {
+        case .html:
+            return true
         case .svg:
             return "foreignobject" == name || "desc" == name || "title" == name
-        case .math:
+        case .mathML:
             if "annotation-xml" == name {
-                let encoding = attributes.first { "encoding" == $0.name }?.value?.lowercased()
+                // (Decoded, as upstream compares it; review item A2.)
+                let encoding = attributes.first { "encoding" == $0.name }?.value.map { HTMLCharacterReferences.decode($0).lowercased() }
                 return "text/html" == encoding || "application/xhtml+xml" == encoding
             }
-            return ["mi", "mo", "mn", "ms", "mtext"].contains(name)
+            return mathMLTextIntegrationPoints.contains(name)
         }
     }
 }

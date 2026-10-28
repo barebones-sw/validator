@@ -10,6 +10,9 @@ struct HTMLStartElement: Equatable, Sendable {
     var name: String
     var attributes: [HTMLAttribute]
     var selfClosing: Bool
+    /// Review item A2: the element's namespace, from the tokenizer (see
+    /// HTMLNamespace), so that every checker sees the same answer.
+    var namespace: HTMLNamespace
     var range: HTMLSourceRange
 
     func attributeValue(_ name: String) -> String? {
@@ -18,6 +21,13 @@ struct HTMLStartElement: Equatable, Sendable {
 
     func hasAttribute(_ name: String) -> Bool {
         attributes.contains { $0.name == name }
+    }
+
+    /// Review item A2 (U18): the name as messages spell it (SVG's camelCase
+    /// names such as foreignObject and linearGradient; the tokenizer
+    /// lowercases every tag name).
+    var displayName: String {
+        HTMLForeignContent.displayName(name, namespace: namespace)
     }
 }
 
@@ -46,80 +56,232 @@ struct HTMLDocumentParser {
     }
 
     func parse() -> HTMLParsedDocument {
-        let tokens = HTMLTokenizer(source: source, locations: locations).tokenize()
-        let events = HTMLTreeEventBuilder(tokens: tokens).build()
+        // Review item A2: the tokenizer runs the tree builder as it goes (see
+        // HTMLTreeEventBuilder), so one pass produces both.
+        let (tokens, events) = HTMLTokenizer(source: source, locations: locations).tokenizeAndBuildTree()
         return HTMLParsedDocument(tokens: tokens, events: events)
     }
 }
 
-private struct HTMLTreeEventBuilder {
+/// Turns the tokens into the start, end, text and comment events the checkers
+/// read, keeping a stack of open elements as upstream's tree builder does
+/// (implied end tags, foreign content), but reporting nothing: HTMLValidator
+/// reports the parse errors.
+///
+/// Review item A2: the tokenizer runs this as it produces the tokens, feeding
+/// it each one in order (see HTMLTokenizer.tokenizeAndBuildTree), rather than
+/// running it afterward, because some of the tokenizer's own decisions depend
+/// on the current node: the namespace of each start tag's element, and whether
+/// "<![CDATA[" starts a CDATA section. In upstream's parser the tree builder
+/// drives the tokenizer the same way. The tokenizer used to keep a smaller
+/// model of the stack for those decisions, which drifted from this one: it
+/// didn't apply HTML's implied end tags, so a <p> closed by the next <p> in a
+/// <foreignObject> left the foreignObject open for good, and a stray end tag
+/// inside an <svg> (a </span> with no span open) ended the SVG. Either way,
+/// every SVG element after that point was checked as HTML.
+struct HTMLTreeEventBuilder {
     private struct OpenElement {
         var name: String
         var range: HTMLSourceRange
+        var namespace: HTMLNamespace
+        /// HTML elements, and the foreign elements whose children are HTML
+        /// (see HTMLForeignContent.childrenAreHTML).
+        var childrenAreHTML: Bool
+        /// Review item A2: a template's insertion mode (see
+        /// HTMLImplicitClosures.TemplateContentMode); unused otherwise.
+        var templateMode: HTMLImplicitClosures.TemplateContentMode
+        /// Review item A2: the element is inside a <template> (see
+        /// isInTemplateContents).
+        var isInTemplateContents: Bool
     }
 
-    private let tokens: [HTMLToken]
+    private var events: [HTMLDocumentEvent] = [.startDocument]
+    private var stack: [OpenElement] = []
+    // Quirks mode changes one implicit closure (<table> doesn't close an
+    // open <p>); see HTMLImplicitClosures.isQuirksMode.
+    private var sawDoctype = false
+    private var sawStartTag = false
+    private var quirksMode = false
+    // Review item A2: see HTMLImplicitClosures.DocumentSections.
+    private var sections = HTMLImplicitClosures.DocumentSections()
 
-    init(tokens: [HTMLToken]) {
-        self.tokens = tokens
-    }
+    init() {}
 
-    func build() -> [HTMLDocumentEvent] {
-        var events: [HTMLDocumentEvent] = [.startDocument]
-        var stack: [OpenElement] = []
-        // Quirks mode changes one implicit closure (<table> doesn't close an
-        // open <p>); see HTMLImplicitClosures.isQuirksMode.
-        var sawDoctype = false
-        var sawStartTag = false
-        var quirksMode = false
-
-        for token in tokens {
-            switch token {
-            case let .doctype(offset, length):
-                events.append(.doctype(range: HTMLSourceRange(offset: offset, length: length)))
-                if !sawStartTag {
-                    sawDoctype = true
+    /// Review item A2: the namespace of the element a start tag starts, from
+    /// the current node, as upstream's tree builder decides it (the "tree
+    /// construction dispatcher" and its foreign-content rules). Inside a
+    /// foreign element other than an integration point, a child is in its
+    /// parent's namespace (an <svg> in MathML's annotation-xml starts SVG),
+    /// unless the tag is one of the HTML start tags that end foreign content.
+    /// Directly inside a MathML text integration point (mi, mo, mn, ms,
+    /// mtext), <mglyph> and <malignmark> are still MathML. Anywhere else the
+    /// tag is HTML's, where <svg> and <math> start foreign content.
+    func namespace(forStartTag name: String, attributes: [HTMLAttribute]) -> HTMLNamespace {
+        if let current = stack.last, .html != current.namespace {
+            if !current.childrenAreHTML {
+                if HTMLForeignContent.breaksOut(name, attributes: attributes) {
+                    return .html
                 }
-            case let .startTag(name, attributes, selfClosing, offset, length):
-                if !sawStartTag {
-                    sawStartTag = true
-                    quirksMode = HTMLImplicitClosures.isQuirksMode(sawDoctype: sawDoctype)
-                }
-                closeImplicitElements(beforeStarting: name, quirksMode: quirksMode, stack: &stack, events: &events)
-                let range = HTMLSourceRange(offset: offset, length: length)
-                let element = HTMLStartElement(name: name, attributes: attributes, selfClosing: selfClosing, range: range)
-                events.append(.startElement(element))
-
-                if HTMLVocabulary.voidElements.contains(name) {
-                    events.append(.endElement(name: name, range: range, implicit: true))
-                } else {
-                    stack.append(OpenElement(name: name, range: range))
-                }
-            case let .endTag(name, offset, length):
-                closeElements(forEndTag: name, range: HTMLSourceRange(offset: offset, length: length), stack: &stack, events: &events)
-            case let .text(content, offset, length):
-                guard !content.isEmpty else { continue }
-                events.append(.characters(content, range: HTMLSourceRange(offset: offset, length: length)))
-            case let .comment(content, offset, length):
-                events.append(.comment(content, range: HTMLSourceRange(offset: offset, length: length)))
-            case .bogusMarkup, .parseError:
-                continue
+                return HTMLForeignContent.namespace(ofChild: name, inForeignElement: current.name, namespace: current.namespace)
+            }
+            if HTMLForeignContent.staysMathML(name, inside: current.name, namespace: current.namespace) {
+                return .mathML
             }
         }
+        return HTMLForeignContent.rootNamespace(of: name) ?? .html
+    }
 
-        while let element = stack.popLast() {
-            events.append(.endElement(name: element.name, range: element.range, implicit: true))
+    /// Review item A2: whether "<![CDATA[" starts a CDATA section rather than
+    /// a bogus comment: whenever the current node isn't an HTML element, as in
+    /// upstream (and the spec). That includes an integration point itself, so
+    /// CDATA directly in a <foreignObject> or <mi> is a CDATA section, but not
+    /// in an HTML element inside one.
+    var isCDATAAllowed: Bool {
+        stack.last.map { .html != $0.namespace } ?? false
+    }
+
+    mutating func consume(_ token: HTMLToken) {
+        switch token {
+        case let .doctype(offset, length):
+            events.append(.doctype(range: HTMLSourceRange(offset: offset, length: length)))
+            if !sawStartTag {
+                sawDoctype = true
+            }
+        case let .startTag(writtenName, attributes, selfClosing, namespace, offset, length):
+            if !sawStartTag {
+                sawStartTag = true
+                quirksMode = HTMLImplicitClosures.isQuirksMode(sawDoctype: sawDoctype)
+            }
+            // Review item A2: an HTML <image> start tag is handled as <img>,
+            // as upstream's tree builder does (HTMLValidator reports it), so
+            // the checkers apply all of img's rules to it: alt, srcset, void,
+            // picture's img child. An SVG <image> is an ordinary SVG element.
+            let name = (.html == namespace && "image" == writtenName) ? "img" : writtenName
+            // Review item A2: a start tag upstream's tree builder ignores (see
+            // HTMLImplicitClosures.ignoredStartTag; HTMLValidator reports it)
+            // isn't an element the checkers see. One that implies the body (a
+            // stray <frame> or table part) still closes the head first, as
+            // upstream's "anything else" rule in the head does.
+            if nil != HTMLImplicitClosures.ignoredStartTag(name, namespace: namespace, sections: sections, inTemplateContents: isInTemplateContents, formIsOpen: stack.contains(where: { .html == $0.namespace && "form" == $0.name }), tableContext: tableContext) {
+                if sections.isInHead, !isInTemplateContents, HTMLImplicitClosures.startTagImpliesBody(name, namespace: namespace) {
+                    closeHead()
+                    sections.noteBodyStarted()
+                }
+                sections.noteStartTag(name, namespace: namespace, ignored: true, inTemplateContents: isInTemplateContents)
+                return
+            }
+            // Review item A2: an HTML start tag in foreign content (one of
+            // HTMLForeignContent's "breakout" tags, such as <p> inside
+            // <svg>) ends the foreign content first, as upstream's tree
+            // builder does.
+            if .html == namespace {
+                while let top = stack.last, !top.childrenAreHTML {
+                    closeTop()
+                }
+            }
+            // Review item A2: a reopened <a> or <nobr> closes the old one
+            // first (see HTMLImplicitClosures.reopenedFormattingElement); in
+            // the "furthest block" case, or when the old one is out of scope,
+            // upstream takes it out from under the elements above it, which
+            // these events can't follow, so it stays open here.
+            if .html == namespace, "a" == name || "nobr" == name,
+               let reopened = HTMLImplicitClosures.reopenedFormattingElement(named: name, count: stack.count, element: { (stack[$0].name, stack[$0].namespace, stack[$0].childrenAreHTML) }),
+               !reopened.hasFurthestBlock, reopened.inScope {
+                while stack.count > reopened.index {
+                    closeTop()
+                }
+            }
+            // HTML's implied end tags apply only to tags processed as HTML
+            // (an HTML element, or the <svg> or <math> that starts foreign
+            // content), never to a foreign element's children.
+            if !HTMLForeignContent.isHandledAsForeign(name, namespace: namespace, parentChildrenAreHTML: stack.last?.childrenAreHTML ?? true) {
+                closeImplicitElements(beforeStarting: name)
+                // Review item A2: a template's first content start tag sets
+                // its insertion mode (see TemplateContentMode).
+                noteTemplateContent(name, namespace: namespace)
+            }
+            sections.noteStartTag(name, namespace: namespace, ignored: false, inTemplateContents: isInTemplateContents)
+            let range = HTMLSourceRange(offset: offset, length: length)
+            let element = HTMLStartElement(name: name, attributes: attributes, selfClosing: selfClosing, namespace: namespace, range: range)
+            events.append(.startElement(element))
+
+            // A self-closed foreign element ("<path/>") is complete, like an
+            // HTML void element; the slash means nothing on an HTML element.
+            // This builder used to keep every self-closed element open, so
+            // an SVG icon's later siblings were nested inside its <path/>.
+            if (.html == namespace) ? HTMLVocabulary.voidElements.contains(name) : selfClosing {
+                events.append(.endElement(name: name, range: range, implicit: true))
+            } else {
+                stack.append(OpenElement(name: name, range: range, namespace: namespace, childrenAreHTML: HTMLForeignContent.childrenAreHTML(name, namespace: namespace, attributes: attributes), templateMode: .inTemplate, isInTemplateContents: isInTemplateContents))
+            }
+        case let .endTag(name, offset, length):
+            closeElements(forEndTag: name, range: HTMLSourceRange(offset: offset, length: length))
+        case let .text(content, offset, length):
+            guard !content.isEmpty else { return }
+            // Review item A2: non-space text in the head (directly in it, not
+            // in its <title> or <style>) ends the head and starts the body, as
+            // upstream's "anything else" rule does; the text is then body
+            // content. (Leaving the head open made a later </body> find it
+            // unclosed.)
+            if sections.textStartsBody, HTMLImplicitClosures.containsNonSpace(content), stack.last.map({ .html == $0.namespace && ("html" == $0.name || "head" == $0.name) }) ?? true {
+                closeHead()
+                sections.noteBodyStarted()
+            }
+            events.append(.characters(content, range: HTMLSourceRange(offset: offset, length: length)))
+        case let .comment(content, offset, length):
+            events.append(.comment(content, range: HTMLSourceRange(offset: offset, length: length)))
+        case .bogusMarkup, .parseError:
+            return
+        }
+    }
+
+    /// Review item A2: whether the current node is inside a <template>.
+    /// (Review item A2: from the current node's flag, not a walk down the
+    /// stack for every start tag; the flag is set as each element is pushed,
+    /// and an element's ancestors don't change while it's open.)
+    private var isInTemplateContents: Bool {
+        stack.last.map { $0.isInTemplateContents || (.html == $0.namespace && "template" == $0.name) } ?? false
+    }
+
+    /// Review item A2: the innermost open HTML table or template (see
+    /// HTMLImplicitClosures.TableContext).
+    private var tableContext: HTMLImplicitClosures.TableContext {
+        guard let element = stack.last(where: { .html == $0.namespace && ("table" == $0.name || "template" == $0.name) }) else {
+            return .none
+        }
+        return ("table" == element.name) ? .table : .template(element.templateMode)
+    }
+
+    /// Review item A2: a start tag processed while the innermost template is
+    /// still in "in template" mode (only head content in it so far) sets that
+    /// template's mode, as upstream's tree builder does.
+    private mutating func noteTemplateContent(_ name: String, namespace: HTMLNamespace) {
+        guard let index = HTMLImplicitClosures.templateInTemplateMode(count: stack.count, element: { (stack[$0].name, stack[$0].namespace, stack[$0].templateMode) }),
+              let mode = HTMLImplicitClosures.templateContentMode(afterStartTag: name, namespace: namespace) else {
+            return
+        }
+        stack[index].templateMode = mode
+    }
+
+    /// Review item A2: closes the <head>, and anything still open in it.
+    private mutating func closeHead() {
+        guard let index = stack.lastIndex(where: { .html == $0.namespace && "head" == $0.name }) else { return }
+        while stack.count > index {
+            closeTop()
+        }
+    }
+
+    /// The events, once every token has been consumed: the elements still
+    /// open are closed (implicitly) at the end of the document.
+    mutating func finish() -> [HTMLDocumentEvent] {
+        while !stack.isEmpty {
+            closeTop()
         }
         events.append(.endDocument)
         return events
     }
 
-    private func closeImplicitElements(
-        beforeStarting name: String,
-        quirksMode: Bool,
-        stack: inout [OpenElement],
-        events: inout [HTMLDocumentEvent]
-    ) {
+    private mutating func closeImplicitElements(beforeStarting name: String) {
         // Case 554591: this used to close the nearest open "li" (or "dd"/"dt")
         // anywhere on the stack, which reached through a nested <ul>/<ol>/<dl>
         // and closed the *outer* list item, so every nested list produced a
@@ -127,30 +289,84 @@ private struct HTMLTreeEventBuilder {
         // "p" that was the current node. Use the same spec-derived rules as
         // HTMLValidator so both views of the tree agree. (Parse errors are
         // reported by HTMLValidator; this builder only needs the tree shape.)
-        let closure = HTMLImplicitClosures.beforeStartTag(name, openElements: stack.map(\.name), quirksMode: quirksMode)
-        while stack.count > closure.keepCount {
-            closeTop(stack: &stack, events: &events)
+        //
+        // Review item A2: the rules only see the HTML elements above the
+        // innermost foreign element (an integration point such as
+        // <foreignObject>, whose children are HTML), because upstream's scope
+        // checks stop there; HTML inside an SVG can't close a <p> outside it.
+        let boundary = HTMLImplicitClosures.tableScopedStartTags.contains(name) ? 0 : (stack.lastIndex { .html != $0.namespace }).map { $0 + 1 } ?? 0
+        let closure = HTMLImplicitClosures.beforeStartTag(name, openElements: stack[boundary...].map { .html == $0.namespace ? $0.name : "" }, quirksMode: quirksMode)
+        while stack.count > boundary + closure.keepCount {
+            closeTop()
         }
     }
 
-    private func closeTop(stack: inout [OpenElement], events: inout [HTMLDocumentEvent]) {
+    private mutating func closeTop() {
         guard let element = stack.popLast() else { return }
         events.append(.endElement(name: element.name, range: element.range, implicit: true))
     }
 
-    private func closeElements(
-        forEndTag name: String,
-        range: HTMLSourceRange,
-        stack: inout [OpenElement],
-        events: inout [HTMLDocumentEvent]
-    ) {
-        guard !HTMLVocabulary.voidElements.contains(name),
-              let match = stack.lastIndex(where: { $0.name == name }) else {
+    private mutating func closeElements(forEndTag name: String, range: HTMLSourceRange) {
+        // Review item A2: the same model as HTMLValidator's. With a foreign
+        // current node, the end tag closes the nearest matching foreign element
+        // if there's one before the first HTML element...
+        if let current = stack.last, .html != current.namespace,
+           let foreignMatch = stack.lastIndex(where: { .html == $0.namespace || name == $0.name }), .html != stack[foreignMatch].namespace {
+            while stack.count - 1 > foreignMatch {
+                closeTop()
+            }
+            _ = stack.popLast()
+            events.append(.endElement(name: name, range: range, implicit: false))
+            return
+        }
+        // Review item A2: upstream's </body> and </html> close nothing in the
+        // body: they switch its tree builder to the "after body" modes, and
+        // every element stays open until the end of the file. So content
+        // after </body>, which upstream reports and then handles as body
+        // content, is still in the body here, and an <svg> that a stray
+        // </body> appears in is still open after it. (This used to close
+        // everything up to the <body> or <html>.) In the head, though, they
+        // first close the head and imply the body, as upstream's "anything
+        // else" rule there does; HTMLValidator does the same.
+        if "body" == name || "html" == name {
+            if sections.textStartsBody {
+                closeHead()
+                sections.noteBodyStarted()
+            }
+            return
+        }
+        // Review item A2: </head> closes the head, implied or not (and an
+        // implied one has no element to close); later, it's stray.
+        if "head" == name, sections.isInHead {
+            sections.noteHeadEnded()
+            closeHead()
+            return
+        }
+        // Review item A2: the outermost </frameset> starts upstream's "after
+        // frameset" mode, where every start tag but <noframes> is ignored.
+        if "frameset" == name, let index = stack.lastIndex(where: { .html == $0.namespace && "frameset" == $0.name }), !stack[..<index].contains(where: { .html == $0.namespace && "frameset" == $0.name }) {
+            sections.noteFramesetEnded()
+        }
+        // ... and otherwise it's an HTML end tag, which closes an HTML element
+        // above the innermost integration point (foreignObject, mi, ...). For
+        // </p> without a <p> to close, and for </br>, upstream inserts an
+        // empty element that first ends foreign content; this builder doesn't
+        // insert it, but does end the foreign content.
+        // (Except HTMLImplicitClosures.endTagsUnscopedByIntegrationPoints.)
+        let scopeStart = HTMLImplicitClosures.endTagsUnscopedByIntegrationPoints.contains(name) ? 0 : (stack.lastIndex { .html != $0.namespace && $0.childrenAreHTML }).map { $0 + 1 } ?? 0
+        let htmlMatch = stack[scopeStart...].lastIndex(where: { .html == $0.namespace && $0.name == name })
+        if ("br" == name || ("p" == name && nil == htmlMatch)), let current = stack.last, .html != current.namespace {
+            while let top = stack.last, .html != top.namespace {
+                closeTop()
+            }
+            return
+        }
+        guard !HTMLVocabulary.voidElements.contains(name), let match = htmlMatch else {
             return
         }
 
         while stack.count - 1 > match {
-            closeTop(stack: &stack, events: &events)
+            closeTop()
         }
         _ = stack.popLast()
         events.append(.endElement(name: name, range: range, implicit: false))
@@ -286,16 +502,370 @@ enum HTMLImplicitClosures {
         "strike", "strong", "tt", "u"
     ]
 
-    /// What </body> may close without "End tag for \"body\" seen, but there were
-    /// unclosed elements." (upstream's uncloseloop1), and </html>'s variant
-    /// (uncloseloop2, which also allows an open <head> or <body>).
-    private static let bodyEndQuietElements: Set<String> = [
-        "body", "dd", "dt", "html", "li", "optgroup", "option", "p", "rb", "rp",
-        "rt", "rtc", "tbody", "td", "tfoot", "th", "thead", "tr"
+    /// Review item A2: the elements that may still be open, without "End tag
+    /// for  “body” seen, but there were unclosed elements.", when </body>
+    /// arrives (upstream's uncloseloop1, which looks above the body), and
+    /// </html>'s list (uncloseloop2, which looks at every element). They
+    /// aren't quite the same lists, and neither has tr. (These replace older
+    /// lists here, which had tr and head and were used by endTagClosesQuietly;
+    /// HTMLValidator now handles </body> and </html> itself.)
+    static let elementsQuietAtBodyEnd: Set<String> = [
+        "dd", "dt", "li", "optgroup", "option", "p", "rb", "rp", "rt", "rtc", "tbody", "td", "tfoot", "th", "thead"
     ]
-    private static let htmlEndQuietElements: Set<String> = [
-        "body", "dd", "dt", "head", "html", "li", "p", "rb", "rp", "rt", "rtc",
-        "tbody", "td", "tfoot", "th", "thead", "tr"
+    static let elementsQuietAtHTMLEnd: Set<String> = [
+        "body", "dd", "dt", "html", "li", "p", "rb", "rp", "rt", "rtc", "tbody", "td", "tfoot", "th", "thead"
+    ]
+
+    // MARK: Document sections
+
+    /// Review item A2: the start tags that don't imply the <body> in upstream's
+    /// "before head", "in head" and "after head" insertion modes: the head's
+    /// content (with noscript, which is head content when scripting is off),
+    /// and the html, head, body and frameset tags those modes handle
+    /// themselves. Any other start tag, a foreign <svg> or <math> included,
+    /// implies the body, as non-space text in the head does.
+    static let headSectionStartTags: Set<String> = [
+        "base", "basefont", "bgsound", "body", "frameset", "head", "html", "link", "meta", "noframes", "noscript",
+        "script", "style", "template", "title"
+    ]
+
+    /// Review item A2: whether a start tag (in the given namespace) implies the
+    /// <body>; see headSectionStartTags.
+    static func startTagImpliesBody(_ name: String, namespace: HTMLNamespace) -> Bool {
+        .html != namespace || !headSectionStartTags.contains(name)
+    }
+
+    /// Review item A2: the table-part start tags, which upstream's "in body"
+    /// mode ignores, as stray, outside a table.
+    static let tablePartStartTags: Set<String> = [
+        "caption", "col", "colgroup", "tbody", "td", "tfoot", "th", "thead", "tr"
+    ]
+
+    /// Review item A2: a template's current insertion mode (upstream's "stack
+    /// of template insertion modes"), which its first content start tag
+    /// decides. It matters to what upstream does with a stray start tag or
+    /// with </body> and </html> inside the template.
+    enum TemplateContentMode: Equatable, Sendable {
+        /// "In template": no content start tag yet, or only head content.
+        case inTemplate
+        /// One of the table modes (a table part started the content).
+        case inTable
+        /// "In column group" (a <col> started it).
+        case inColumnGroup
+        /// "In body" (anything else did).
+        case inBody
+    }
+
+    /// Review item A2: where upstream's tree builder is in the document's
+    /// sections, as far as the port needs to know: whether a start tag has
+    /// started the head (implicitly, too), whether the head has ended, and
+    /// whether the body has started (implicitly, too: any start tag outside
+    /// headSectionStartTags, or non-space text in the head), and whether the
+    /// outermost frameset has ended. HTMLTreeEventBuilder and HTMLValidator
+    /// keep one each, updated the same way, so they agree on the start tags
+    /// upstream ignores (see ignoredStartTag).
+    struct DocumentSections: Equatable, Sendable {
+        private(set) var sawStartTag: Bool
+        private(set) var headStarted: Bool
+        private(set) var headEnded: Bool
+        private(set) var bodyStarted: Bool
+        /// A frameset document: everything after its <frameset> is the
+        /// frameset's (or after it), and nothing implies a body.
+        private(set) var framesetStarted: Bool
+        private(set) var framesetEnded: Bool
+
+        init() {
+            sawStartTag = false
+            headStarted = false
+            headEnded = false
+            bodyStarted = false
+            framesetStarted = false
+            framesetEnded = false
+        }
+
+        /// Upstream's "in head" mode: the head (explicit or implied) is open.
+        var isInHead: Bool {
+            headStarted && !headEnded && !bodyStarted && !framesetStarted
+        }
+
+        /// Whether non-space text would start the body (in the head, or before
+        /// it), as opposed to being body content already, or a frameset's.
+        var textStartsBody: Bool {
+            !bodyStarted && !framesetStarted
+        }
+
+        /// After a start tag, ignored or not: the html tag starts nothing; any
+        /// other starts the head (a <head> explicitly, the rest implicitly);
+        /// <body>, and any tag that implies it, starts the body. A template's
+        /// contents are parsed apart and move neither: a <dl> in a <template>
+        /// in the head doesn't imply the body.
+        mutating func noteStartTag(_ name: String, namespace: HTMLNamespace, ignored: Bool, inTemplateContents: Bool) {
+            sawStartTag = true
+            if ignored || inTemplateContents {
+                return
+            }
+            if !(.html == namespace && "html" == name) {
+                headStarted = true
+            }
+            if .html == namespace, "frameset" == name {
+                framesetStarted = true
+                noteHeadEnded()
+            }
+            if !framesetStarted, (.html == namespace && "body" == name) || startTagImpliesBody(name, namespace: namespace) {
+                noteBodyStarted()
+            }
+        }
+
+        /// </head>, or the head closing because the body started.
+        mutating func noteHeadEnded() {
+            headStarted = true
+            headEnded = true
+        }
+
+        mutating func noteBodyStarted() {
+            noteHeadEnded()
+            bodyStarted = true
+        }
+
+        mutating func noteFramesetEnded() {
+            framesetEnded = true
+        }
+
+        /// Whether a frameset is open: from the <frameset> start tag to the
+        /// outermost </frameset> (upstream's "in frameset" mode, as far as
+        /// start tags go). (Review item A2: this used to be a walk down the
+        /// stack of open elements for every start tag, in the tree builder
+        /// and again in HTMLValidator.)
+        var framesetIsOpen: Bool {
+            framesetStarted && !framesetEnded
+        }
+    }
+
+    /// Review item A2: the innermost table or template context a start tag is
+    /// in (the innermost open HTML table or template element), which decides
+    /// whether upstream takes a table-part start tag or ignores it.
+    enum TableContext: Equatable, Sendable {
+        case none
+        case table
+        case template(TemplateContentMode)
+    }
+
+    /// Review item A2: how upstream's tree builder answers a start tag it
+    /// ignores, after reporting it (and why the port's stacks must leave the
+    /// element out). The port used to insert all of these, so a second
+    /// <body>, a stray <td> or a stray <frameset> in the body became an open
+    /// element that later end tags, and the checkers, then saw.
+    enum IgnoredStartTag: Equatable, Sendable {
+        /// "Stray start tag “x”."
+        case stray
+        /// "Start tag “x” seen but an element of the same type was already
+        /// open."
+        case alreadyOpen
+        /// "Saw a “form” start tag, but there was already an active “form”
+        /// element. Nested forms are not allowed. Ignoring the tag."
+        case nestedForm
+    }
+
+    /// Review item A2: whether upstream's tree builder ignores this start tag:
+    /// in a frameset, anything but frameset, frame and noframes;
+    /// <html> after any start tag (its attributes are merged into the first);
+    /// <head> once the head has started (already open while in the head;
+    /// stray after it); <body> once the body has started (already open; stray
+    /// in a template); <frameset> once the body has started; <frame> outside a
+    /// frameset; a <form> in a form (outside a template); a table part outside
+    /// a table (or a template in its body mode); and, after the outermost
+    /// </frameset>, anything but <noframes>.
+    /// (`formIsOpen` and `tableContext` are worked out only for the tags that
+    /// need them: each is a walk down the stack of open elements, and doing
+    /// both for every start tag made deeply nested documents slower still.)
+    static func ignoredStartTag(
+        _ name: String,
+        namespace: HTMLNamespace,
+        sections: DocumentSections,
+        inTemplateContents: Bool,
+        formIsOpen: @autoclosure () -> Bool,
+        tableContext: @autoclosure () -> TableContext
+    ) -> IgnoredStartTag? {
+        guard .html == namespace else { return nil }
+        if sections.framesetEnded, "noframes" != name {
+            return .stray
+        }
+        // In a frameset ("in frameset" mode), only frameset, frame and
+        // noframes start tags are taken; anything else is stray.
+        if sections.framesetIsOpen, !("frame" == name || "frameset" == name || "noframes" == name) {
+            return .stray
+        }
+        switch name {
+        case "html":
+            return sections.sawStartTag ? .stray : nil
+        case "head":
+            if inTemplateContents || sections.headEnded || sections.bodyStarted {
+                return .stray
+            }
+            return sections.headStarted ? .alreadyOpen : nil
+        case "body":
+            if inTemplateContents {
+                return .stray
+            }
+            return sections.bodyStarted ? .alreadyOpen : nil
+        case "frameset":
+            return (inTemplateContents || sections.bodyStarted) ? .stray : nil
+        case "frame":
+            return sections.framesetIsOpen ? nil : .stray
+        case "form":
+            // (Upstream's form element pointer, roughly: a <form> is open.
+            // Inside a template, a nested form is allowed.)
+            return (!inTemplateContents && formIsOpen()) ? .nestedForm : nil
+        default:
+            guard tablePartStartTags.contains(name) else { return nil }
+            switch tableContext() {
+            case .none, .template(.inBody):
+                return .stray
+            case .table, .template:
+                return nil
+            }
+        }
+    }
+
+    /// Review item A2: an <a> start tag while an <a> is still "active" (open
+    /// since the last cell, caption, template, applet, object or marquee), or
+    /// a <nobr> while a <nobr> is in scope: upstream reports "Start tag “a”
+    /// seen but an element of the same type was already open." and runs its
+    /// adoption agency, which closes the old one: with no special element
+    /// opened inside it, everything up to and including it; otherwise (the
+    /// "furthest block" case, where upstream also reports "End tag “a”
+    /// violates nesting rules." and then, in vnu.jar, stops checking) just
+    /// the old element, the block staying open. An old <a> that's out of
+    /// scope (below an SVG <foreignObject>, say) is "No “a” element in scope
+    /// but a “a” end tag seen." instead, and upstream then drops just that
+    /// element too (vnu.jar stops checking there as well). The port used to
+    /// keep the old one open, so a later </body> found it unclosed.
+    /// `element(index)` gives the open element at an index of a stack of
+    /// `count`. Returns the old element's index, whether there's a special
+    /// element above it, and whether it's in scope.
+    static func reopenedFormattingElement(
+        named name: String,
+        count: Int,
+        element: (Int) -> (name: String, namespace: HTMLNamespace, childrenAreHTML: Bool)
+    ) -> (index: Int, hasFurthestBlock: Bool, inScope: Bool)? {
+        // (The default scope's boundaries, upstream's SCOPING elements: the
+        // HTML ones in defaultScopeBoundaries, and the foreign integration
+        // points and annotation-xml.)
+        let isScopeBoundary: ((name: String, namespace: HTMLNamespace, childrenAreHTML: Bool)) -> Bool = { node in
+            (.html == node.namespace && defaultScopeBoundaries.contains(node.name)) || (.html != node.namespace && (node.childrenAreHTML || "annotation-xml" == node.name))
+        }
+        var index = count - 1
+        var found: Int?
+        var inScope = true
+        while index >= 0 {
+            let node = element(index)
+            if .html == node.namespace, name == node.name {
+                found = index
+                break
+            }
+            if "a" == name {
+                if .html == node.namespace, activeFormattingMarkers.contains(node.name) {
+                    return nil
+                }
+                if isScopeBoundary(node) {
+                    inScope = false
+                }
+            } else if isScopeBoundary(node) {
+                return nil
+            }
+            index -= 1
+        }
+        guard let found else { return nil }
+        let hasFurthestBlock = ((found + 1)..<count).contains { position in
+            let node = element(position)
+            return (.html == node.namespace && specialElements.contains(node.name)) || (.html != node.namespace && (node.childrenAreHTML || "annotation-xml" == node.name))
+        }
+        return (found, hasFurthestBlock, inScope)
+    }
+
+    /// Review item A2: the elements that put a marker on upstream's list of
+    /// active formatting elements, which an <a>'s search stops at (see
+    /// reopenedFormattingElement).
+    private static let activeFormattingMarkers: Set<String> = ["applet", "caption", "marquee", "object", "td", "template", "th"]
+
+    /// Review item A2: whether text has a character other than HTML's space
+    /// characters (space, tab, LF, FF, CR), which upstream's tree builder
+    /// treats differently in the head and after the body.
+    static func containsNonSpace(_ text: String) -> Bool {
+        text.utf8.contains { 0x20 != $0 && 0x09 != $0 && 0x0A != $0 && 0x0C != $0 && 0x0D != $0 }
+    }
+
+    /// Review item A2: the mode a start tag switches a template in "in
+    /// template" mode to, or nil if it leaves it there (head content).
+    /// Review item A2: the template whose insertion mode a start tag can set
+    /// (see templateContentMode): the innermost template, when it's still in
+    /// "in template" mode with nothing but head content open inside it. It's
+    /// found from the top of the stack down, stopping at the first element
+    /// that isn't head content, so it's quick even in a deep document; it
+    /// used to be a walk down the whole stack for every start tag.
+    /// `element(index)` gives the open element at an index of a stack of
+    /// `count`.
+    static func templateInTemplateMode(
+        count: Int,
+        element: (Int) -> (name: String, namespace: HTMLNamespace, templateMode: TemplateContentMode)
+    ) -> Int? {
+        var index = count - 1
+        while index >= 0 {
+            let node = element(index)
+            guard .html == node.namespace else {
+                return nil
+            }
+            if "template" == node.name {
+                return (.inTemplate == node.templateMode) ? index : nil
+            }
+            guard headSectionStartTags.contains(node.name) else {
+                return nil
+            }
+            index -= 1
+        }
+        return nil
+    }
+
+    static func templateContentMode(afterStartTag name: String, namespace: HTMLNamespace) -> TemplateContentMode? {
+        guard .html == namespace else { return .inBody }
+        switch name {
+        case "base", "basefont", "bgsound", "link", "meta", "noframes", "script", "style", "template", "title":
+            return nil
+        case "caption", "colgroup", "tbody", "tfoot", "thead", "tr", "td", "th":
+            return .inTable
+        case "col":
+            return .inColumnGroup
+        default:
+            return .inBody
+        }
+    }
+
+    // MARK: Foreign content
+
+    // Review item A2: these rules model the HTML namespace only, so callers
+    // pass them the HTML part of the stack of open elements, the elements
+    // above its innermost foreign (SVG or MathML) element, and add that
+    // boundary back to keepCount; upstream's scope checks stop at the
+    // integration point there. (The table-scoped tags below are the
+    // exception.)
+
+    /// Review item A2: start tags whose implied end tags are found in table
+    /// scope, which stops only at an HTML table, template or html element,
+    /// never at an SVG or MathML integration point (TreeBuilder's
+    /// findLastInTableScope): a <td> inside a cell's <math><mi> closes the
+    /// cell. Callers give the rules the whole stack for these, with foreign
+    /// elements' names blanked out, rather than the HTML part above the
+    /// innermost foreign element.
+    static let tableScopedStartTags: Set<String> = [
+        "caption", "col", "colgroup", "tbody", "td", "tfoot", "th", "thead", "tr"
+    ]
+
+    /// Review item A2: end tags that likewise aren't stopped by an
+    /// integration point: the table-scoped ones, and </template> (upstream's
+    /// findLast, with no scope). (</body> and </html> close nothing; see
+    /// HTMLValidator and HTMLTreeEventBuilder.)
+    static let endTagsUnscopedByIntegrationPoints: Set<String> = [
+        "caption", "table", "tbody", "td", "template", "tfoot", "th", "thead", "tr"
     ]
 
     // MARK: Document mode
@@ -528,7 +1098,8 @@ enum HTMLImplicitClosures {
     ///   </div> after an unclosed <p> are fine;
     /// - table end tags also close open table parts (</table> closes an
     ///   open cell, row and row group);
-    /// - </body> and </html> have their own allowed lists;
+    /// - (</body> and </html> close nothing; HTMLValidator checks them with
+    ///   elementsQuietAtBodyEnd and elementsQuietAtHTMLEnd;)
     /// - formatting end tags (</b>, </a>, ...) go through the adoption agency,
     ///   which complains unless the element is the current node;
     /// - any other end tag (</span>, </video>, </noscript>, custom elements)
@@ -546,10 +1117,6 @@ enum HTMLImplicitClosures {
         case "template":
             // "Generate all implied end tags thoroughly".
             quiet = impliedEndTagElements.union(tableStructureElements)
-        case "body":
-            quiet = bodyEndQuietElements
-        case "html":
-            quiet = htmlEndQuietElements
         default:
             if impliedEndTagClosingEndTags.contains(name) {
                 quiet = impliedEndTagElements
@@ -615,7 +1182,11 @@ struct HTMLRequiredAttributeChecker {
         for event in document.events {
             switch event {
             case let .startElement(element):
-                appendRequiredAttributeMessages(for: element, parent: stack.last, locations: locations, messages: &messages)
+                // Review item A2 (U16): HTML's required attributes; an SVG <a>
+                // or <script> shares the name but not the rules.
+                if .html == element.namespace {
+                    appendRequiredAttributeMessages(for: element, parent: stack.last, locations: locations, messages: &messages)
+                }
                 stack.append(element.name)
             case let .endElement(name, _, _):
                 if let index = stack.lastIndex(of: name) {

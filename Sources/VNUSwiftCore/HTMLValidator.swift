@@ -5,8 +5,272 @@ public final class HTMLValidator: Sendable {
     public init() {}
 
     private struct OpenElement {
+        /// Review item A2: per-element facts, packed into one byte: the stack
+        /// is scanned whole for every start tag, so a larger record made
+        /// deeply nested documents measurably slower.
+        struct Flags: OptionSet {
+            let rawValue: UInt8
+
+            /// HTML elements, and the foreign elements whose children are HTML
+            /// (see HTMLForeignContent.childrenAreHTML).
+            static let childrenAreHTML = Flags(rawValue: 1 << 0)
+            /// The element is one upstream's schema rejects (an unknown SVG or
+            /// MathML element, a MathML element in a parent that doesn't take
+            /// it, a <math> where MathML can't go), or inside one, at any depth
+            /// and in any namespace: upstream's schema validator reports
+            /// nothing more in that subtree (Jing's suppressDepth; vnu.jar's
+            /// "Suppressing further errors from this subtree"), though its
+            /// other checks (unknown elements, duplicate IDs) still apply.
+            static let inRejectedSubtree = Flags(rawValue: 1 << 1)
+            /// The element is in content upstream's schema accepts unchecked:
+            /// anything inside an SVG <desc>, at any depth (svg11's
+            /// any_element), and a non-MathML element inside a MathML
+            /// <annotation-xml>, with everything inside it (MathML 3's
+            /// anyElement; a MathML child of annotation-xml is checked as
+            /// usual). Upstream's other checks still apply there.
+            static let inAnyElementContent = Flags(rawValue: 1 << 2)
+            /// The element is in annotation-xml's anyElement content, which
+            /// excludes MathML at every depth: a <math> there is rejected.
+            /// (Not inside an SVG <desc>, whose any_element accepts everything
+            /// below it, an annotation-xml's content included.)
+            static let inAnnotationXMLContent = Flags(rawValue: 1 << 3)
+            /// The element is inside a <template>, where upstream checks
+            /// nothing but the parser's own errors.
+            static let inTemplateContents = Flags(rawValue: 1 << 4)
+            /// "Unclosed element" has been reported for the element (upstream
+            /// reports each element at most once).
+            static let reportedUnclosed = Flags(rawValue: 1 << 5)
+            /// The element started after the body did (for a <template>:
+            /// whether </body> in it can be a body end tag).
+            static let startedInBody = Flags(rawValue: 1 << 6)
+        }
+
         var name: String
         var offset: Int
+        /// Review item A2: the start tag's length, for "Unclosed element"
+        /// messages, which upstream reports at the start tag.
+        var length: Int
+        /// Review item A2: see HTMLNamespace and HTMLForeignContent.
+        var namespace: HTMLNamespace
+        /// Review item A2: a template's insertion mode (see
+        /// HTMLImplicitClosures.TemplateContentMode); unused otherwise.
+        var templateMode: HTMLImplicitClosures.TemplateContentMode
+        var flags: Flags
+
+        var childrenAreHTML: Bool { flags.contains(.childrenAreHTML) }
+        var isInRejectedSubtree: Bool { flags.contains(.inRejectedSubtree) }
+        var isInAnyElementContent: Bool { flags.contains(.inAnyElementContent) }
+        var isInAnnotationXMLContent: Bool { flags.contains(.inAnnotationXMLContent) }
+        var isInTemplateContents: Bool { flags.contains(.inTemplateContents) }
+        var startedInBody: Bool { flags.contains(.startedInBody) }
+        var reportedUnclosed: Bool {
+            get { flags.contains(.reportedUnclosed) }
+            set {
+                if newValue {
+                    flags.insert(.reportedUnclosed)
+                } else {
+                    flags.remove(.reportedUnclosed)
+                }
+            }
+        }
+    }
+
+    /// Review item A2: upstream's insertion modes after the body or frameset.
+    /// </body> and </html> don't close anything (see the .endTag case): they
+    /// switch to "after body" and "after after body", where the next start
+    /// tag, end tag or non-space text is reported and then handled as body
+    /// content again. The outermost </frameset> switches to "after frameset",
+    /// and </html> then to "after after frameset", where every tag (but
+    /// <noframes>) and non-space character is reported and ignored.
+    private enum AfterBodyMode {
+        case inBody
+        case afterBody
+        case afterAfterBody
+        case afterFrameset
+        case afterAfterFrameset
+    }
+
+    /// Review item A2: the flags a child, in the given namespace, inherits
+    /// from its parent (see OpenElement.Flags).
+    private static func childFlags(of parent: OpenElement?, childNamespace: HTMLNamespace) -> OpenElement.Flags {
+        var flags: OpenElement.Flags = []
+        guard let parent else { return flags }
+        if parent.isInRejectedSubtree {
+            flags.insert(.inRejectedSubtree)
+        }
+        let isAnnotationXMLChild = .mathML == parent.namespace && "annotation-xml" == parent.name && .mathML != childNamespace
+        if parent.isInAnyElementContent || (.svg == parent.namespace && "desc" == parent.name) || isAnnotationXMLChild {
+            flags.insert(.inAnyElementContent)
+        }
+        // (An annotation-xml in an SVG <desc>'s unchecked content is itself
+        // unchecked, so nothing in it is anyElement's: a <math> there is
+        // fine, as vnu.jar has it.)
+        let parentIsInDescContent = parent.isInAnyElementContent && !parent.isInAnnotationXMLContent
+        if parent.isInAnnotationXMLContent || (isAnnotationXMLChild && !parentIsInDescContent) {
+            flags.insert(.inAnnotationXMLContent)
+        }
+        if parent.isInTemplateContents || (.html == parent.namespace && "template" == parent.name) {
+            flags.insert(.inTemplateContents)
+        }
+        return flags
+    }
+
+    /// Review item A2: the elements whose end tags may be left out
+    /// (OPTIONAL_END_TAG in upstream's ElementName), which upstream never
+    /// lists as "Unclosed element".
+    private static let optionalEndTagElements: Set<String> = [
+        "body", "colgroup", "dd", "dt", "head", "html", "li", "optgroup", "option", "p",
+        "rb", "rp", "rt", "rtc", "tbody", "td", "tfoot", "th", "thead", "tr"
+    ]
+
+    /// Review item A2: upstream's errListUnclosedStartTags, which follows each
+    /// "… there were open elements" (or unclosed elements) error: every
+    /// element above `index` whose end tag can't be left out, innermost
+    /// first, as "Unclosed element", each at most once per document.
+    private func appendUnclosedElements(above index: Int, stack: inout [OpenElement], locations: SourceLocationMap, messages: inout [ValidationMessage]) {
+        var position = stack.count - 1
+        while position > index {
+            let element = stack[position]
+            if !element.reportedUnclosed, !(.html == element.namespace && Self.optionalEndTagElements.contains(element.name)) {
+                stack[position].reportedUnclosed = true
+                appendError("Unclosed element \u{201c}\(HTMLForeignContent.displayName(element.name, namespace: element.namespace))\u{201d}.", offset: element.offset, length: element.length, locations: locations, messages: &messages)
+            }
+            position -= 1
+        }
+    }
+
+    /// Review item A2: the elements whose contents the tokenizer reads as
+    /// text (raw text, RCDATA, script data), upstream's "text" mode.
+    private static let textContentElements: Set<String> = [
+        "iframe", "noembed", "noframes", "plaintext", "script", "style", "textarea", "title", "xmp"
+    ]
+
+    /// Review item A2: the elements that may still be open at the end of the
+    /// file without "End of file seen and there were open elements." (in
+    /// upstream's TreeBuilder.eof, for the body and table modes).
+    private static let elementsQuietAtEndOfFile: Set<String> = [
+        "body", "dd", "dt", "html", "li", "p", "tbody", "td", "tfoot", "th", "thead"
+    ]
+
+    /// Review item A2: the end of the file, as upstream's tree builder handles
+    /// it (TreeBuilder.eof), outside the "after" modes, which report nothing:
+    /// - in a raw-text or RCDATA element, the tokenizer has reported "End of
+    ///   file seen when expecting text or an end tag."; upstream lists the
+    ///   open elements after it and closes that element;
+    /// - in the head, elements open inside it are an error;
+    /// - in a frameset, any open element is;
+    /// - in the body (or a table), any open element whose end tag can't be
+    ///   left out (the list here isn't quite the one for </body>) is;
+    /// - in a <template>, upstream lists what's open, closes the template, and
+    ///   checks again (in its "in template" mode, it only lists them).
+    /// Errors about open elements are followed by the list of them (see
+    /// appendUnclosedElements); an element already listed isn't listed again.
+    private func appendEndOfFileMessages(stack: inout [OpenElement], sections: HTMLImplicitClosures.DocumentSections, offset: Int, locations: SourceLocationMap, messages: inout [ValidationMessage]) {
+        func endOfFileError() {
+            appendError("End of file seen and there were open elements.", offset: offset, length: 1, locations: locations, messages: &messages)
+            appendUnclosedElements(above: -1, stack: &stack, locations: locations, messages: &messages)
+        }
+        if let current = stack.last, .html == current.namespace, Self.textContentElements.contains(current.name) {
+            appendUnclosedElements(above: -1, stack: &stack, locations: locations, messages: &messages)
+            stack.removeLast()
+        }
+        // Upstream's insertion mode decides, and an open <template> (in the
+        // head too) has its own, so each pass finds the mode again after
+        // closing one. (With a template open in the head, the head's rule
+        // used to apply instead: a false open-elements error, or, when the
+        // <head> tag had been left out, nothing at all.)
+        while true {
+            let templateIndex = stack.lastIndex(where: { .html == $0.namespace && "template" == $0.name })
+            if nil == templateIndex, sections.isInHead {
+                // Anything open in the head (a <noscript>; the head itself
+                // may have been implied) is an error.
+                if stack.contains(where: { !(.html == $0.namespace && ("html" == $0.name || "head" == $0.name)) }) {
+                    endOfFileError()
+                }
+                return
+            }
+            if nil == templateIndex, stack.contains(where: { .html == $0.namespace && "frameset" == $0.name }) {
+                endOfFileError()
+                return
+            }
+            // (In a template's own "in template" insertion mode, with nothing
+            // but head content in it, upstream only lists what's open and
+            // closes the template: its open-elements check belongs to the
+            // body and table modes, a template's included. This used to
+            // report "End of file seen and there were open elements." for
+            // <template><script>…</script> left open.)
+            let isInTemplateMode = stack.last.map { .html == $0.namespace && "template" == $0.name && .inTemplate == $0.templateMode } ?? false
+            if !isInTemplateMode, stack.contains(where: { !(.html == $0.namespace && Self.elementsQuietAtEndOfFile.contains($0.name)) }) {
+                endOfFileError()
+            }
+            guard let templateIndex else {
+                return
+            }
+            appendUnclosedElements(above: -1, stack: &stack, locations: locations, messages: &messages)
+            stack.removeSubrange(templateIndex...)
+        }
+    }
+
+    /// Review item A2: what </body> and </html> do in the insertion mode the
+    /// stack implies: in the body, they're body end tags; in a table, cell,
+    /// caption, column group, frameset, or a template in its "in template" or
+    /// table modes (or one in the head), they're stray; in a template in
+    /// "in column group" mode, they're "Garbage in “colgroup” fragment".
+    /// (Stray table parts and framesets aren't on the stack; see
+    /// HTMLImplicitClosures.ignoredStartTag.)
+    private enum BodyEndContext {
+        case body
+        case stray
+        case columnGroupGarbage
+    }
+
+    private static func bodyEndContext(in stack: [OpenElement]) -> BodyEndContext {
+        var index = stack.count - 1
+        while index >= 0 {
+            let element = stack[index]
+            if .html == element.namespace {
+                switch element.name {
+                case "body":
+                    return .body
+                case "caption", "colgroup", "frameset", "table", "tbody", "td", "tfoot", "th", "thead", "tr":
+                    return .stray
+                case "template":
+                    switch element.templateMode {
+                    case .inTemplate, .inTable:
+                        return .stray
+                    case .inColumnGroup:
+                        return .columnGroupGarbage
+                    case .inBody:
+                        return element.startedInBody ? .body : .stray
+                    }
+                default:
+                    break
+                }
+            }
+            index -= 1
+        }
+        return .body
+    }
+
+    /// Review item A2: the innermost open HTML table or template (see
+    /// HTMLImplicitClosures.TableContext).
+    private static func tableContext(in stack: [OpenElement]) -> HTMLImplicitClosures.TableContext {
+        guard let element = stack.last(where: { .html == $0.namespace && ("table" == $0.name || "template" == $0.name) }) else {
+            return .none
+        }
+        return ("table" == element.name) ? .table : .template(element.templateMode)
+    }
+
+    /// Review item A2: a start tag processed while the innermost template is
+    /// still in "in template" mode (only head content in it so far) sets that
+    /// template's mode, as upstream's tree builder does; HTMLTreeEventBuilder
+    /// does the same.
+    private static func noteTemplateContent(_ name: String, namespace: HTMLNamespace, stack: inout [OpenElement]) {
+        guard let index = HTMLImplicitClosures.templateInTemplateMode(count: stack.count, element: { (stack[$0].name, stack[$0].namespace, stack[$0].templateMode) }),
+              let mode = HTMLImplicitClosures.templateContentMode(afterStartTag: name, namespace: namespace) else {
+            return
+        }
+        stack[index].templateMode = mode
     }
 
     public func validate(source: String) -> [ValidationMessage] {
@@ -17,12 +281,16 @@ public final class HTMLValidator: Sendable {
         var sawDoctype = false
         var sawStartTag = false
         var sawHTMLLang = false
-        var sawClosedBody = false
+        // Review item A2: see AfterBodyMode.
+        var afterBodyMode = AfterBodyMode.inBody
+        // Review item A2: see HTMLImplicitClosures.DocumentSections.
+        var sections = HTMLImplicitClosures.DocumentSections()
         // Case 554591: quirks mode changes one implicit closure (<table>
         // doesn't close an open <p>); see HTMLImplicitClosures.isQuirksMode.
         var quirksMode = false
         var firstStartTag: (offset: Int, length: Int)?
-        var ids: [String: Int] = [:]
+        // Review item A2: each ID's first start tag (see the .startTag case).
+        var ids: [String: (offset: Int, length: Int)] = [:]
         var metaCharsetCount = 0
         var stack: [OpenElement] = []
         appendSourcePatternDiagnostics(source: source, locations: locations, messages: &messages)
@@ -39,14 +307,119 @@ public final class HTMLValidator: Sendable {
                 appendError("Saw \u{201c}<\u{201d}. Probable cause: Unescaped \u{201c}<\u{201d}.", offset: offset, length: length, locations: locations, messages: &messages)
             case let .parseError(message, offset, length):
                 appendError(message, offset: offset, length: length, locations: locations, messages: &messages)
-            case .text, .comment:
+            case .comment:
                 continue
-            case let .startTag(name, attributes, selfClosing, offset, length):
+            case let .text(content, offset, _):
+                // Review item A2: non-space text, where the insertion mode
+                // handles it (not in foreign content, which its own rules
+                // handle), as upstream's tree builder takes it: after </body>
+                // it's "Non-space character after body." (where upstream also
+                // stops checking, which the port doesn't); after </html>, "…in
+                // page trailer."; both then go back to the body. After a
+                // frameset, every non-space character is reported and ignored.
+                // In the head, it ends the head and starts the body. The port
+                // used to skip text here; a fitted rule reported only the
+                // literal "</body>text".
+                // (Text in a raw-text or RCDATA element, such as a <noframes>
+                // after the frameset, is that element's content, in upstream's
+                // "text" mode, whatever mode came before it.)
+                guard HTMLImplicitClosures.containsNonSpace(content), stack.last.map({ (.html == $0.namespace && !Self.textContentElements.contains($0.name)) || (.html != $0.namespace && $0.childrenAreHTML) }) ?? true else {
+                    continue
+                }
+                switch afterBodyMode {
+                case .afterBody, .afterAfterBody:
+                    let leadingSpace = content.utf16.prefix { 0x20 == $0 || 0x09 == $0 || 0x0A == $0 || 0x0C == $0 || 0x0D == $0 }.count
+                    appendError(.afterBody == afterBodyMode ? "Non-space character after body." : "Non-space character in page trailer.", offset: offset + leadingSpace, length: 1, locations: locations, messages: &messages)
+                    afterBodyMode = .inBody
+                case .afterFrameset, .afterAfterFrameset:
+                    for (position, unit) in content.utf16.enumerated() where !(0x20 == unit || 0x09 == unit || 0x0A == unit || 0x0C == unit || 0x0D == unit) {
+                        appendError(.afterFrameset == afterBodyMode ? "Non-space after \u{201c}frameset\u{201d}." : "Non-space character in page trailer.", offset: offset + position, length: 1, locations: locations, messages: &messages)
+                    }
+                    continue
+                case .inBody:
+                    break
+                }
+                // (In a frameset, upstream reports each non-space character
+                // and ignores it.)
+                if let current = stack.last, .html == current.namespace, "frameset" == current.name {
+                    for (position, unit) in content.utf16.enumerated() where !(0x20 == unit || 0x09 == unit || 0x0A == unit || 0x0C == unit || 0x0D == unit) {
+                        appendError("Non-space in \u{201c}frameset\u{201d}.", offset: offset + position, length: 1, locations: locations, messages: &messages)
+                    }
+                    continue
+                }
+                if sections.textStartsBody, stack.last.map({ .html == $0.namespace && ("html" == $0.name || "head" == $0.name) }) ?? true {
+                    if let headIndex = stack.lastIndex(where: { .html == $0.namespace && "head" == $0.name }) {
+                        stack.removeSubrange(headIndex...)
+                    }
+                    sections.noteBodyStarted()
+                }
+            case let .startTag(writtenName, attributes, selfClosing, namespace, offset, length):
                 if firstStartTag == nil {
                     firstStartTag = (offset, length)
                 }
-                if sawClosedBody, name != "html" {
-                    appendError("Stray start tag \u{201c}\(name)\u{201d}.", offset: offset, length: length, locations: locations, messages: &messages)
+                // Review item A2: an HTML <image> start tag is handled as <img>
+                // (as in upstream's tree builder, and in HTMLTreeEventBuilder);
+                // validateStartTag reports it, under the written name where
+                // upstream does.
+                let name = (.html == namespace && "image" == writtenName) ? "img" : writtenName
+                // Review item A2: duplicate attributes, which upstream's
+                // tokenizer reports for every start tag, whatever the tree
+                // builder then does with it (a tag it ignores included). These
+                // used to be checked with the rest of a tag's checks, which an
+                // ignored tag now skips.
+                appendDuplicateAttributeMessages(attributes, locations: locations, messages: &messages)
+                // Review item A2: duplicate IDs, as upstream's tree builder
+                // checks them: first thing for every start tag, so one it then
+                // ignores (a stray <frame> or <td>, an <html> after </body>)
+                // still counts; in any namespace; for an empty ID too; and not
+                // at all inside a <template> (the template's own ID still
+                // counts). Like upstream, this also says where the first one
+                // was. The port used to check HTML and foreign elements apart,
+                // later on, so it skipped the tags it ignored, empty IDs, and
+                // nothing in a template.
+                if !Self.childFlags(of: stack.last, childNamespace: namespace).contains(.inTemplateContents), let id = attributes.first(where: { "id" == $0.name }).map({ decodeEntities($0.value ?? "") }) {
+                    if let first = ids[id] {
+                        appendError("Duplicate ID \u{201c}\(id)\u{201d}.", offset: offset, length: length, locations: locations, messages: &messages)
+                        appendWarning("The first occurrence of ID \u{201c}\(id)\u{201d} was here.", offset: first.offset, length: first.length, locations: locations, messages: &messages)
+                    } else {
+                        ids[id] = (offset, length)
+                    }
+                }
+                // Review item A2: whether the insertion mode handles the tag
+                // (an HTML element, or the <svg> or <math> that starts foreign
+                // content) rather than the foreign-content rules (a foreign
+                // element's child). Upstream's dispatcher also sends an <svg>
+                // directly in a MathML <annotation-xml> to the insertion mode.
+                let isHandledAsForeign = HTMLForeignContent.isHandledAsForeign(name, namespace: namespace, parentChildrenAreHTML: stack.last?.childrenAreHTML ?? true)
+                let insertionModeHandlesTag = !isHandledAsForeign || ("svg" == name && .svg == namespace && .mathML == stack.last?.namespace && "annotation-xml" == stack.last?.name)
+                // Review item A2: after </body> or </html>, upstream reports a
+                // start tag that its insertion mode handles as stray, and then
+                // handles it as body content, so only the first one is
+                // reported; an <html> start tag is reported and otherwise
+                // ignored. (This used to report every start tag after </body>.
+                // After </html>, upstream also stops checking the document
+                // there, with "Cannot recover after last error"; the port goes
+                // on.) After a frameset, every start tag but <noframes> is
+                // reported and ignored.
+                if insertionModeHandlesTag {
+                    switch afterBodyMode {
+                    case .afterBody, .afterAfterBody:
+                        appendError("Stray start tag \u{201c}\(writtenName)\u{201d}.", offset: offset, length: length, locations: locations, messages: &messages)
+                        if .html == namespace, "html" == name {
+                            validateNamespaceDeclarations(namespace: namespace, attributes: attributes, offset: offset, length: length, locations: locations, messages: &messages)
+                            sections.noteStartTag(name, namespace: namespace, ignored: true, inTemplateContents: false)
+                            continue
+                        }
+                        afterBodyMode = .inBody
+                    case .afterFrameset, .afterAfterFrameset:
+                        if !(.html == namespace && "noframes" == name) {
+                            appendError("Stray start tag \u{201c}\(writtenName)\u{201d}.", offset: offset, length: length, locations: locations, messages: &messages)
+                            sections.noteStartTag(name, namespace: namespace, ignored: true, inTemplateContents: false)
+                            continue
+                        }
+                    case .inBody:
+                        break
+                    }
                 }
                 sawStartTag = true
                 if !sawDoctype {
@@ -62,31 +435,325 @@ public final class HTMLValidator: Sendable {
                 // the first <li>, and "<p>Intro<ul>" puts the <ul> in the
                 // body, not in the <p>. Checking against the pre-closure stack
                 // reported valid documents as errors.
-                let closure = HTMLImplicitClosures.beforeStartTag(name, openElements: stack.map(\.name), quirksMode: quirksMode)
-                let contentStack = Array(stack.prefix(closure.keepCount))
-                validateStartTag(name: name, attributes: attributes, selfClosing: selfClosing, offset: offset, length: length, stack: stack, contentStack: contentStack, impliedEndTagErrors: closure.errors, locations: locations, ids: &ids, metaCharsetCount: &metaCharsetCount, sawHTMLLang: &sawHTMLLang, messages: &messages)
-                stack = contentStack
-                if !HTMLVocabulary.voidElements.contains(name) && !selfClosing {
-                    stack.append(OpenElement(name: name, offset: offset))
-                } else if selfClosing && HTMLVocabulary.voidElements.contains(name) {
+                //
+                // Review item A2: an HTML start tag in foreign content (one of
+                // the "breakout" tags, such as <p> inside <svg>) ends the
+                // foreign content first, as in upstream's tree builder; the
+                // tokenizer has already decided which tags those are.
+                if .html == namespace, let top = stack.last, !top.childrenAreHTML {
+                    appendError("HTML start tag \u{201c}\(writtenName)\u{201d} in a foreign namespace context.", offset: offset, length: length, locations: locations, messages: &messages)
+                    while let top = stack.last, !top.childrenAreHTML {
+                        stack.removeLast()
+                    }
+                }
+                // Review item A2: the start tags upstream's tree builder
+                // ignores (see HTMLImplicitClosures.ignoredStartTag), reported
+                // as upstream reports them; HTMLTreeEventBuilder leaves them
+                // out too. The port used to insert them, so a second <body>, a
+                // stray <td> or <frameset>, or an <html> or <head> in the body
+                // became an open element that later end tags then found
+                // unclosed (and a stray <frame> was reported as obsolete). One
+                // that implies the body (a stray <frame> or table part) still
+                // closes the head first, as upstream's "anything else" rule in
+                // the head does. In a table, a stray <frame> is first reported
+                // as being there, as other tags are (validateStartTag).
+                let tagIsInTemplateContents = Self.childFlags(of: stack.last, childNamespace: namespace).contains(.inTemplateContents)
+                if !isHandledAsForeign, let ignored = HTMLImplicitClosures.ignoredStartTag(name, namespace: namespace, sections: sections, inTemplateContents: tagIsInTemplateContents, formIsOpen: stack.contains(where: { .html == $0.namespace && "form" == $0.name }), tableContext: Self.tableContext(in: stack)) {
+                    if "frame" == name, nil != HTMLImplicitClosures.tableInsertionModeIndex(in: stack[((stack.lastIndex { .html != $0.namespace }).map { $0 + 1 } ?? 0)...].map(\.name)) {
+                        appendError("Start tag \u{201c}frame\u{201d} seen in \u{201c}table\u{201d}.", offset: offset, length: length, locations: locations, messages: &messages)
+                    }
+                    switch ignored {
+                    case .stray:
+                        appendError("Stray start tag \u{201c}\(writtenName)\u{201d}.", offset: offset, length: length, locations: locations, messages: &messages)
+                    case .alreadyOpen:
+                        appendError("Start tag \u{201c}\(name)\u{201d} seen but an element of the same type was already open.", offset: offset, length: length, locations: locations, messages: &messages)
+                    case .nestedForm:
+                        appendError("Saw a \u{201c}form\u{201d} start tag, but there was already an active \u{201c}form\u{201d} element. Nested forms are not allowed. Ignoring the tag.", offset: offset, length: length, locations: locations, messages: &messages)
+                    }
+                    // (An ignored tag's slash isn't acknowledged either, so
+                    // <frame/> outside a frameset is the self-closing error.)
+                    if "frame" == name, selfClosing {
+                        appendError("Self-closing syntax (\u{201c}/>\u{201d}) used on a non-void HTML element. Ignoring the slash and treating as a start tag.", offset: offset, length: length, locations: locations, messages: &messages)
+                    }
+                    // (Upstream checks a stray <html>'s namespace attributes,
+                    // as it merges them into the first.)
+                    if "html" == name {
+                        validateNamespaceDeclarations(namespace: namespace, attributes: attributes, offset: offset, length: length, locations: locations, messages: &messages)
+                    }
+                    if sections.isInHead, !tagIsInTemplateContents, HTMLImplicitClosures.startTagImpliesBody(name, namespace: namespace) {
+                        if let headIndex = stack.lastIndex(where: { .html == $0.namespace && "head" == $0.name }) {
+                            stack.removeSubrange(headIndex...)
+                        }
+                        sections.noteBodyStarted()
+                    }
+                    sections.noteStartTag(name, namespace: namespace, ignored: true, inTemplateContents: tagIsInTemplateContents)
+                    continue
+                }
+                // An HTML element stays open unless it's void: the slash in
+                // "<div/>" means nothing in HTML. (This used to leave every
+                // self-closed HTML element off the stack, so "<div/>text</div>"
+                // reported a stray end tag.) A foreign element is complete when
+                // self-closed.
+                let pushesElement = (.html == namespace) ? !HTMLVocabulary.voidElements.contains(name) : !selfClosing
+                // A foreign element's children (SVG's <path>, MathML's <mi>)
+                // aren't HTML: HTML's vocabulary, content models, implied end
+                // tags and self-closing rule don't apply to them, so of the
+                // start-tag checks only the namespace-neutral ones run.
+                if isHandledAsForeign {
+                    var flags = Self.childFlags(of: stack.last, childNamespace: namespace)
+                    if HTMLForeignContent.childrenAreHTML(name, namespace: namespace, attributes: attributes) {
+                        flags.insert(.childrenAreHTML)
+                    }
+                    if HTMLForeignContent.schemaRejects(name, namespace: namespace, parent: stack.last?.name, parentNamespace: stack.last?.namespace) {
+                        flags.insert(.inRejectedSubtree)
+                    }
+                    if sections.bodyStarted {
+                        flags.insert(.startedInBody)
+                    }
+                    validateForeignStartTag(name: name, namespace: namespace, stack: stack, attributes: attributes, offset: offset, length: length, locations: locations, messages: &messages)
+                    if pushesElement {
+                        stack.append(OpenElement(name: name, offset: offset, length: length, namespace: namespace, templateMode: .inTemplate, flags: flags))
+                    }
+                    sections.noteStartTag(name, namespace: namespace, ignored: false, inTemplateContents: flags.contains(.inTemplateContents))
+                    continue
+                }
+                // Review item A2: a reopened <a> or <nobr> (see
+                // HTMLImplicitClosures.reopenedFormattingElement): the error,
+                // and the old element closed. The port reported nothing, and
+                // a later </body> then listed the old one as unclosed.
+                if .html == namespace, "a" == name || "nobr" == name,
+                   let reopened = HTMLImplicitClosures.reopenedFormattingElement(named: name, count: stack.count, element: { (stack[$0].name, stack[$0].namespace, stack[$0].childrenAreHTML) }) {
+                    appendError("Start tag \u{201c}\(name)\u{201d} seen but an element of the same type was already open.", offset: offset, length: length, locations: locations, messages: &messages)
+                    if !reopened.inScope {
+                        appendError("No \u{201c}\(name)\u{201d} element in scope but a \u{201c}\(name)\u{201d} end tag seen.", offset: offset, length: length, locations: locations, messages: &messages)
+                        stack.remove(at: reopened.index)
+                    } else {
+                        if reopened.index != stack.count - 1 {
+                            appendError("End tag \u{201c}\(name)\u{201d} violates nesting rules.", offset: offset, length: length, locations: locations, messages: &messages)
+                        }
+                        if reopened.hasFurthestBlock {
+                            stack.remove(at: reopened.index)
+                        } else {
+                            stack.removeSubrange(reopened.index...)
+                        }
+                    }
+                }
+                // Otherwise the tag is processed as HTML: an HTML element, or
+                // the <svg> or <math> that starts foreign content. The implied
+                // end tag rules see only the HTML elements above the innermost
+                // foreign one (see "Foreign content" in HTMLImplicitClosures).
+                // (Table-scoped tags see the whole stack, foreign elements
+                // blanked out; see HTMLImplicitClosures.tableScopedStartTags.)
+                let boundary = HTMLImplicitClosures.tableScopedStartTags.contains(name) ? 0 : (stack.lastIndex { .html != $0.namespace }).map { $0 + 1 } ?? 0
+                var closure = HTMLImplicitClosures.beforeStartTag(name, openElements: stack[boundary...].map { .html == $0.namespace ? $0.name : "" }, quirksMode: quirksMode)
+                closure.keepCount += boundary
+                // (Review item A2: the stack after the implied end tags is a
+                // slice of it, not a copy; copying the whole stack for every
+                // start tag made deeply nested documents slower still.)
+                validateStartTag(name: name, writtenName: writtenName, attributes: attributes, selfClosing: selfClosing, namespace: namespace, offset: offset, length: length, stack: stack, contentStack: stack[..<closure.keepCount], impliedEndTagErrors: closure.errors, locations: locations, metaCharsetCount: &metaCharsetCount, sawHTMLLang: &sawHTMLLang, messages: &messages)
+                // Review item A2: after "End tag “p” implied, but there were
+                // open elements." and the like, upstream lists the elements
+                // above the one closed (see appendUnclosedElements).
+                if closure.errors.contains(where: { $0.hasSuffix(", but there were open elements.") }) {
+                    appendUnclosedElements(above: closure.keepCount, stack: &stack, locations: locations, messages: &messages)
+                }
+                stack.removeSubrange(closure.keepCount...)
+                Self.noteTemplateContent(name, namespace: namespace, stack: &stack)
+                sections.noteStartTag(name, namespace: namespace, ignored: false, inTemplateContents: Self.childFlags(of: stack.last, childNamespace: namespace).contains(.inTemplateContents))
+                // Review item A2: the new element's flags come from its parent
+                // after the implied end tags: a table part that closes an open
+                // SVG <desc> (table scope reaches past it) isn't inside it.
+                var flags = Self.childFlags(of: stack.last, childNamespace: namespace)
+                if HTMLForeignContent.childrenAreHTML(name, namespace: namespace, attributes: attributes) {
+                    flags.insert(.childrenAreHTML)
+                }
+                if sections.bodyStarted {
+                    flags.insert(.startedInBody)
+                }
+                // Review item A2: a <math> where MathML can't go: in a MathML
+                // element (an annotation-xml with an HTML encoding, or a token
+                // element: mi, mn, mo or ms; mtext takes HTML phrasing content,
+                // <math> included), or anywhere in annotation-xml's anyElement
+                // content, which excludes MathML at every depth (vnu.jar:
+                // "Element “math” not allowed as child of “span”"). Upstream
+                // reports nothing more inside it. (See also
+                // HTMLForeignContent.schemaRejects.)
+                // (In an SVG <desc>'s unchecked content, though, nothing is
+                // reported; only annotation-xml's anyElement content excludes
+                // MathML. See OpenElement.Flags.inAnnotationXMLContent.)
+                if .mathML == namespace, "math" == name, let parent = stack.last, HTMLForeignContent.schemaRejects(name, namespace: namespace, parent: parent.name, parentNamespace: parent.namespace) || parent.isInAnnotationXMLContent {
+                    if flags.isDisjoint(with: [.inRejectedSubtree, .inTemplateContents]), !flags.contains(.inAnyElementContent) || flags.contains(.inAnnotationXMLContent) {
+                        appendError(HTMLVocabulary.notAllowedAsChildMessage("math", parent: HTMLForeignContent.displayName(parent.name, namespace: parent.namespace)), offset: offset, length: length, locations: locations, messages: &messages)
+                    }
+                    flags.insert(.inRejectedSubtree)
+                } else if let parent = stack.last, HTMLForeignContent.tokenElementRejects(name, parent: parent.name, parentNamespace: parent.namespace) {
+                    // Review item A2: HTML in a MathML token element that
+                    // doesn't take it (see HTMLForeignContent.tokenElementRejects):
+                    // "Element “b” not allowed as child of “mi”", which starts a
+                    // rejected subtree. (Not where upstream's schema checks
+                    // nothing; see OpenElement.Flags.)
+                    // (An element HTML doesn't know at all already has this
+                    // message from validateStartTag, which vnu.jar gives once.)
+                    let validateStartTagReportedIt = .html == namespace && !name.contains("-") && !HTMLVocabulary.elements.contains(name) && !HTMLVocabulary.obsoleteElements.contains(name) && "menuitem" != name
+                    if !validateStartTagReportedIt, flags.isDisjoint(with: [.inRejectedSubtree, .inTemplateContents, .inAnyElementContent]) {
+                        appendError(HTMLVocabulary.notAllowedAsChildMessage(name, parent: parent.name), offset: offset, length: length, locations: locations, messages: &messages)
+                    }
+                    flags.insert(.inRejectedSubtree)
+                }
+                if pushesElement {
+                    stack.append(OpenElement(name: name, offset: offset, length: length, namespace: namespace, templateMode: .inTemplate, flags: flags))
+                } else if selfClosing && .html == namespace && HTMLVocabulary.voidElements.contains(name) {
                     appendInfo("Trailing slash on void elements has no effect and interacts badly with unquoted attribute values.", offset: offset, length: length, locations: locations, messages: &messages)
                 }
             case let .endTag(name, offset, length):
-                if sawClosedBody, name != "html" {
-                    appendError("Saw an end tag after \u{201c}body\u{201d} had been closed.", offset: offset, length: length, locations: locations, messages: &messages)
+                // Review item A2: an end tag while the current node is a
+                // foreign element follows upstream's foreign-content steps
+                // (TreeBuilder.endTag): it's an error unless it closes the
+                // current node, and it closes the nearest matching foreign
+                // element; if it reaches an HTML element first, it's then
+                // handled as an HTML end tag below. (Upstream doesn't give </p>
+                // or </br> the spec's newer breakout step here.)
+                if let current = stack.last, .html != current.namespace {
+                    if current.name != name {
+                        appendError("End tag \u{201c}\(name)\u{201d} did not match the name of the current open element (\u{201c}\(HTMLForeignContent.displayName(current.name, namespace: current.namespace))\u{201d}).", offset: offset, length: length, locations: locations, messages: &messages)
+                    }
+                    if let match = stack.lastIndex(where: { .html == $0.namespace || name == $0.name }), .html != stack[match].namespace {
+                        stack.removeSubrange(match...)
+                        continue
+                    }
+                }
+                // Review item A2: the end tag of a raw-text or RCDATA element
+                // (</script>, </noframes>, ...) is handled by upstream's "text"
+                // mode, which closes it and returns to the mode before it, so
+                // the after-body and after-frameset modes don't see it.
+                if let current = stack.last, .html == current.namespace, Self.textContentElements.contains(current.name), current.name == name {
+                    stack.removeLast()
                     continue
+                }
+                // Review item A2: the rest is the insertion mode's. After
+                // </body> ("after body"), the first end tag is reported and
+                // then handled again as body content, and </html> moves on to
+                // "after after body", where the first end tag is a stray one,
+                // likewise handled again. (This used to report, and skip, every
+                // end tag after </body>, and nothing after </html>.) Being
+                // handled again, with a foreign current node, repeats the
+                // foreign end-tag step and its error first. After a frameset,
+                // end tags are stray and ignored, </html> moving on to "after
+                // after frameset".
+                switch afterBodyMode {
+                case .afterBody, .afterAfterBody:
+                    if .afterBody == afterBodyMode, "html" == name {
+                        afterBodyMode = .afterAfterBody
+                        continue
+                    }
+                    appendError(.afterBody == afterBodyMode ? "Saw an end tag after \u{201c}body\u{201d} had been closed." : "Stray end tag \u{201c}\(name)\u{201d}.", offset: offset, length: length, locations: locations, messages: &messages)
+                    afterBodyMode = .inBody
+                    if let current = stack.last, .html != current.namespace, current.name != name {
+                        appendError("End tag \u{201c}\(name)\u{201d} did not match the name of the current open element (\u{201c}\(HTMLForeignContent.displayName(current.name, namespace: current.namespace))\u{201d}).", offset: offset, length: length, locations: locations, messages: &messages)
+                    }
+                case .afterFrameset:
+                    if "html" == name {
+                        afterBodyMode = .afterAfterFrameset
+                    } else {
+                        appendError("Stray end tag \u{201c}\(name)\u{201d}.", offset: offset, length: length, locations: locations, messages: &messages)
+                    }
+                    continue
+                case .afterAfterFrameset:
+                    appendError("Stray end tag \u{201c}\(name)\u{201d}.", offset: offset, length: length, locations: locations, messages: &messages)
+                    continue
+                case .inBody:
+                    break
                 }
                 if HTMLVocabulary.voidElements.contains(name) {
                     if name == "br" {
                         appendError("End tag \u{201c}br\u{201d}.", offset: offset, length: length, locations: locations, messages: &messages)
+                        // Upstream inserts a <br> for it, which first ends any
+                        // foreign content it's in.
+                        popForeignContent(forInsertedElement: name, stack: &stack, offset: offset, length: length, locations: locations, messages: &messages)
                     } else {
                         appendError("Stray end tag \u{201c}\(name)\u{201d}.", offset: offset, length: length, locations: locations, messages: &messages)
                     }
                     continue
                 }
-                guard let match = stack.lastIndex(where: { $0.name == name }) else {
+                // Review item A2: </head> in the head closes it, whether it was
+                // written or implied (by <title> with no <head>, say, where
+                // there's no element to close); after the head it's stray. The
+                // port used to call the implied head's </head> stray.
+                if "head" == name, sections.isInHead {
+                    sections.noteHeadEnded()
+                    if let headIndex = stack.lastIndex(where: { .html == $0.namespace && "head" == $0.name }) {
+                        stack.removeSubrange(headIndex...)
+                    }
+                    continue
+                }
+                // Review item A2: an HTML end tag closes an HTML element, and
+                // can't reach past the innermost HTML or MathML text
+                // integration point (foreignObject, mi, ...), which upstream's
+                // scope checks and its "special" category both stop at; so
+                // <foreignObject><div></foreignObject> is a stray end tag, as
+                // upstream reports it, rather than closing the <div>.
+                // (Table-scoped end tags and </template> aren't stopped this
+                // way upstream; see
+                // HTMLImplicitClosures.endTagsUnscopedByIntegrationPoints.)
+                let scopeStart = HTMLImplicitClosures.endTagsUnscopedByIntegrationPoints.contains(name) ? 0 : (stack.lastIndex { .html != $0.namespace && $0.childrenAreHTML }).map { $0 + 1 } ?? 0
+                // Review item A2: </body> and </html> as upstream's tree builder
+                // handles them (TreeBuilder.endTag). They close nothing in the
+                // body: the elements stay open, and they switch to the "after
+                // body" modes (see AfterBodyMode). The port used to close
+                // everything, and to call these stray when no <body> or <html>
+                // start tag was open, although upstream always has both by then
+                // (the first body content implies <body>; in the head, these
+                // end tags close the head and imply the body).
+                if "body" == name || "html" == name {
+                    switch Self.bodyEndContext(in: stack) {
+                    case .stray:
+                        appendError("Stray end tag \u{201c}\(name)\u{201d}.", offset: offset, length: length, locations: locations, messages: &messages)
+                        continue
+                    case .columnGroupGarbage:
+                        appendError("Garbage in \u{201c}colgroup\u{201d} fragment.", offset: offset, length: length, locations: locations, messages: &messages)
+                        continue
+                    case .body:
+                        break
+                    }
+                    // In the head, with no body yet, they close the head.
+                    if sections.textStartsBody {
+                        if let headIndex = stack.lastIndex(where: { .html == $0.namespace && "head" == $0.name }) {
+                            stack.removeSubrange(headIndex...)
+                        }
+                        sections.noteBodyStarted()
+                    }
+                    // Elements still open, other than the ones whose end tags
+                    // may be left out, are an error: for </body>, those above
+                    // the body (or, when the <body> start tag was left out,
+                    // above the <html>); for </html>, all of them. Upstream
+                    // then lists them (see appendUnclosedElements).
+                    let quiet = ("body" == name) ? HTMLImplicitClosures.elementsQuietAtBodyEnd : HTMLImplicitClosures.elementsQuietAtHTMLEnd
+                    let checkedStart = ("body" == name) ? ((stack.firstIndex { .html == $0.namespace && "body" == $0.name }).map { $0 + 1 } ?? (stack.firstIndex { !(.html == $0.namespace && "html" == $0.name) } ?? stack.count)) : 0
+                    if stack[checkedStart...].contains(where: { .html != $0.namespace || !quiet.contains($0.name) }) {
+                        // (Two spaces after "for": upstream's spelling.)
+                        appendError("End tag for  \u{201c}\(name)\u{201d} seen, but there were unclosed elements.", offset: offset, length: length, locations: locations, messages: &messages)
+                        appendUnclosedElements(above: -1, stack: &stack, locations: locations, messages: &messages)
+                    }
+                    if "body" == name {
+                        afterBodyMode = .afterBody
+                    } else {
+                        // Upstream handles </html> again in "after body", which
+                        // goes on to "after after body"; with a foreign current
+                        // node, that first repeats the foreign end-tag step,
+                        // and its error.
+                        if let current = stack.last, .html != current.namespace, current.name != name {
+                            appendError("End tag \u{201c}\(name)\u{201d} did not match the name of the current open element (\u{201c}\(HTMLForeignContent.displayName(current.name, namespace: current.namespace))\u{201d}).", offset: offset, length: length, locations: locations, messages: &messages)
+                        }
+                        afterBodyMode = .afterAfterBody
+                    }
+                    continue
+                }
+                guard let match = stack[scopeStart...].lastIndex(where: { .html == $0.namespace && $0.name == name }) else {
                     if name == "p" {
                         appendError("No \u{201c}p\u{201d} element in scope but a \u{201c}p\u{201d} end tag seen.", offset: offset, length: length, locations: locations, messages: &messages)
+                        // Upstream inserts a <p> for it, which first ends any
+                        // foreign content it's in.
+                        popForeignContent(forInsertedElement: name, stack: &stack, offset: offset, length: length, locations: locations, messages: &messages)
                     } else {
                         appendError("Stray end tag \u{201c}\(name)\u{201d}.", offset: offset, length: length, locations: locations, messages: &messages)
                     }
@@ -97,18 +764,27 @@ public final class HTMLValidator: Sendable {
                 // optional (li, p, dd, option, ...; and table parts for the
                 // table end tags) aren't "open elements" here. Previously
                 // "<ul><li>A</ul>" and "<div><p>text</div>" were errors.
+                // (Review item A2: and, as upstream does, the error is followed
+                // by the elements still open; see appendUnclosedElements.)
                 if !HTMLImplicitClosures.endTagClosesQuietly(name, matchIndex: match, openElements: stack.map(\.name)) {
                     appendError("End tag \u{201c}\(name)\u{201d} seen, but there were open elements.", offset: offset, length: length, locations: locations, messages: &messages)
+                    appendUnclosedElements(above: match, stack: &stack, locations: locations, messages: &messages)
+                }
+                // Review item A2: the outermost </frameset> starts upstream's
+                // "after frameset" mode (see AfterBodyMode).
+                if "frameset" == name, !stack[..<match].contains(where: { .html == $0.namespace && "frameset" == $0.name }) {
+                    afterBodyMode = .afterFrameset
+                    sections.noteFramesetEnded()
                 }
                 stack.removeSubrange(match...)
-                if name == "body" {
-                    sawClosedBody = true
-                }
             }
         }
 
-        if stack.contains(where: { $0.name == "picture" }) {
-            appendError("End of file seen and there were open elements.", offset: source.utf16.count, length: 1, locations: locations, messages: &messages)
+        // Review item A2: the end of the file, as upstream's tree builder
+        // handles it (TreeBuilder.eof). This replaces a rule that reported
+        // only an unclosed <picture> (a fitted rule).
+        if .inBody == afterBodyMode {
+            appendEndOfFileMessages(stack: &stack, sections: sections, offset: source.utf16.count, locations: locations, messages: &messages)
         }
 
         messages.append(contentsOf: HTMLRequiredAttributeChecker().validate(document: document, locations: locations))
@@ -129,30 +805,177 @@ public final class HTMLValidator: Sendable {
         return messages
     }
 
-    private func validateStartTag(
-        name: String,
-        attributes: [HTMLAttribute],
-        selfClosing: Bool,
+    /// Review item A2: for </p> without a <p> in scope, and for </br>, upstream
+    /// inserts an empty <p> or <br>; when the current node is foreign, that
+    /// HTML element ends the foreign content first (TreeBuilder.endTag's P and
+    /// BR cases), with the breakout error.
+    private func popForeignContent(
+        forInsertedElement name: String,
+        stack: inout [OpenElement],
         offset: Int,
         length: Int,
-        stack: [OpenElement],
-        contentStack: [OpenElement],
-        impliedEndTagErrors: [String],
         locations: SourceLocationMap,
-        ids: inout [String: Int],
-        metaCharsetCount: inout Int,
-        sawHTMLLang: inout Bool,
         messages: inout [ValidationMessage]
     ) {
+        guard let current = stack.last, .html != current.namespace else { return }
+        appendError("HTML start tag \u{201c}\(name)\u{201d} in a foreign namespace context.", offset: offset, length: length, locations: locations, messages: &messages)
+        while let top = stack.last, .html != top.namespace {
+            stack.removeLast()
+        }
+    }
+
+    /// Review item A2 (U16): namespace declarations, as upstream's tree builder
+    /// checks them (TreeBuilder.checkAttributes) for every element: "xmlns"
+    /// must name the element's own namespace; "xmlns:xlink" must name XLink on
+    /// an SVG or MathML element and isn't allowed on an HTML one; and no other
+    /// "xmlns:" attribute is allowed. ("xmlns:link" in the message is
+    /// upstream's spelling.) HTMLGeneralAttributeChecker used to report every
+    /// "xmlns:" attribute as not allowed, so nearly every SVG file, which
+    /// declares xmlns:xlink, got an error, and it checked "xmlns" only on SVG.
+    private func validateNamespaceDeclarations(
+        namespace: HTMLNamespace,
+        attributes: [HTMLAttribute],
+        offset: Int,
+        length: Int,
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) {
+        let namespaceURI: String
+        switch namespace {
+        case .html:
+            namespaceURI = "http://www.w3.org/1999/xhtml"
+        case .svg:
+            namespaceURI = "http://www.w3.org/2000/svg"
+        case .mathML:
+            namespaceURI = "http://www.w3.org/1998/Math/MathML"
+        }
+        // Only the first of duplicate attributes counts: upstream's tokenizer
+        // drops the rest (the duplicate is reported elsewhere), so
+        // <html xmlns="http://www.w3.org/1999/xhtml" xmlns="foo"> has no bad
+        // value (review item A2).
+        var seenNames: Set<String> = []
+        for attribute in attributes where seenNames.insert(attribute.name).inserted {
+            if "xmlns" == attribute.name {
+                let value = decodeEntities(attribute.value ?? "")
+                if value != namespaceURI {
+                    appendError("Bad value \u{201c}\(value)\u{201d} for the attribute \u{201c}xmlns\u{201d} (only \u{201c}\(namespaceURI)\u{201d} permitted here).", offset: offset, length: length, locations: locations, messages: &messages)
+                }
+            } else if attribute.name.hasPrefix("xmlns:") {
+                if .html != namespace, "xmlns:xlink" == attribute.name {
+                    let value = decodeEntities(attribute.value ?? "")
+                    if "http://www.w3.org/1999/xlink" != value {
+                        appendError("Bad value \u{201c}\(value)\u{201d} for the attribute \u{201c}xmlns:link\u{201d} (only \u{201c}http://www.w3.org/1999/xlink\u{201d} permitted here).", offset: offset, length: length, locations: locations, messages: &messages)
+                    }
+                } else {
+                    appendError("Attribute \u{201c}\(attribute.name)\u{201d} not allowed here.", offset: offset, length: length, locations: locations, messages: &messages)
+                }
+            }
+        }
+    }
+
+    /// Review item A2: duplicate attributes, which upstream's tokenizer
+    /// reports for every start tag, whatever the tree builder then does with
+    /// it (see validate()).
+    private func appendDuplicateAttributeMessages(_ attributes: [HTMLAttribute], locations: SourceLocationMap, messages: inout [ValidationMessage]) {
         var seenAttributes: Set<String> = []
-        var attr: [String: String] = [:]
         for attribute in attributes {
             if seenAttributes.contains(attribute.name) {
                 appendError("Duplicate attribute \u{201c}\(attribute.name)\u{201d}.", offset: attribute.offset, length: max(1, attribute.name.utf16.count), locations: locations, messages: &messages)
             }
             seenAttributes.insert(attribute.name)
-            attr[attribute.name] = decodeEntities(attribute.value ?? "")
         }
+    }
+
+    /// Review item A2: the start-tag checks that apply to an element inside
+    /// foreign content (SVG or MathML): duplicate attributes, which the
+    /// tokenizer reports in any namespace; namespace declarations; and the
+    /// SVG and MathML vocabularies and the parents some MathML elements
+    /// require. (Duplicate IDs are checked for every start tag; see
+    /// validate().) Everything else in validateStartTag is about HTML
+    /// elements.
+    private func validateForeignStartTag(
+        name: String,
+        namespace: HTMLNamespace,
+        stack: [OpenElement],
+        attributes: [HTMLAttribute],
+        offset: Int,
+        length: Int,
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) {
+        validateNamespaceDeclarations(namespace: namespace, attributes: attributes, offset: offset, length: length, locations: locations, messages: &messages)
+        // These used to come, by accident, from the HTML vocabulary check,
+        // which also reported every valid MathML element.
+        // The schema's MathML vocabulary and required parents ("not allowed
+        // as child"), and upstream's Assertions lists of MathML and SVG
+        // elements ("completely-unknown"), which aren't the same thing: the
+        // schema accepts content MathML such as <apply>, which Assertions
+        // still reports.
+        //
+        // Where upstream's schema checks nothing, its "not allowed" messages
+        // don't apply: in an SVG <desc> or annotation-xml's anyElement content
+        // (see OpenElement.Flags.inAnyElementContent), in a <template> (where
+        // upstream checks nothing at all, "completely-unknown" included), and
+        // inside an element it has already rejected (vnu.jar's "Suppressing
+        // further errors from this subtree"; Flags.inRejectedSubtree), where a
+        // child gets only the "completely-unknown" message, if that.
+        let parent = stack.last
+        let inheritedFlags = Self.childFlags(of: parent, childNamespace: namespace)
+        let inTemplateContents = inheritedFlags.contains(.inTemplateContents)
+        let schemaChecksApply = inheritedFlags.isDisjoint(with: [.inTemplateContents, .inAnyElementContent, .inRejectedSubtree])
+        if .mathML == namespace, let parentName = parent?.name {
+            if schemaChecksApply, HTMLForeignContent.schemaRejects(name, namespace: namespace, parent: parentName, parentNamespace: parent?.namespace) {
+                appendError(HTMLVocabulary.notAllowedAsChildMessage(name, parent: parentName), offset: offset, length: length, locations: locations, messages: &messages)
+            }
+            if !inTemplateContents, !HTMLForeignContent.mathMLElements.contains(name) {
+                appendError("The \u{201c}\(name)\u{201d} element is a completely-unknown element that is not allowed anywhere in any MathML content.", offset: offset, length: length, locations: locations, messages: &messages)
+            }
+        }
+        if .svg == namespace {
+            let displayName = HTMLForeignContent.displayName(name, namespace: namespace)
+            if !HTMLForeignContent.svgElements.contains(displayName) {
+                // The schema's message, naming the SVG parent (vnu.jar gives
+                // both for <svg><foo/></svg>; this one was missing). vnu.jar's
+                // SVG schema and upstream's Assertions list know the same 81
+                // elements (SVG 1.1's, plus feDropShadow), so one set serves
+                // both messages, unlike MathML's above.
+                if schemaChecksApply, let parent {
+                    appendError(HTMLVocabulary.notAllowedAsChildMessage(displayName, parent: HTMLForeignContent.displayName(parent.name, namespace: parent.namespace)), offset: offset, length: length, locations: locations, messages: &messages)
+                }
+                if !inTemplateContents {
+                    appendError("The \u{201c}\(displayName)\u{201d} element is a completely-unknown element that is not allowed anywhere in any SVG content.", offset: offset, length: length, locations: locations, messages: &messages)
+                }
+            }
+        }
+    }
+
+    private func validateStartTag(
+        name: String,
+        writtenName: String,
+        attributes: [HTMLAttribute],
+        selfClosing: Bool,
+        namespace: HTMLNamespace,
+        offset: Int,
+        length: Int,
+        stack: [OpenElement],
+        contentStack: ArraySlice<OpenElement>,
+        impliedEndTagErrors: [String],
+        locations: SourceLocationMap,
+        metaCharsetCount: inout Int,
+        sawHTMLLang: inout Bool,
+        messages: inout [ValidationMessage]
+    ) {
+        // (Duplicate attributes are reported for every start tag; see
+        // validate().)
+        var attr: [String: String] = [:]
+        for attribute in attributes {
+            // The first of duplicate attributes wins, as in upstream's
+            // tokenizer, which drops the rest; this used to keep the last.
+            if nil == attr[attribute.name] {
+                attr[attribute.name] = decodeEntities(attribute.value ?? "")
+            }
+        }
+        validateNamespaceDeclarations(namespace: namespace, attributes: attributes, offset: offset, length: length, locations: locations, messages: &messages)
 
         if name == "html" {
             if let lang = attr["lang"], !lang.isEmpty {
@@ -166,21 +989,14 @@ public final class HTMLValidator: Sendable {
             }
         }
 
-        if let id = attr["id"], !id.isEmpty {
-            if ids[id] != nil {
-                appendError("Duplicate ID \u{201c}\(id)\u{201d}.", offset: offset, length: length, locations: locations, messages: &messages)
-            } else {
-                ids[id] = offset
-            }
+        // Review item A2: an HTML <image> start tag, which is checked as
+        // <img> from here on (see validate()).
+        if writtenName != name {
+            appendError("Saw a start tag \u{201c}\(writtenName)\u{201d}.", offset: offset, length: length, locations: locations, messages: &messages)
         }
 
-        if name == "image" {
-            appendError("Saw a start tag \u{201c}image\u{201d}.", offset: offset, length: length, locations: locations, messages: &messages)
-        }
-
-        if name == "form", stack.contains(where: { $0.name == "form" }) {
-            appendError("Saw a \u{201c}form\u{201d} start tag, but there was already an active \u{201c}form\u{201d} element. Nested forms are not allowed. Ignoring the tag.", offset: offset, length: length, locations: locations, messages: &messages)
-        }
+        // (A nested <form> is ignored, as upstream ignores it; see
+        // HTMLImplicitClosures.ignoredStartTag.)
 
         if name == "basefont" {
             appendError("Element \u{201c}basefont\u{201d} not allowed as child of \u{201c}head\u{201d} in this context.", offset: offset, length: length, locations: locations, messages: &messages)
@@ -190,7 +1006,15 @@ public final class HTMLValidator: Sendable {
             appendWarning("The \u{201c}profile\u{201d} attribute on the \u{201c}head\u{201d} element is obsolete. To declare which \u{201c}meta\u{201d} terms are used in the document, instead register the names as meta extensions. To trigger specific UA behaviors, use a \u{201c}link\u{201d} element instead.", offset: offset, length: length, locations: locations, messages: &messages)
         }
 
-        if HTMLVocabulary.headingElements.contains(name), stack.contains(where: { HTMLVocabulary.headingElements.contains($0.name) }) {
+        // Review item A2: these two look at the HTML elements above the
+        // innermost foreign one only (see "Foreign content" in HTMLImplicitClosures):
+        // a heading inside an SVG's <foreignObject> inside another heading, or
+        // a <div> there inside a table, isn't nested in them as HTML.
+        let htmlStack = stack[((stack.lastIndex { .html != $0.namespace }).map { $0 + 1 } ?? 0)...]
+        // (And, as upstream's tree builder does, only when the current node,
+        // after any implied </p>, is a heading: "<h1><span><h2>" isn't this
+        // error, though the <h2> is still not allowed in the <span>.)
+        if HTMLVocabulary.headingElements.contains(name), let current = contentStack.last, .html == current.namespace, HTMLVocabulary.headingElements.contains(current.name) {
             appendError("Heading cannot be a child of another heading.", offset: offset, length: length, locations: locations, messages: &messages)
         }
 
@@ -201,10 +1025,15 @@ public final class HTMLValidator: Sendable {
         // they only knew about <input>/<select> directly in a <table>, while
         // upstream reports every start tag that gets foster-parented out of
         // a table (errStartTagInTable).
-        if nil != HTMLImplicitClosures.tableInsertionModeIndex(in: stack.map(\.name)) {
+        if nil != HTMLImplicitClosures.tableInsertionModeIndex(in: htmlStack.map(\.name)) {
             if "table" == name {
                 appendError("Start tag for \u{201c}table\u{201d} seen but the previous \u{201c}table\u{201d} is still open.", offset: offset, length: length, locations: locations, messages: &messages)
             } else if !HTMLImplicitClosures.isTableModeStartTag(name) {
+                // (Review item A2: upstream reports an <image> here under that
+                // name, then again as the <img> it handles it as.)
+                if writtenName != name {
+                    appendError("Start tag \u{201c}\(writtenName)\u{201d} seen in \u{201c}table\u{201d}.", offset: offset, length: length, locations: locations, messages: &messages)
+                }
                 appendError("Start tag \u{201c}\(name)\u{201d} seen in \u{201c}table\u{201d}.", offset: offset, length: length, locations: locations, messages: &messages)
             }
         }
@@ -227,9 +1056,38 @@ public final class HTMLValidator: Sendable {
                 appendError("Autonomous custom elements must not specify the \u{201c}is\u{201d} attribute.", offset: offset, length: length, locations: locations, messages: &messages)
             }
         } else if !HTMLVocabulary.elements.contains(name) {
-            let currentParent = stack.last?.name
-            let parent = currentParent == nil || currentParent == "html" ? "body" : currentParent!
-            appendError(HTMLVocabulary.notAllowedAsChildMessage(name, parent: parent), offset: offset, length: length, locations: locations, messages: &messages)
+            // Review item A2: the parent is named as messages spell it, so an
+            // unknown element in a <foreignObject> is "not allowed as child of
+            // “foreignObject”" (this used to say “foreignobject”, the
+            // tokenizer's lowercased name). Inside an SVG <desc> or a MathML
+            // <annotation-xml>, at any depth, upstream's schemas accept any
+            // HTML content at all, so there is no such message there (vnu.jar
+            // reports one under an SVG <title>, though, and the port does too);
+            // nor in a <template>, where upstream checks nothing, nor inside
+            // an element upstream's schema has rejected (see
+            // OpenElement.Flags).
+            let inheritedFlags = Self.childFlags(of: contentStack.last, childNamespace: .html)
+            let inTemplateContents = inheritedFlags.contains(.inTemplateContents)
+            if inheritedFlags.isDisjoint(with: [.inTemplateContents, .inAnyElementContent, .inRejectedSubtree]) {
+                let parent: String
+                if let top = stack.last, "html" != top.name {
+                    parent = HTMLForeignContent.displayName(top.name, namespace: top.namespace)
+                } else {
+                    parent = "body"
+                }
+                appendError(HTMLVocabulary.notAllowedAsChildMessage(name, parent: parent), offset: offset, length: length, locations: locations, messages: &messages)
+            }
+            // Upstream's Assertions checker also reports every HTML element
+            // whose name it doesn't know, wherever it is (vnu.jar gives both
+            // messages for <p><foo>, and only this one inside an SVG <desc>).
+            // The port never did, so inside <desc> an unknown element, such
+            // as the <rect/> of an icon whose <desc> was left unclosed (an
+            // HTML element there), would otherwise go unreported. Its list
+            // isn't the vocabulary above: it knows obsolete elements and newer
+            // ones such as <selectedcontent>, which get no such message.
+            if !inTemplateContents, !HTMLVocabulary.assertionsElements.contains(name) {
+                appendError("The \u{201c}\(name)\u{201d} element is a completely-unknown element that is not allowed anywhere in any HTML content.", offset: offset, length: length, locations: locations, messages: &messages)
+            }
         }
 
         if name == "img", attr["alt"] == nil {
@@ -260,16 +1118,22 @@ public final class HTMLValidator: Sendable {
         // Case 554591: the content model is checked against the stack after
         // implicit closures (see validate()), not the stack as it was when
         // the tag was seen.
-        if let parentMessage = contentModelMessage(for: name, stack: contentStack) {
+        // (Review item A2: not for an HTML element whose parent is foreign,
+        // such as a <foreignObject> or <mtext>: upstream doesn't judge HTML
+        // children by an SVG or MathML parent's content model.)
+        // (Review item A2: nor inside an element upstream's schema has
+        // rejected, where it reports nothing more; see OpenElement.Flags.)
+        if .html == contentStack.last?.namespace ?? .html, !(contentStack.last?.isInRejectedSubtree ?? false), let parentMessage = contentModelMessage(for: name, stack: contentStack) {
             appendError(parentMessage, offset: offset, length: length, locations: locations, messages: &messages)
         }
 
-        if selfClosing && !HTMLVocabulary.voidElements.contains(name) {
+        // (Review item A2: a self-closed <svg/> or <math/> is fine.)
+        if selfClosing && .html == namespace && !HTMLVocabulary.voidElements.contains(name) {
             appendError("Self-closing syntax (\u{201c}/>\u{201d}) used on a non-void HTML element. Ignoring the slash and treating as a start tag.", offset: offset, length: length, locations: locations, messages: &messages)
         }
     }
 
-    private func contentModelMessage(for child: String, stack: [OpenElement]) -> String? {
+    private func contentModelMessage(for child: String, stack: ArraySlice<OpenElement>) -> String? {
         if child == "li" {
             let parent = stack.last?.name
             if parent != "ol" && parent != "ul" && parent != "menu" {
@@ -323,18 +1187,17 @@ public final class HTMLValidator: Sendable {
         }
 
         append("Misplaced non-space characters inside a table.", pattern: "<table>text</table>")
-        append("Non-space character after body.", pattern: "</body>text")
         append("Non-space character inside \u{201c}noscript\u{201d} inside \u{201c}head\u{201d}.", pattern: "<head><noscript>text</noscript></head>")
         append("The \u{201c}frameset\u{201d} element is obsolete. Use the \u{201c}iframe\u{201d} element and CSS instead, or use server-side includes.", pattern: "</frameset>\ntext")
     }
 
+    /// Review item A2: this decoded only &quot;, &#34;, &apos;, &#39; and
+    /// &amp;, so A2's namespace check, which compares the decoded value as
+    /// upstream's does, reported xmlns values written with any other reference
+    /// as bad (and showed them undecoded); IDs had the same problem
+    /// (id="&#x61;" and id="a" weren't duplicates). See HTMLCharacterReferences.
     private func decodeEntities(_ value: String) -> String {
-        value
-            .replacingOccurrences(of: "&quot;", with: "\"")
-            .replacingOccurrences(of: "&#34;", with: "\"")
-            .replacingOccurrences(of: "&apos;", with: "'")
-            .replacingOccurrences(of: "&#39;", with: "'")
-            .replacingOccurrences(of: "&amp;", with: "&")
+        HTMLCharacterReferences.decode(value)
     }
 
     private func isPlausibleLanguageTag(_ value: String) -> Bool {
@@ -363,7 +1226,9 @@ public final class HTMLValidator: Sendable {
             return "The \u{201c}dir\u{201d} element is obsolete. Use the \u{201c}ul\u{201d} element instead."
         case "param":
             return "The \u{201c}param\u{201d} element is obsolete. Use the \u{201c}data\u{201d} attribute of the \u{201c}object\u{201d} element to set the URL of the external resource."
-        case "frameset", "noframes":
+        // (Review item A2: frame too, which, now that a frame is void in a
+        // frameset, is checked there; it was "Use CSS instead.")
+        case "frame", "frameset", "noframes":
             return "The \u{201c}\(name)\u{201d} element is obsolete. Use the \u{201c}iframe\u{201d} element and CSS instead, or use server-side includes."
         case "strike":
             return "The \u{201c}strike\u{201d} element is obsolete. Use \u{201c}del\u{201d} or \u{201c}s\u{201d} element instead."
@@ -385,7 +1250,7 @@ public final class HTMLValidator: Sendable {
 private extension Array where Element == HTMLToken {
     var firstHTMLStart: (offset: Int, length: Int)? {
         for token in self {
-            if case let .startTag(name, _, _, offset, length) = token, name == "html" {
+            if case let .startTag(name, _, _, _, offset, length) = token, name == "html" {
                 return (offset, length)
             }
         }
@@ -959,13 +1824,23 @@ struct HTMLTableDiagnostic {
 struct HTMLTableChecker {
     func validate(document: HTMLParsedDocument, locations: SourceLocationMap) -> [ValidationMessage] {
         var checker = HTMLTableModelChecker(mode: .html)
+        // Review item A2: only HTML elements take part in the table model;
+        // an element named tr inside an SVG in a table cell used to start a
+        // row. The tree builder's events are strictly nested, so this records
+        // whether each open element is foreign, to skip its end event too.
+        var foreignStack: [Bool] = []
 
         for event in document.events {
             switch event {
             case let .startElement(element):
-                checker.startElement(info(for: element, locations: locations))
+                foreignStack.append(.html != element.namespace)
+                if .html == element.namespace {
+                    checker.startElement(info(for: element, locations: locations))
+                }
             case let .endElement(name, _, _):
-                checker.endElement(name)
+                if !(foreignStack.popLast() ?? false) {
+                    checker.endElement(name)
+                }
             default:
                 continue
             }
@@ -1469,9 +2344,13 @@ struct HTMLTableModelChecker {
 }
 
 enum HTMLVocabulary {
+    // Review item A2: with upstream's parser's legacy void elements too
+    // (keygen, basefont, bgsound and frame, which TreeBuilder inserts as void
+    // elements). Since A2 keeps a self-closed non-void element open, as HTML
+    // does, these would otherwise have stayed open after "<keygen/>".
     static let voidElements: Set<String> = [
-        "area", "base", "br", "col", "embed", "hr", "img", "input", "link",
-        "meta", "param", "source", "track", "wbr"
+        "area", "base", "basefont", "bgsound", "br", "col", "embed", "frame", "hr", "img",
+        "input", "keygen", "link", "meta", "param", "source", "track", "wbr"
     ]
 
     static let obsoleteElements: Set<String> = [
@@ -1536,5 +2415,30 @@ enum HTMLVocabulary {
         "sub", "summary", "sup", "svg", "table", "tbody", "td", "template",
         "textarea", "tfoot", "th", "thead", "time", "title", "tr", "track",
         "u", "ul", "var", "video", "wbr"
+    ]
+
+    /// Review item A2: the HTML element names upstream's Assertions checker
+    /// knows (HTML_ELEMENTS in Assertions.java); any other name without a
+    /// hyphen is "a completely-unknown element". Unlike `elements`, it has the
+    /// obsolete elements, and a few the port's vocabulary lacks.
+    static let assertionsElements: Set<String> = [
+        "a", "abbr", "acronym", "address", "annotation-xml", "applet", "area",
+        "article", "aside", "attachment", "audio", "b", "base", "basefont", "bdi",
+        "bdo", "bgsound", "big", "blockquote", "body", "br", "button", "canvas",
+        "caption", "center", "cite", "code", "col", "colgroup", "color-profile",
+        "data", "datalist", "dd", "del", "details", "dfn", "dialog", "dir", "div",
+        "dl", "dt", "em", "embed", "fieldset", "figcaption", "figure", "font",
+        "font-face", "font-face-format", "font-face-name", "font-face-src",
+        "font-face-uri", "footer", "form", "frame", "frameset", "h1", "h2", "h3", "h4",
+        "h5", "h6", "head", "header", "hgroup", "hr", "html", "i", "iframe", "image",
+        "img", "input", "ins", "kbd", "keygen", "label", "legend", "li", "link",
+        "listing", "main", "map", "mark", "marquee", "menu", "meta", "meter",
+        "missing-glyph", "model", "nav", "nobr", "noembed", "noframes", "noscript",
+        "object", "ol", "optgroup", "option", "output", "p", "param", "picture",
+        "plaintext", "pre", "progress", "q", "rb", "rp", "rt", "rtc", "ruby", "s",
+        "samp", "script", "search", "section", "select", "selectedcontent", "slot",
+        "small", "source", "span", "strike", "strong", "style", "sub", "summary",
+        "sup", "table", "tbody", "td", "template", "textarea", "tfoot", "th", "thead",
+        "time", "title", "tr", "track", "tt", "u", "ul", "var", "video", "wbr", "xmp"
     ]
 }
