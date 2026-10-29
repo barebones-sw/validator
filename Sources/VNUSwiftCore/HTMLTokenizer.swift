@@ -26,6 +26,22 @@ struct HTMLAttribute: Equatable, Sendable {
 /// would; nothing checked here can tell the difference.)
 enum HTMLCharacterReferences {
     static func decode(_ value: String) -> String {
+        decode(value, formFeedReferenceIsSpace: false)
+    }
+
+    /// Case 554591 (item 12): an attribute value as upstream's tokenizer
+    /// hands it to the checkers: as decode(_:) has it, except that a
+    /// reference to a form feed (&#12;, &#xC;) is a space there, as it is in
+    /// text (see item 4's figure text rules), while a literal form feed stays
+    /// one. So vnu.jar reads span="&#12;2" as " 2", a span of 2, and splits
+    /// headers="a&#12;b" into two IDs, but not headers="a<FF>b". Only the
+    /// table checker uses this so far; the other checks that decode a value
+    /// still see the form feed.
+    static func decodeAttributeValue(_ value: String) -> String {
+        decode(value, formFeedReferenceIsSpace: true)
+    }
+
+    private static func decode(_ value: String, formFeedReferenceIsSpace: Bool) -> String {
         // The usual case: nothing to decode, and no copy made.
         guard value.contains("&") else {
             return value
@@ -35,7 +51,7 @@ enum HTMLCharacterReferences {
         var index = 0
         while index < scalars.count {
             if "&" == scalars[index], let decoded = reference(in: scalars, at: index) {
-                output.append(decoded.scalar)
+                output.append(formFeedReferenceIsSpace && "\u{0C}" == decoded.scalar ? " " : decoded.scalar)
                 index = decoded.next
             } else {
                 output.append(scalars[index])
@@ -175,7 +191,7 @@ final class HTMLTokenizer {
     /// because the namespace of each start tag's element, and whether
     /// "<![CDATA[" starts a CDATA section, depend on its current node (see
     /// HTMLTreeEventBuilder).
-    func tokenizeAndBuildTree() -> (tokens: [HTMLToken], events: [HTMLDocumentEvent]) {
+    func tokenizeAndBuildTree() -> (tokens: [HTMLToken], events: [HTMLDocumentEvent], impliedColgroupEnds: [Int], impliedTablePartEnds: [HTMLImpliedTablePartEnd]) {
         // Case 554591: the whole-source diagnostics (character references and
         // forbidden code points) are now computed after the main loop, which
         // collects the ranges where the HTML tokenizer never parses character
@@ -492,7 +508,9 @@ final class HTMLTokenizer {
         // by 30–60%.)
         let events = treeBuilder.finish()
         tokens.insert(contentsOf: sourceDiagnostics(skippingCharacterReferencesIn: noCharacterReferenceRanges), at: 0)
-        return (tokens, events)
+        // (Case 554591, item 12, from its second and third reviews: see
+        // HTMLParsedDocument.impliedColgroupEnds and impliedTablePartEnds.)
+        return (tokens, events, treeBuilder.impliedColgroupEnds, treeBuilder.impliedTablePartEnds)
     }
 
     /// Which tokenizer state an element's contents are read in.

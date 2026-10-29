@@ -49,10 +49,12 @@ public final class HTMLValidator: Sendable {
             /// either because it doesn't know it or, as the older content-model
             /// rules here find (see contentModelMessage), because it's
             /// misplaced; or one of the obsolete elements its legacy schema
-            /// takes with anything at all in them (see legacyAnythingElements).
-            /// Only the figure rules look at this so far (see
-            /// schemaChecksChildren); the older rules predate it, and still
-            /// check inside such elements.
+            /// takes with anything at all in them (see legacyAnythingElements);
+            /// or (item 12) a colgroup after the table's rows, which it rejects
+            /// though the port doesn't report it yet (see TableColumnSection).
+            /// Only the figure rules and item 12's colgroup rule look at this
+            /// so far (see schemaChecksChildren); the older rules predate it,
+            /// and still check inside such elements.
             static let inUncheckedElement = Flags(rawValue: 1 << 7)
         }
 
@@ -124,6 +126,26 @@ public final class HTMLValidator: Sendable {
         var sawContent = false
         /// Where the figcaption is, once there is one.
         var caption: CaptionPosition?
+    }
+
+    /// Case 554591 (item 12, from its review): how far a table's children
+    /// have got in upstream's content model for it (tables.rnc: a caption,
+    /// then colgroups, then the rows, with script-supporting elements,
+    /// script and template, in between), as far as its colgroups go. Once
+    /// the rows have started, or a script or template has come after a
+    /// colgroup, no colgroup may follow: the schema rejects one ("Element
+    /// “colgroup” not allowed as child of “table”"), and checks nothing
+    /// inside it. The port doesn't report that yet; but the colgroup rule
+    /// mustn't report what's inside such a colgroup either (see
+    /// colgroupContentModelMessage), which it did for the template in
+    /// <tr>…</tr><colgroup span=2><template>. Kept by the table's start-tag
+    /// offset, as FigureContent is.
+    private struct TableColumnSection {
+        /// A colgroup has come, or a col directly in the table, which
+        /// upstream's parser puts in a colgroup it implies.
+        var sawColumnGroup = false
+        /// No more colgroups are allowed.
+        var isClosed = false
     }
 
     /// Review item A2: the flags a child, in the given namespace, inherits
@@ -340,6 +362,28 @@ public final class HTMLValidator: Sendable {
         // review item A2 kept small; nor in a stack of its own, which every
         // place that closes elements would then have to pop.)
         var figureContents: [Int: FigureContent] = [:]
+        // Case 554591 (item 12): the start tag offsets of the HTML colgroups
+        // that have a span attribute, whose children upstream's schema
+        // rejects (see colgroupContentModelMessage); kept by the tag, as
+        // figureContents is, and for the same reasons.
+        var spannedColgroups: Set<Int> = []
+        // Case 554591 (item 12, from its review): each table's column
+        // section (see TableColumnSection), by its start tag's offset.
+        var tableColumnSections: [Int: TableColumnSection] = [:]
+        // Case 554591 (item 12, from its review): the start-tag offsets of the
+        // tables in which upstream's parser now has a colgroup open that it
+        // implied for a col directly in the table, which the port doesn't
+        // model as an element: </colgroup> closes it, where this reported
+        // "Stray end tag “colgroup”" for the valid <table><col></colgroup>.
+        // Like any colgroup that is the current node, it ends at any start
+        // tag but col or template, at most end tags and at non-space text
+        // (see HTMLImplicitClosures.beforeStartTag). (From its third review:
+        // one for each table. It was a single value, which a table nested in a
+        // template in the implied colgroup took over or cleared; so a second
+        // template there closed the outer table's column section, and the
+        // spans and children of the colgroups after it went unchecked, and the
+        // outer </colgroup> was "stray".)
+        var impliedColgroupTables: Set<Int> = []
         appendSourcePatternDiagnostics(source: source, locations: locations, messages: &messages)
 
         for token in tokens {
@@ -357,6 +401,17 @@ public final class HTMLValidator: Sendable {
             case .comment:
                 continue
             case let .text(content, offset, _):
+                // (Case 554591, item 12, from its reviews: non-space text ends
+                // a colgroup that is the current node, as in the tree builder;
+                // see HTMLImplicitClosures.beforeStartTag and
+                // textEndsColumnGroup. Upstream's parser then handles it as
+                // text in the table.)
+                if let current = stack.last, .html == current.namespace, "colgroup" == current.name, HTMLImplicitClosures.textEndsColumnGroup(content) {
+                    stack.removeLast()
+                }
+                if let table = stack.last, "table" == table.name, impliedColgroupTables.contains(table.offset), HTMLImplicitClosures.textEndsColumnGroup(content) {
+                    impliedColgroupTables.remove(table.offset)
+                }
                 // Case 554591 (item 4): text directly in a <figure>, which
                 // its content model takes before a figcaption (making that
                 // caption the last thing the figure may have) or after a
@@ -551,6 +606,21 @@ public final class HTMLValidator: Sendable {
                         }
                         sections.noteBodyStarted()
                     }
+                    // (Case 554591, item 12, from its second review: in "in
+                    // column group" mode the tag is "anything else" first,
+                    // which ends a colgroup that is the current node, or the one
+                    // upstream's parser implied (see impliedColgroupTables),
+                    // before the tag is ignored in the table; an <html> start
+                    // tag goes by the "in body" rules and ends nothing. The
+                    // tree builder does the same. This kept the colgroup open,
+                    // so <colgroup span=2><frame><col> put the col in it.)
+                    if "html" != name {
+                        if let current = stack.last, .html == current.namespace, "colgroup" == current.name {
+                            stack.removeLast()
+                        } else if let table = stack.last, .html == table.namespace, "table" == table.name {
+                            impliedColgroupTables.remove(table.offset)
+                        }
+                    }
                     sections.noteStartTag(name, namespace: namespace, ignored: true, inTemplateContents: tagIsInTemplateContents)
                     continue
                 }
@@ -615,7 +685,7 @@ public final class HTMLValidator: Sendable {
                 // (Review item A2: the stack after the implied end tags is a
                 // slice of it, not a copy; copying the whole stack for every
                 // start tag made deeply nested documents slower still.)
-                let startTagFlags = validateStartTag(name: name, writtenName: writtenName, attributes: attributes, selfClosing: selfClosing, namespace: namespace, offset: offset, length: length, stack: stack, contentStack: stack[..<closure.keepCount], impliedEndTagErrors: closure.errors, inHead: sections.isInHead, locations: locations, figureContents: &figureContents, metaCharsetCount: &metaCharsetCount, sawHTMLLang: &sawHTMLLang, messages: &messages)
+                let startTagFlags = validateStartTag(name: name, writtenName: writtenName, attributes: attributes, selfClosing: selfClosing, namespace: namespace, offset: offset, length: length, stack: stack, contentStack: stack[..<closure.keepCount], impliedEndTagErrors: closure.errors, inHead: sections.isInHead, locations: locations, figureContents: &figureContents, spannedColgroups: &spannedColgroups, tableColumnSections: &tableColumnSections, impliedColgroupTables: impliedColgroupTables, metaCharsetCount: &metaCharsetCount, sawHTMLLang: &sawHTMLLang, messages: &messages)
                 // Review item A2: after "End tag “p” implied, but there were
                 // open elements." and the like, upstream lists the elements
                 // above the one closed (see appendUnclosedElements).
@@ -623,6 +693,15 @@ public final class HTMLValidator: Sendable {
                     appendUnclosedElements(above: closure.keepCount, stack: &stack, locations: locations, messages: &messages)
                 }
                 stack.removeSubrange(closure.keepCount...)
+                // (Case 554591, item 12: see impliedColgroupTables. A template
+                // goes in the implied colgroup, which stays open around it.)
+                if let table = stack.last, .html == table.namespace, "table" == table.name {
+                    if .html == namespace, "col" == name {
+                        impliedColgroupTables.insert(table.offset)
+                    } else if !(.html == namespace && "template" == name) {
+                        impliedColgroupTables.remove(table.offset)
+                    }
+                }
                 Self.noteTemplateContent(name, namespace: namespace, stack: &stack)
                 sections.noteStartTag(name, namespace: namespace, ignored: false, inTemplateContents: Self.childFlags(of: stack.last, childNamespace: namespace).contains(.inTemplateContents))
                 // Review item A2: the new element's flags come from its parent
@@ -693,6 +772,26 @@ public final class HTMLValidator: Sendable {
                     if let match = stack.lastIndex(where: { .html == $0.namespace || name == $0.name }), .html != stack[match].namespace {
                         stack.removeSubrange(match...)
                         continue
+                    }
+                }
+                // Case 554591 (item 12, from its review): "in column group"
+                // mode ends a colgroup that is the current node at most end
+                // tags, which are then handled as in the table (see
+                // HTMLImplicitClosures.endTagEndsColumnGroup); the tree
+                // builder does the same.
+                if HTMLImplicitClosures.endTagEndsColumnGroup(name), let current = stack.last, .html == current.namespace, "colgroup" == current.name {
+                    stack.removeLast()
+                }
+                // (Case 554591, item 12: the same for the colgroup upstream's
+                // parser implies; see impliedColgroupTables. Its </colgroup>
+                // closes it, and is no stray end tag.)
+                if let table = stack.last, .html == table.namespace, "table" == table.name, impliedColgroupTables.contains(table.offset) {
+                    if "colgroup" == name {
+                        impliedColgroupTables.remove(table.offset)
+                        continue
+                    }
+                    if HTMLImplicitClosures.endTagEndsColumnGroup(name) {
+                        impliedColgroupTables.remove(table.offset)
                     }
                 }
                 // Review item A2: the end tag of a raw-text or RCDATA element
@@ -820,6 +919,16 @@ public final class HTMLValidator: Sendable {
                         }
                         afterBodyMode = .afterAfterBody
                     }
+                    continue
+                }
+                // (Case 554591, item 12, from its second review: </colgroup>
+                // closes only a colgroup that is the current node, or the one
+                // upstream's parser implied (above); anywhere else it's a
+                // stray end tag, whatever colgroup is open further down. This
+                // closed one around a template through the template, once
+                // the colgroup in the template had ended.)
+                if "colgroup" == name, !(stack.last.map { .html == $0.namespace && "colgroup" == $0.name } ?? false) {
+                    appendError("Stray end tag \u{201c}colgroup\u{201d}.", offset: offset, length: length, locations: locations, messages: &messages)
                     continue
                 }
                 guard let match = stack[scopeStart...].lastIndex(where: { .html == $0.namespace && $0.name == name }) else {
@@ -1071,7 +1180,8 @@ public final class HTMLValidator: Sendable {
     /// Checks a start tag that the insertion mode handles. Returns flags for
     /// the new element (case 554591, item 4; see OpenElement.Flags):
     /// inRejectedSubtree when one of the rules here that start a rejected
-    /// subtree rejects it (so far, only the figure rules do), and
+    /// subtree rejects it (so far, the figure rules and item 12's colgroup
+    /// rule), and
     /// inUncheckedElement when it's one whose content upstream's schema
     /// doesn't check.
     private func validateStartTag(
@@ -1088,6 +1198,9 @@ public final class HTMLValidator: Sendable {
         inHead: Bool,
         locations: SourceLocationMap,
         figureContents: inout [Int: FigureContent],
+        spannedColgroups: inout Set<Int>,
+        tableColumnSections: inout [Int: TableColumnSection],
+        impliedColgroupTables: Set<Int>,
         metaCharsetCount: inout Int,
         sawHTMLLang: inout Bool,
         messages: inout [ValidationMessage]
@@ -1283,6 +1396,56 @@ public final class HTMLValidator: Sendable {
         // <figure> or a figcaption anywhere else, unless the rules above have
         // already reported the element. Unlike those, which are older, an
         // element these reject starts a rejected subtree, as in upstream.)
+        // (Case 554591, item 12: and the colgroup rule, the same way, for a
+        // child of a colgroup with a span attribute, which is recorded here
+        // for its children to find.)
+        if "colgroup" == name, .html == namespace, nil != attr["span"] {
+            spannedColgroups.insert(offset)
+        }
+        // (Case 554591, item 12, from its review: a child of a table moves its
+        // column section along (see TableColumnSection); a colgroup that comes
+        // after the section has closed is one upstream's schema rejects, so
+        // nothing inside it is checked. A start tag the table foster-parents
+        // isn't the table's child upstream, so it moves nothing; nor does a
+        // style, which the schema rejects without moving on, so a colgroup
+        // after <colgroup></colgroup><style> is still in its place.)
+        if .html == namespace, let table = contentStack.last, .html == table.namespace, "table" == table.name, !isFosterParented {
+            var section = tableColumnSections[table.offset] ?? TableColumnSection()
+            switch name {
+            case "colgroup":
+                if section.isClosed {
+                    elementFlags.insert(.inUncheckedElement)
+                } else {
+                    section.sawColumnGroup = true
+                }
+            case "col":
+                if !section.isClosed {
+                    section.sawColumnGroup = true
+                }
+            case "script", "template":
+                // (Case 554591, item 12, from its second review: not a
+                // template after cols directly in the table, which goes in the
+                // colgroup upstream's parser implied for them (see
+                // impliedColgroupTables), not in the table; a script ends that
+                // colgroup and lands in the table.)
+                if section.sawColumnGroup, !("template" == name && impliedColgroupTables.contains(table.offset)) {
+                    section.isClosed = true
+                }
+            case "thead", "tbody", "tfoot", "tr", "td", "th":
+                section.isClosed = true
+            default:
+                break
+            }
+            tableColumnSections[table.offset] = section
+        }
+        // (Case 554591, item 12, from its second review: a colgroup's or col's
+        // span as the schema checks it: see spanIsCheckedBySchema.)
+        if .html == namespace, "colgroup" == name || "col" == name,
+           let span = attributes.first(where: { "span" == $0.name }).map({ HTMLCharacterReferences.decodeAttributeValue($0.value ?? "") }),
+           !Self.isPositiveInteger(span),
+           spanIsCheckedBySchema(name, stack: contentStack, isMisplaced: elementFlags.contains(.inUncheckedElement), spannedColgroups: spannedColgroups, tableColumnSections: tableColumnSections) {
+            appendError("Bad value \u{201c}\(span)\u{201d} for attribute \u{201c}span\u{201d} on element \u{201c}\(name)\u{201d}.", offset: offset, length: length, locations: locations, messages: &messages)
+        }
         if .html == contentStack.last?.namespace ?? .html, !(contentStack.last?.isInRejectedSubtree ?? false) {
             if let parentMessage = contentModelMessage(for: name, stack: contentStack, inHead: inHead) {
                 appendError(parentMessage, offset: offset, length: length, locations: locations, messages: &messages)
@@ -1299,6 +1462,9 @@ public final class HTMLValidator: Sendable {
                 elementFlags.insert(.inUncheckedElement)
             } else if let figureMessage = figureContentModelMessage(for: name, namespace: namespace, stack: contentStack, inHead: inHead, isFosterParented: isFosterParented, figureContents: &figureContents) {
                 appendError(figureMessage, offset: offset, length: length, locations: locations, messages: &messages)
+                elementFlags.insert(.inRejectedSubtree)
+            } else if let colgroupMessage = colgroupContentModelMessage(for: name, namespace: namespace, stack: contentStack, spannedColgroups: spannedColgroups) {
+                appendError(colgroupMessage, offset: offset, length: length, locations: locations, messages: &messages)
                 elementFlags.insert(.inRejectedSubtree)
             }
         }
@@ -1452,14 +1618,82 @@ public final class HTMLValidator: Sendable {
         }
     }
 
+    /// Case 554591 (item 12): upstream's schema rule for a colgroup's
+    /// children (html5/tables.rnc): a colgroup takes either col children
+    /// (with script-supporting elements) or a span attribute, never both,
+    /// so an element in a colgroup that has a span attribute, whatever its
+    /// value, is reported ("Element “col” not allowed as child of
+    /// “colgroup” in this context."), and starts a subtree where the schema
+    /// checks nothing more. HTMLGeneralAttributeChecker used to report every
+    /// col in any colgroup (a rule fitted to upstream's one test of this,
+    /// span-ignored-with-col-children-novalid.html, whose colgroup has a
+    /// span), so the usual, valid <colgroup><col><col></colgroup> got an
+    /// error for each col. Only a col or a template is looked at: they're
+    /// the only elements upstream's parser puts in a colgroup (anything else
+    /// ends it, as both of the port's stacks now have it; see
+    /// HTMLImplicitClosures.beforeStartTag). Nothing is reported where
+    /// upstream's schema checks nothing (see schemaChecksChildren): in a
+    /// template, in a table that's itself been reported as misplaced (one
+    /// in a <span>, say), or in an obsolete element that takes anything,
+    /// such as <center>.
+    private func colgroupContentModelMessage(for child: String, namespace: HTMLNamespace, stack: ArraySlice<OpenElement>, spannedColgroups: Set<Int>) -> String? {
+        guard .html == namespace, "col" == child || "template" == child,
+              let parent = stack.last, .html == parent.namespace, "colgroup" == parent.name,
+              spannedColgroups.contains(parent.offset),
+              Self.schemaChecksChildren(of: parent, childNamespace: namespace) else {
+            return nil
+        }
+        return HTMLVocabulary.notAllowedAsChildMessage(child, parent: "colgroup")
+    }
+
+    /// Case 554591 (item 12, from its second review): whether upstream's schema
+    /// checks the span attribute of a colgroup or col starting here (as a
+    /// positive integer; see isPositiveInteger). It does where it takes the
+    /// element itself: a colgroup directly in a table, in the table's column
+    /// section (`isMisplaced` is one after it has closed; see
+    /// TableColumnSection); a col in a colgroup without a span (one with a span
+    /// rejects it); and a col directly in a table, which is in the colgroup
+    /// upstream's parser implies for it, while that is in its place. And never
+    /// where the schema checks nothing (see schemaChecksChildren), as in a
+    /// template. The table checker used to report this, by its own trimming
+    /// reader, wherever its own, different, state machine took the element:
+    /// so span=" 2" was fine, a span the schema rejects was reported, and,
+    /// since item 12's first round, a span the schema checks after rows in a
+    /// template wasn't.
+    private func spanIsCheckedBySchema(_ name: String, stack: ArraySlice<OpenElement>, isMisplaced: Bool, spannedColgroups: Set<Int>, tableColumnSections: [Int: TableColumnSection]) -> Bool {
+        guard let parent = stack.last, .html == parent.namespace, Self.schemaChecksChildren(of: parent, childNamespace: .html) else {
+            return false
+        }
+        if "colgroup" == name {
+            return "table" == parent.name && !isMisplaced
+        }
+        switch parent.name {
+        case "colgroup":
+            return !spannedColgroups.contains(parent.offset)
+        case "table":
+            return !(tableColumnSections[parent.offset]?.isClosed ?? false)
+        default:
+            return false
+        }
+    }
+
+    /// Case 554591 (item 12, from its second review): the schema's datatype
+    /// for a span (common.data.integer.positive): one or more ASCII digits, not
+    /// all zeros, and nothing else; vnu.jar reports a sign or white space as
+    /// "Expected a digit but saw “ ” instead". (XMLValidator uses it too.)
+    static func isPositiveInteger(_ value: String) -> Bool {
+        !value.isEmpty && value.utf8.allSatisfy { 0x30 <= $0 && 0x39 >= $0 } && value.utf8.contains { 0x30 != $0 }
+    }
+
     /// Case 554591 (item 4): whether upstream's schema checks a child, in the
     /// given namespace, of `parent` at all: not in a template, in content it
-    /// accepts unchecked, inside an element the figure rules have rejected,
-    /// or inside one whose content it doesn't check otherwise (an unknown,
-    /// misplaced or legacy element; see OpenElement.Flags.inUncheckedElement,
-    /// which only the figure rules look at, so as not to report what vnu.jar
-    /// never would, such as a figcaption inside a <center>). (No parent: the
-    /// body the parser implies, where it checks everything.)
+    /// accepts unchecked, inside an element the figure rules (or, since item
+    /// 12, the colgroup rule) have rejected, or inside one whose content it
+    /// doesn't check otherwise (an unknown, misplaced or legacy element; see
+    /// OpenElement.Flags.inUncheckedElement, which only those rules look at,
+    /// so as not to report what vnu.jar never would, such as a figcaption
+    /// inside a <center>). (No parent: the body the parser implies, where it
+    /// checks everything.)
     private static func schemaChecksChildren(of parent: OpenElement?, childNamespace: HTMLNamespace) -> Bool {
         childFlags(of: parent, childNamespace: childNamespace).isDisjoint(with: [.inTemplateContents, .inAnyElementContent, .inRejectedSubtree, .inUncheckedElement])
     }
@@ -2199,8 +2433,22 @@ struct HTMLTableChecker {
         // row. The tree builder's events are strictly nested, so this records
         // whether each open element is foreign, to skip its end event too.
         var foreignStack: [Bool] = []
+        // Case 554591 (item 12, from its second and third reviews): the next of
+        // the places where an implied colgroup, or an implied tr or tbody, ends
+        // (see HTMLParsedDocument.impliedColgroupEnds and
+        // impliedTablePartEnds).
+        var nextImpliedColgroupEnd = 0
+        var nextImpliedTablePartEnd = 0
 
-        for event in document.events {
+        for (index, event) in document.events.enumerated() {
+            while nextImpliedColgroupEnd < document.impliedColgroupEnds.count, document.impliedColgroupEnds[nextImpliedColgroupEnd] <= index {
+                checker.impliedColgroupEnded()
+                nextImpliedColgroupEnd += 1
+            }
+            while nextImpliedTablePartEnd < document.impliedTablePartEnds.count, document.impliedTablePartEnds[nextImpliedTablePartEnd].index <= index {
+                checker.impliedTablePartEnded(document.impliedTablePartEnds[nextImpliedTablePartEnd].name)
+                nextImpliedTablePartEnd += 1
+            }
             switch event {
             case let .startElement(element):
                 foreignStack.append(.html != element.namespace)
@@ -2225,9 +2473,20 @@ struct HTMLTableChecker {
     }
 
     private func info(for element: HTMLStartElement, locations: SourceLocationMap) -> HTMLTableElementInfo {
+        // Case 554591 (item 12): each attribute's value as upstream's parser
+        // hands it to its TableChecker: the first of duplicate attributes
+        // (its tokenizer drops the rest; this kept the last), with character
+        // references decoded (span=&#50; is the number 2, where this
+        // reported "Bad value “&#50;”"), &#12; as a space (see
+        // decodeAttributeValue). It showed in the colgroup span that item
+        // 12's warning repeats; colspan, rowspan, headers, id and role are
+        // read the same way. (Decoded, a value can hold characters that the
+        // checks below once never saw, such as a no-break space from
+        // &#160;, which is why headers and role are now read as upstream
+        // reads them; see startCell, and the table's role in startElement.)
         var attributes: [String: String] = [:]
-        for attribute in element.attributes {
-            attributes[attribute.name] = attribute.value ?? ""
+        for attribute in element.attributes where nil == attributes[attribute.name] {
+            attributes[attribute.name] = HTMLCharacterReferences.decodeAttributeValue(attribute.value ?? "")
         }
         return HTMLTableElementInfo(
             name: element.name,
@@ -2256,13 +2515,74 @@ struct HTMLTableModelChecker {
         var pendingHeaderReferences: [HeaderReference] = []
         var rowGroup: RowGroupState?
         var row: ActiveRow?
-        var colgroupCountsChildren = false
+        /// Case 554591 (item 12): whether the table has column markup (a
+        /// colgroup or a col) that came before any row or row group, so that
+        /// rows are held to the column count it sets (upstream's
+        /// Table.hardWidth), even when that adds up to no columns at all, as
+        /// a lone <colgroup span=0> does. This used to be whether the count
+        /// was more than zero.
+        var hasColumnMarkup = false
+        /// Case 554591 (item 12): the open colgroup's span, held, as
+        /// upstream's Table holds it (pendingColGroupSpan), until the
+        /// colgroup ends, when its absolute value is added to the column
+        /// count, unless a col in the colgroup has set it to zero first (see
+        /// processCol and upstreamSpan); nil while no colgroup is open. The
+        /// span used to be counted as the colgroup started, and the cols in
+        /// a colgroup only when it had no span. So, in an HTML document, a
+        /// colgroup with both counted both (span="3" and one col made four
+        /// columns), and, in an XHTML one, only the span; and an empty
+        /// colgroup without a span counted nothing, where upstream counts one
+        /// column, so a valid table with <colgroup span=2></colgroup>
+        /// <colgroup></colgroup> and rows three cells wide got "A table row
+        /// was 3 columns wide and exceeded the column count established using
+        /// column markup (2)."
+        var pendingColgroupSpan: Int?
+        /// Case 554591 (item 12, from its review): whether a row group, or a
+        /// row or cell (which starts one), has started in the table, even if
+        /// it has ended since. upstream's Table takes column markup only
+        /// before that (IN_TABLE_AT_START or IN_TABLE_COLS_SEEN; afterwards
+        /// it stays in IN_TABLE_AT_POTENTIAL_ROW_GROUP_START at best), and
+        /// ignores a colgroup or col anywhere else (see isSuppressedStart).
+        var sawRowGroup = false
+        /// Case 554591 (item 12, from its reviews): the table elements (see
+        /// tableElementsTableRoutes) now open in the table that upstream's
+        /// Table ignores, and the ones inside them (its suppressedStarts,
+        /// through needSuppressStart and needSuppressEnd; see
+        /// isSuppressedStart): their ends finish nothing. Other elements
+        /// don't count, as Table never sees them; counting a <template> in an
+        /// ignored colgroup, whose end this never takes back, left everything
+        /// after it ignored, and the table's later rows unchecked.
+        var suppressedDepth = 0
+        /// Case 554591 (item 12, from its second review): in an HTML document,
+        /// whether the colgroup the parser implies for a col directly in the
+        /// table is open, and whether upstream's Table ignores it, as it
+        /// ignores a col after the rows (see startImpliedColgroup). The tree
+        /// has no element for it (as it has none for an implied tbody or tr),
+        /// so it starts at a col directly in the table, and ends where the
+        /// tree builder found that upstream's parser ends it (see
+        /// HTMLParsedDocument.impliedColgroupEnds and impliedColgroupEnded),
+        /// or with the table. While it's open, it holds a span as an explicit
+        /// colgroup does (pendingColgroupSpan; it has no span attribute), or,
+        /// if Table ignores it, everything in it is ignored (suppressedDepth),
+        /// so that the rows in a <template> in it are ignored, as Table
+        /// ignores them. They set sawRowGroup, so that a col after the
+        /// template was dropped, and every real row got a row-width error.
+        var impliedColgroupIsOpen = false
+        var impliedColgroupIsSuppressed = false
     }
 
     private struct RowGroupState {
         var name: String?
         var rows: [TableRow] = []
         var openSpans: [OpenSpan] = []
+        /// Case 554591 (item 12, from its third review): for a row group the
+        /// table checker starts for a row (see startRow), whether it stands
+        /// for the tbody an HTML parser implies, an element in upstream's tree,
+        /// for a row or cell directly in the table. Rows in a template's
+        /// content have none; upstream's Table puts them in an implicit row
+        /// group, which a row group starting later ends, where one starting in
+        /// an implied tbody is inside it and ignored (see isSuppressedStart).
+        var isImpliedTbody = false
     }
 
     private struct ActiveRow {
@@ -2296,8 +2616,71 @@ struct HTMLTableModelChecker {
         var cell: HTMLTableElementInfo
     }
 
+    /// Case 554591 (item 12, from its third review): what upstream's parser
+    /// does with a table element directly in a <template>, which depends on
+    /// the template's content mode: its first start tag that isn't head
+    /// content sets it (HTMLImplicitClosures.templateContentMode, with the
+    /// three table modes told apart). Upstream's Table sees template content
+    /// as any other, so this decides what it sees. The table checker took a
+    /// template's table parts as written: a cell there was always outside a
+    /// row (round 3 of item 12; before that, always in one), and a part the
+    /// parser drops was counted.
+    private enum TemplateTableMode {
+        /// No content yet, or only head content.
+        case undecided
+        /// "In row": the content began with a cell. A cell is a sibling of the
+        /// others, with no row (see isSuppressedStart); a row, row group,
+        /// colgroup or col has no row to close and is dropped.
+        case inRow
+        /// "In table body": the content began with a row. A cell outside a
+        /// row is in one the parser implies; a colgroup or col is dropped.
+        case inTableBody
+        /// "In table": the content began with a caption, colgroup or row
+        /// group. A row is in a tbody the parser implies, and a cell in a tr
+        /// in one.
+        case inTable
+        /// "In column group": the content began with a col. Anything but a
+        /// col is dropped ("Garbage in “colgroup” fragment").
+        case inColumnGroup
+        /// "In body": anything else began it, and every table part is
+        /// dropped. (The tree builder drops these itself, since
+        /// HTMLImplicitClosures.ignoredStartTag knows the mode, so the table
+        /// model never sees them; nor an SVG or MathML element, which begins
+        /// this mode too.)
+        case inBody
+    }
+
+    /// Case 554591 (item 12, from its third review): a tbody or tr upstream's
+    /// parser implies in a template's content, which the tree has no element
+    /// for (see TemplateTableMode): whether upstream's Table takes it, or
+    /// ignores it with everything in it (suppressedDepth).
+    private enum ImpliedPart {
+        case taken
+        case suppressed
+    }
+
+    /// Case 554591 (item 12, from its third review): an open HTML template:
+    /// where it is on elementStack, tableStack's count when it started (its
+    /// implied parts belong to that table), its content mode, and its implied
+    /// tbody and tr, while they're open.
+    private struct OpenTemplate {
+        var index: Int
+        var tableDepth: Int
+        var mode = TemplateTableMode.undecided
+        var impliedRowGroup: ImpliedPart?
+        var impliedRow: ImpliedPart?
+    }
+
     private let mode: Mode
     private var elementStack: [String] = []
+    // Case 554591 (item 12, from its third review): the open HTML templates
+    // (see OpenTemplate), and where on elementStack the open tables and table
+    // elements are, each innermost last, so that isSuppressedStart finds the
+    // innermost of each without walking the stack. It walked it for every
+    // table element, which an XHTML colgroup holding thousands of nested
+    // <div>s made quadratic (11 s for a 0.7 MB document).
+    private var openTemplates: [OpenTemplate] = []
+    private var tableElementIndices: [Int] = []
     private var tableStack: [TableState] = []
     private var diagnostics: [HTMLTableDiagnostic] = []
     private var sawRootElement = false
@@ -2314,17 +2697,267 @@ struct HTMLTableModelChecker {
             }
         }
 
+        // (Case 554591, item 12, from its third review: the content mode of
+        // the template this is directly in, if any, before this element, which
+        // sets it if it isn't set yet; see TemplateTableMode.)
+        let templateIndex = parentTemplateIndex
+        var templateMode = TemplateTableMode.undecided
+        if let templateIndex {
+            templateMode = openTemplates[templateIndex].mode
+            if .undecided == templateMode, let decided = Self.templateTableMode(afterStartTag: element.name) {
+                openTemplates[templateIndex].mode = decided
+            }
+        }
+
         if element.name == "table" {
-            let role = normalizedRole(element.attributes["role"])
+            // Case 554591 (item 12, from its review): the table's role, for the
+            // rule that a td with a role mustn't be in a table with no role or
+            // one of table, grid and treegrid (see startCell), as upstream's
+            // Assertions compares it: the value exactly as the parser delivers
+            // it, nil only when there's no role attribute at all. This took
+            // the value's first token, lowercased, splitting at any Unicode
+            // whitespace; and since item 12 decodes the value,
+            // role="&#160;grid" (a no-break space and grid) became grid, and
+            // its cells' roles errors. vnu.jar reports none there, nor for
+            // role="grid foo", "GRID", " grid" or "", which this had taken for
+            // grid or, the empty one, for no role.
+            let role = element.attributes["role"]
             tableStack.append(TableState(element: element, role: role))
+            tableElementIndices.append(elementStack.count)
             elementStack.append(element.name)
             return
         }
 
         if !tableStack.isEmpty {
-            processTableElement(element)
+            // (Case 554591, item 12, from its third review: a caption, colgroup
+            // or col directly in an HTML table ends the tbody and tr the parser
+            // implied for the rows or cells before it; see
+            // impliedTablePartEnded.)
+            if .html == mode, "caption" == element.name || "colgroup" == element.name || "col" == element.name, "table" == elementStack.last {
+                endImpliedTableParts(closesRowGroup: true)
+            }
+            // (Case 554591, item 12, from its second review: see
+            // TableState.impliedColgroupIsOpen.)
+            if .html == mode, "col" == element.name, "table" == elementStack.last, !currentTable.impliedColgroupIsOpen {
+                startImpliedColgroup(for: element)
+            }
+            // (Case 554591, item 12, from its third review: a table part
+            // directly in a template, by the template's content mode.)
+            var isDropped = false
+            if let templateIndex, .undecided != templateMode, Self.tableElementsTableRoutes.contains(element.name) || "caption" == element.name,
+               tableStack.count == openTemplates[templateIndex].tableDepth {
+                isDropped = noteTemplateTablePart(element, template: templateIndex, mode: templateMode)
+            }
+            processTableElement(element, isDropped: isDropped)
+        }
+        if Self.tableElementsTableRoutes.contains(element.name) {
+            tableElementIndices.append(elementStack.count)
+        }
+        if .html == mode, "template" == element.name {
+            openTemplates.append(OpenTemplate(index: elementStack.count, tableDepth: tableStack.count))
         }
         elementStack.append(element.name)
+    }
+
+    /// Case 554591 (item 12, from its third review): the index in
+    /// openTemplates of the HTML template what starts now is directly in, if
+    /// it's directly in one.
+    private var parentTemplateIndex: Int? {
+        guard .html == mode, let index = openTemplates.indices.last, elementStack.count - 1 == openTemplates[index].index else {
+            return nil
+        }
+        return index
+    }
+
+    /// Case 554591 (item 12, from its third review): the mode a template's
+    /// first content start tag sets (see TemplateTableMode), or nil for head
+    /// content, which leaves it unset.
+    private static func templateTableMode(afterStartTag name: String) -> TemplateTableMode? {
+        switch HTMLImplicitClosures.templateContentMode(afterStartTag: name, namespace: .html) {
+        case nil:
+            return nil
+        case .inTable?:
+            switch name {
+            case "td", "th":
+                return .inRow
+            case "tr":
+                return .inTableBody
+            default:
+                return .inTable
+            }
+        case .inColumnGroup?:
+            return .inColumnGroup
+        case .inBody?, .inTemplate?:
+            return .inBody
+        }
+    }
+
+    /// Case 554591 (item 12, from its third review): a table part (or a
+    /// caption) directly in a template whose content mode is set, as
+    /// upstream's parser handles it there (see TemplateTableMode): a cell in
+    /// "in table body" or "in table" mode is in a tr the parser implies, in a
+    /// tbody it implies in "in table" mode, as is a row in "in table" mode;
+    /// a row ends the implied tr, and a row group, caption or column markup
+    /// both (they are then inserted in the template itself). Returns whether
+    /// the parser drops the element, which upstream's Table then never sees.
+    private mutating func noteTemplateTablePart(_ element: HTMLTableElementInfo, template index: Int, mode templateMode: TemplateTableMode) -> Bool {
+        switch (templateMode, element.name) {
+        case (.inTableBody, "td"), (.inTableBody, "th"):
+            if nil == openTemplates[index].impliedRow {
+                startImpliedRow(template: index, at: element)
+            }
+            return false
+        case (.inTable, "td"), (.inTable, "th"):
+            if nil == openTemplates[index].impliedRowGroup {
+                startImpliedRowGroup(template: index, at: element)
+            }
+            if nil == openTemplates[index].impliedRow {
+                startImpliedRow(template: index, at: element)
+            }
+            return false
+        case (.inTableBody, "tr"):
+            endImpliedRow(template: index)
+            return false
+        case (.inTable, "tr"):
+            endImpliedRow(template: index)
+            if nil == openTemplates[index].impliedRowGroup {
+                startImpliedRowGroup(template: index, at: element)
+            }
+            return false
+        case (.inTableBody, "colgroup"), (.inTableBody, "col"):
+            // (No row group is open to close, as in "in table body" mode a
+            // template has none: dropped.)
+            endImpliedRow(template: index)
+            return true
+        case (.inTableBody, _), (.inTable, _):
+            endImpliedRow(template: index)
+            endImpliedRowGroup(template: index)
+            return false
+        case (.inRow, "td"), (.inRow, "th"), (.inColumnGroup, "col"):
+            return false
+        case (.inRow, _), (.inColumnGroup, _), (.inBody, _):
+            return Self.tableElementsTableRoutes.contains(element.name)
+        case (.undecided, _):
+            return false
+        }
+    }
+
+    /// Case 554591 (item 12, from its third review): a tbody upstream's parser
+    /// implies in a template's content (see noteTemplateTablePart), which its
+    /// Table takes or ignores as any row group starting there. (The row or
+    /// cell it's implied for sets sawRowGroup, as it's taken too.)
+    private mutating func startImpliedRowGroup(template index: Int, at element: HTMLTableElementInfo) {
+        let tbody = HTMLTableElementInfo(name: "tbody", attributes: [:], location: element.location, extract: element.extract)
+        if 0 < currentTable.suppressedDepth || isSuppressedStart(tbody) {
+            openTemplates[index].impliedRowGroup = .suppressed
+            currentTable.suppressedDepth += 1
+        } else {
+            openTemplates[index].impliedRowGroup = .taken
+            finishCurrentRow()
+            finishCurrentRowGroup()
+            currentTable.rowGroup = RowGroupState(name: "tbody", isImpliedTbody: true)
+        }
+    }
+
+    /// Case 554591 (item 12, from its third review): a tr upstream's parser
+    /// implies in a template's content (see noteTemplateTablePart), which its
+    /// Table takes or ignores as any row starting there: it ignores one in a
+    /// row, a cell or a colgroup. (The cell it's implied for sets sawRowGroup,
+    /// as it's taken too.)
+    private mutating func startImpliedRow(template index: Int, at element: HTMLTableElementInfo) {
+        let tr = HTMLTableElementInfo(name: "tr", attributes: [:], location: element.location, extract: element.extract)
+        if 0 < currentTable.suppressedDepth || isSuppressedStart(tr) {
+            openTemplates[index].impliedRow = .suppressed
+            currentTable.suppressedDepth += 1
+        } else {
+            openTemplates[index].impliedRow = .taken
+            startRow(tr)
+        }
+    }
+
+    /// Case 554591 (item 12, from its third review): a template's implied tr
+    /// ending (see noteTemplateTablePart), at the template's next row, row
+    /// group, caption or column markup, or at its end.
+    private mutating func endImpliedRow(template index: Int) {
+        guard let part = openTemplates[index].impliedRow else { return }
+        openTemplates[index].impliedRow = nil
+        guard !tableStack.isEmpty, tableStack.count == openTemplates[index].tableDepth else { return }
+        switch part {
+        case .suppressed:
+            currentTable.suppressedDepth -= 1
+        case .taken:
+            finishCurrentRow()
+        }
+    }
+
+    /// Case 554591 (item 12, from its third review): a template's implied
+    /// tbody ending, as its implied tr does (see endImpliedRow), but not at a
+    /// row, which is in it.
+    private mutating func endImpliedRowGroup(template index: Int) {
+        guard let part = openTemplates[index].impliedRowGroup else { return }
+        openTemplates[index].impliedRowGroup = nil
+        guard !tableStack.isEmpty, tableStack.count == openTemplates[index].tableDepth else { return }
+        switch part {
+        case .suppressed:
+            currentTable.suppressedDepth -= 1
+        case .taken:
+            finishCurrentRow()
+            finishCurrentRowGroup()
+        }
+    }
+
+    /// Case 554591 (item 12, from its second review): the colgroup an HTML
+    /// parser implies for a col directly in the table, starting (see
+    /// TableState.impliedColgroupIsOpen), as upstream's Table takes a
+    /// colgroup with no span attribute, or ignores it where it ignores one.
+    private mutating func startImpliedColgroup(for col: HTMLTableElementInfo) {
+        currentTable.impliedColgroupIsOpen = true
+        if 0 < currentTable.suppressedDepth || isSuppressedStart(HTMLTableElementInfo(name: "colgroup", attributes: [:], location: col.location, extract: col.extract)) {
+            currentTable.impliedColgroupIsSuppressed = true
+            currentTable.suppressedDepth += 1
+        } else {
+            currentTable.pendingColgroupSpan = Self.upstreamSpan(nil)
+            currentTable.hasColumnMarkup = true
+        }
+    }
+
+    /// Case 554591 (item 12, from its third review): a </tr> or </tbody> that
+    /// came while the current table was the parser's current node (see
+    /// HTMLParsedDocument.impliedTablePartEnds): it closes the tr the parser
+    /// implied for cells directly in the table, and </tbody> the tbody it
+    /// implied for rows or cells there too (RowGroupState.isImpliedTbody),
+    /// as upstream's parser closes them. The table checker kept them open, so
+    /// a row or row group in a template after them was taken to be inside
+    /// them, and ignored (see isSuppressedStart).
+    mutating func impliedTablePartEnded(_ name: String) {
+        guard .html == mode, !tableStack.isEmpty, "table" == elementStack.last else { return }
+        endImpliedTableParts(closesRowGroup: "tbody" == name)
+    }
+
+    /// Case 554591 (item 12, from its third review): the tr an HTML parser
+    /// implied directly in the current table ending, which is the open row
+    /// when the table is the innermost open element; and, if
+    /// `closesRowGroup`, the tbody it implied too.
+    private mutating func endImpliedTableParts(closesRowGroup: Bool) {
+        finishCurrentRow()
+        if closesRowGroup, currentTable.rowGroup?.isImpliedTbody ?? false {
+            finishCurrentRowGroup()
+        }
+    }
+
+    /// Case 554591 (item 12, from its second review): the implied colgroup
+    /// directly in the current table ending (see
+    /// HTMLParsedDocument.impliedColgroupEnds), where its count is added, as
+    /// an explicit colgroup's is at its end tag.
+    mutating func impliedColgroupEnded() {
+        guard !tableStack.isEmpty, currentTable.impliedColgroupIsOpen else { return }
+        currentTable.impliedColgroupIsOpen = false
+        if currentTable.impliedColgroupIsSuppressed {
+            currentTable.impliedColgroupIsSuppressed = false
+            currentTable.suppressedDepth -= 1
+        } else {
+            finishCurrentColgroup()
+        }
     }
 
     mutating func endElement(_ name: String) {
@@ -2336,13 +2969,18 @@ struct HTMLTableModelChecker {
         // <tr><td>x</td></tr> or <div><tbody></div>. Upstream's TableChecker
         // ignores every table end tag while no table is open (current ==
         // null), with no special case for <template>, so do the same.
-        if name == "tr", !tableStack.isEmpty {
+        // (Case 554591, item 12, from its reviews: and the end of a table
+        // element upstream's Table ignores finishes nothing; see
+        // TableState.suppressedDepth.)
+        if !tableStack.isEmpty, 0 < currentTable.suppressedDepth, Self.tableElementsTableRoutes.contains(name) {
+            currentTable.suppressedDepth -= 1
+        } else if name == "tr", !tableStack.isEmpty {
             finishCurrentRow()
         } else if Self.rowGroupElements.contains(name), !tableStack.isEmpty {
             finishCurrentRow()
             finishCurrentRowGroup()
         } else if name == "colgroup", !tableStack.isEmpty {
-            tableStack[tableStack.index(before: tableStack.endIndex)].colgroupCountsChildren = false
+            finishCurrentColgroup()
         } else if name == "table", !tableStack.isEmpty {
             finishCurrentRow()
             finishCurrentRowGroup()
@@ -2351,6 +2989,17 @@ struct HTMLTableModelChecker {
 
         if let index = elementStack.lastIndex(of: name) {
             elementStack.removeSubrange(index...)
+        }
+        // (Case 554591, item 12, from its third review: the templates and table
+        // elements that have ended with it; a template's implied tbody and tr
+        // end with it.)
+        while let last = openTemplates.last, last.index >= elementStack.count {
+            endImpliedRow(template: openTemplates.count - 1)
+            endImpliedRowGroup(template: openTemplates.count - 1)
+            openTemplates.removeLast()
+        }
+        while let last = tableElementIndices.last, last >= elementStack.count {
+            tableElementIndices.removeLast()
         }
     }
 
@@ -2363,48 +3012,240 @@ struct HTMLTableModelChecker {
         return diagnostics
     }
 
-    private mutating func processTableElement(_ element: HTMLTableElementInfo) {
+    private mutating func processTableElement(_ element: HTMLTableElementInfo, isDropped: Bool) {
         // Case 554591: "Start tag \"input\"/\"select\" seen in \"table\"." used to
         // be reported here as well as by HTMLValidator, so it appeared twice.
         // That parse error is now reported only by HTMLValidator, for every
         // foster-parented start tag, as upstream does.
+        // (The schema's error for a col directly in an XHTML table, where XHTML
+        // has no colgroup a parser implies, is reported wherever the table's
+        // state is.)
+        if "col" == element.name, .xhtml == mode, "table" == elementStack.last {
+            append("Element \u{201c}col\u{201d} not allowed as child of \u{201c}table\u{201d} in this context.", at: element)
+        }
+        // Case 554591 (item 12, from its reviews): a table element upstream's
+        // Table ignores, with the table elements inside it (see
+        // isSuppressedStart and TableState.suppressedDepth). Its colgroup's or
+        // col's "must be less than or equal to 1000" check comes first
+        // upstream (clampSpan), so that's still reported. (From the third
+        // review: and one upstream's parser drops from a template's content,
+        // which Table never sees, so its span isn't checked either; see
+        // noteTemplateTablePart.)
+        if Self.tableElementsTableRoutes.contains(element.name), 0 < currentTable.suppressedDepth || isDropped || isSuppressedStart(element) {
+            currentTable.suppressedDepth += 1
+            if !isDropped, "colgroup" == element.name || "col" == element.name {
+                appendSpanLimitMessage(element.attributes["span"], element: element)
+            }
+            return
+        }
         switch element.name {
         case "colgroup":
-            finishCurrentRowGroup()
+            // (Case 554591, item 12: this used to end the current row group
+            // first. A colgroup that upstream's Table takes comes before any
+            // row group, so there's none to end; and one that comes after
+            // rows, in a template in a row group, say, it ignores, leaving
+            // the row group open.)
             processColgroup(element)
         case "col":
             processCol(element)
         case "tbody", "thead", "tfoot":
+            // (Case 554591, item 12: rows have started; see sawRowGroup.)
+            currentTable.sawRowGroup = true
             finishCurrentRow()
             finishCurrentRowGroup()
             currentTable.rowGroup = RowGroupState(name: element.name)
         case "tr":
+            currentTable.sawRowGroup = true
             startRow(element)
         case "td", "th":
+            currentTable.sawRowGroup = true
             startCell(element)
         default:
             break
         }
     }
 
-    private mutating func processColgroup(_ element: HTMLTableElementInfo) {
-        if let spanValue = element.attributes["span"] {
-            let span = tableSpan(spanValue, attribute: "span", element: element)
-            currentTable.columnMarkupCount += span
-            currentTable.colgroupCountsChildren = false
-        } else {
-            currentTable.colgroupCountsChildren = true
+    /// Case 554591 (item 12, from its reviews): whether upstream's Table
+    /// ignores a table element starting here, as its startColGroup, startCol,
+    /// startRowGroup, startRow and startCell do in any state they don't take
+    /// (their default case: suppressedStarts). Table's state follows the
+    /// table elements it has taken, so this goes by the innermost one open
+    /// in the table, and by whether a colgroup (pendingColgroupSpan, an
+    /// implied one included) or a row (an HTML parser's implied tr, too,
+    /// which isn't in the tree) is open. In an HTML document, the parser
+    /// closes an open cell, row or row group before starting another, so one
+    /// is inside another only through a <template> between them; the tree
+    /// builder here doesn't always close them in a template's content (a
+    /// <td> after a <td> there is inside it), where upstream's are siblings,
+    /// which Table takes, so without a template between them, the nesting
+    /// isn't counted. It ignores:
+    /// - a colgroup after a row group has started (see
+    ///   TableState.sawRowGroup), or inside a colgroup (which an HTML
+    ///   document can have through a <template>);
+    /// - a col after a row group has started;
+    /// - a row group anywhere but directly in the table: inside a colgroup,
+    ///   a row group, a row or a cell;
+    /// - a row inside a colgroup, a row or a cell;
+    /// - a cell inside a colgroup or a cell, or outside a row: in an HTML
+    ///   document, a cell directly in the table or in a row group is in the
+    ///   row the parser implies, and one directly in a <template> is in one
+    ///   only when the template's content began with a row, a caption, a
+    ///   colgroup or a row group (see TemplateTableMode; the implied row is
+    ///   then judged as a row is);
+    /// - anything inside a col, which only XHTML can have.
+    /// (An HTML document can have most of these only through a <template>,
+    /// whose content Table sees as any other. And the tbody and tr the parser
+    /// implies for rows and cells directly in the table aren't in the tree,
+    /// but the table's open row group and row stand for them: a template after
+    /// such rows is inside them, so a row group or row in it is inside a row
+    /// group or a row, as in <table><td>1</td><template><tr>…. Since the third
+    /// review.) Holding every row to a
+    /// colgroup Table ignores, as this did once an empty colgroup counted one
+    /// column, gave false row-width errors: one per row for an empty colgroup
+    /// after a <thead>, and one for the valid
+    /// <td><template><colgroup></colgroup></template></td>. And the rows or
+    /// cells in a template in a colgroup, or a template's cell directly in
+    /// the table, set sawRowGroup, so that the column markup after them was
+    /// dropped, and every real row got a row-width error.
+    private func isSuppressedStart(_ element: HTMLTableElementInfo) -> Bool {
+        let innermostIndex = tableElementIndices.last
+        let innermost = innermostIndex.map { elementStack[$0] } ?? "table"
+        if "col" == innermost {
+            return true
+        }
+        let isInColgroup = nil != currentTable.pendingColgroupSpan
+        let isNested = .xhtml == mode || (innermostIndex.map { index in (openTemplates.last?.index ?? -1) > index } ?? false)
+        let isInCell = isNested && ("td" == innermost || "th" == innermost)
+        // (Whether, in an HTML document, a tbody or tr the parser implied is
+        // open around what starts now, with no element of its own in the tree;
+        // see above, and RowGroupState.isImpliedTbody.)
+        let isInImpliedRowGroup = .html == mode && "table" == innermost && ((currentTable.rowGroup?.isImpliedTbody ?? false) || nil != currentTable.row)
+        switch element.name {
+        case "colgroup":
+            return currentTable.sawRowGroup || isInColgroup
+        case "col":
+            return currentTable.sawRowGroup
+        case "tbody", "thead", "tfoot":
+            return isInColgroup || (isNested && ("table" != innermost || isInImpliedRowGroup))
+        case "tr":
+            return isInColgroup || isInCell || (isNested && ("tr" == innermost || (.html == mode && nil != currentTable.row)))
+        case "td", "th":
+            // (A cell in a template's implied tr that Table took is taken by the
+            // open row below; see noteTemplateTablePart.)
+            if isInColgroup || isInCell {
+                return true
+            }
+            if "tr" == innermost || nil != currentTable.row {
+                return false
+            }
+            return .xhtml == mode || !Self.rowImplyingParents.contains(elementStack.last ?? "")
+        default:
+            return false
         }
     }
 
-    private mutating func processCol(_ element: HTMLTableElementInfo) {
-        if mode == .xhtml, elementStack.last == "table" {
-            append("Element \u{201c}col\u{201d} not allowed as child of \u{201c}table\u{201d} in this context.", at: element)
-        }
+    /// Case 554591 (item 12, from its second review): the elements that an
+    /// HTML parser implies a tr in for a cell directly in them (see
+    /// isSuppressedStart).
+    private static let rowImplyingParents: Set<String> = ["table", "tbody", "thead", "tfoot"]
 
-        if mode == .html || currentTable.colgroupCountsChildren || elementStack.last == "table" {
-            currentTable.columnMarkupCount += tableSpan(element.attributes["span"], attribute: "span", element: element)
+    /// Case 554591 (item 12): the table elements upstream's TableChecker hands
+    /// its Table (see TableState.suppressedDepth).
+    private static let tableElementsTableRoutes: Set<String> = ["colgroup", "col", "tbody", "thead", "tfoot", "tr", "td", "th"]
+
+    private mutating func processColgroup(_ element: HTMLTableElementInfo) {
+        // Case 554591 (item 12): the colgroup's span is held until the
+        // colgroup ends (see TableState.pendingColgroupSpan); only what the
+        // colgroup counts is now upstream's. (A bad span is reported where the
+        // schema checks it, by HTMLValidator and XMLValidator.)
+        appendSpanLimitMessage(element.attributes["span"], element: element)
+        currentTable.pendingColgroupSpan = Self.upstreamSpan(element.attributes["span"])
+        currentTable.hasColumnMarkup = true
+    }
+
+    private mutating func processCol(_ element: HTMLTableElementInfo) {
+        // Case 554591 (item 12): a col in a colgroup makes upstream's Table
+        // set the colgroup's held span aside (the schema reports the col,
+        // too, when the colgroup has a span attribute; see
+        // HTMLValidator.colgroupContentModelMessage), with this warning at
+        // the first such col if the span was a positive number. The cols
+        // are then what the colgroup counts, in an XHTML document as well,
+        // where they used to be left out when the colgroup had a span.
+        let isInColgroup = nil != currentTable.pendingColgroupSpan
+        if let pendingSpan = currentTable.pendingColgroupSpan {
+            if pendingSpan > 0 {
+                append("A col element causes a span attribute with value \(pendingSpan) to be ignored on the parent colgroup.", at: element, warning: true)
+            }
+            currentTable.pendingColgroupSpan = 0
         }
+        if .html == mode || isInColgroup || "table" == elementStack.last {
+            // (Case 554591, item 12: the col counts as many columns as
+            // upstream reads its span as (see upstreamSpan): none for
+            // span="0", one for span="2 " or span="99999999999", which this
+            // counted, by its own reading, as one, two and 1000 columns.)
+            appendSpanLimitMessage(element.attributes["span"], element: element)
+            currentTable.columnMarkupCount += abs(Self.upstreamSpan(element.attributes["span"]))
+            currentTable.hasColumnMarkup = true
+        }
+    }
+
+    /// Case 554591 (item 12): the end of the open colgroup, if there is one,
+    /// where its held span counts (see TableState.pendingColgroupSpan): the
+    /// number; one column for a colgroup with no span or a bad one; and
+    /// none for span="0", or once a col in it has set the span aside. (From
+    /// the second review: an implied colgroup's, too; see
+    /// impliedColgroupEnded.)
+    private mutating func finishCurrentColgroup() {
+        guard let pendingSpan = currentTable.pendingColgroupSpan else { return }
+        currentTable.columnMarkupCount += abs(pendingSpan)
+        currentTable.pendingColgroupSpan = nil
+    }
+
+    /// Case 554591 (item 12): a colgroup's or col's span as upstream's
+    /// TableChecker reads it (clampSpan, with
+    /// AttributeUtil.parseNonNegativeInteger): -1 when there's none, or when
+    /// it isn't a number a Java int can hold (nothing but ASCII digits,
+    /// perhaps after a minus sign, once leading spaces, tabs, CRs and LFs,
+    /// and only those, are skipped), or when it's negative; otherwise the
+    /// number, but no more than 1000. Its absolute value is what the
+    /// colgroup or col counts (see finishCurrentColgroup and processCol), so
+    /// a missing or bad span is one column, and span="0" none. (The table
+    /// checker used to count a span by its own reading, as one column for
+    /// span="0", and taking "2 " and an out-of-range number such as
+    /// 99999999999 for numbers.)
+    private static func upstreamSpan(_ value: String?) -> Int {
+        guard let value, let number = upstreamNonNegativeInteger(value) else { return -1 }
+        return min(number, 1000)
+    }
+
+    /// Case 554591 (item 12): the number AttributeUtil.parseNonNegativeInteger
+    /// reads in a span, before clampSpan's limit of 1000 (see upstreamSpan
+    /// and appendSpanLimitMessage); nil where it gives -1.
+    private static func upstreamNonNegativeInteger(_ value: String) -> Int? {
+        var scalars = Substring(value).unicodeScalars
+        while let first = scalars.first, " " == first || "\t" == first || "\n" == first || "\r" == first {
+            scalars = scalars.dropFirst()
+        }
+        let isNegative = "-" == scalars.first
+        if isNegative {
+            scalars = scalars.dropFirst()
+        }
+        guard !scalars.isEmpty else { return nil }
+        var number = 0
+        for scalar in scalars {
+            guard ("0"..."9").contains(scalar) else { return nil }
+            number = number * 10 + Int(scalar.value - 48)
+            // (Past Integer.MAX_VALUE, Java's Integer.parseInt fails, and
+            // upstream takes that as -1, as it does any other bad value.)
+            if number > Int(Int32.max) {
+                return nil
+            }
+        }
+        // ("-0" is zero; any other negative number is -1.)
+        if isNegative {
+            return 0 == number ? 0 : nil
+        }
+        return number
     }
 
     private mutating func startRow(_ element: HTMLTableElementInfo) {
@@ -2412,7 +3253,8 @@ struct HTMLTableModelChecker {
             finishCurrentRow()
         }
         if currentTable.rowGroup == nil {
-            currentTable.rowGroup = RowGroupState(name: nil)
+            // (Case 554591, item 12, from its third review: see isImpliedTbody.)
+            currentTable.rowGroup = RowGroupState(name: nil, isImpliedTbody: .html == mode && "table" == elementStack.last)
         }
 
         currentTable.globalRowCount += 1
@@ -2447,7 +3289,13 @@ struct HTMLTableModelChecker {
             currentTable.thIDs.insert(id)
         }
         if let headers = element.attributes["headers"] {
-            for id in headers.split(whereSeparator: { $0.isWhitespace }).map(String.init) where !id.isEmpty {
+            // (Case 554591, item 12, from its review: split only at spaces,
+            // tabs, LFs and CRs, as upstream's AttributeUtil.split does.
+            // Character.isWhitespace also splits at a no-break space, which,
+            // decoded from &#160; since item 12, made headers="a&#160;b"
+            // two IDs, neither of them the th's. By scalars, since a CRLF is
+            // one Character; and split leaves out the empty pieces.)
+            for id in headers.unicodeScalars.split(whereSeparator: { " " == $0 || "\t" == $0 || "\n" == $0 || "\r" == $0 }).map({ String(Substring($0)) }) {
                 currentTable.pendingHeaderReferences.append(HeaderReference(cellName: element.name, id: id, cell: element))
             }
         }
@@ -2542,6 +3390,12 @@ struct HTMLTableModelChecker {
     }
 
     private mutating func finishCurrentTable() {
+        // Case 554591 (item 12): a colgroup still open counts now (see
+        // finishCurrentColgroup). Its end always comes first in a document
+        // the tree builder or the XML parser has finished, as it does in
+        // upstream, whose Table counts it only there; this is in case it
+        // doesn't, so that its span isn't lost.
+        finishCurrentColgroup()
         var table = tableStack.removeLast()
 
         for reference in table.pendingHeaderReferences where !table.thIDs.contains(reference.id) {
@@ -2557,7 +3411,11 @@ struct HTMLTableModelChecker {
     }
 
     private mutating func appendRowWidthMessages(for table: TableState) {
-        if table.columnMarkupCount > 0 {
+        // (Case 554591, item 12: column markup that adds up to no columns,
+        // a lone <colgroup span=0>, still sets the count rows are held to,
+        // as in upstream: "… exceeded the column count established using
+        // column markup (0).")
+        if table.hasColumnMarkup {
             for row in table.rows where row.startCellCount > 0 {
                 if row.width > table.columnMarkupCount {
                     append(
@@ -2653,16 +3511,19 @@ struct HTMLTableModelChecker {
         return max(0, min(rowspan, 65534))
     }
 
-    private mutating func tableSpan(_ value: String?, attribute: String, element: HTMLTableElementInfo) -> Int {
-        guard let value else { return 1 }
-        guard let span = validInteger(value), span > 0 else {
-            appendBadValue(value, attribute: attribute, element: element)
-            return 1
-        }
-        if span > 1000 {
-            append("The value of the \u{201c}\(attribute)\u{201d} attribute must be less than or equal to 1000.", at: element)
-        }
-        return max(1, min(span, 1000))
+    /// "The value of the “span” attribute must be less than or equal to 1000."
+    /// for a colgroup's or col's span over that, as upstream's TableChecker
+    /// gives it (clampSpan), wherever the colgroup or col is, and by its own
+    /// reading of the number: a value a Java int can't hold, such as
+    /// 99999999999, gets no message, as in vnu.jar, nor does "1001 ", which it
+    /// doesn't read as a number at all. Case 554591 (item 12): this was
+    /// tableSpan, which also counted the span (what a span counts is now
+    /// upstreamSpan's), went by the checker's own reading, which took both of
+    /// those for numbers over 1000, and reported a bad span, which
+    /// HTMLValidator and XMLValidator now do where the schema checks one.
+    private mutating func appendSpanLimitMessage(_ value: String?, element: HTMLTableElementInfo) {
+        guard let value, let number = Self.upstreamNonNegativeInteger(value), number > 1000 else { return }
+        append("The value of the \u{201c}span\u{201d} attribute must be less than or equal to 1000.", at: element)
     }
 
     private func validInteger(_ value: String) -> Int? {
@@ -2671,10 +3532,6 @@ struct HTMLTableModelChecker {
             return nil
         }
         return Int(trimmed)
-    }
-
-    private func normalizedRole(_ value: String?) -> String? {
-        value?.split(whereSeparator: { $0.isWhitespace }).first.map { String($0).lowercased() }
     }
 
     private func rowGroupDescription(_ name: String?) -> String {

@@ -766,6 +766,712 @@ func figureRulesMatchUpstreamWhereItSaysMore(_ body: String, _ expected: [String
     #expect(1 == messages.filter { "Element \u{201c}spacer\u{201d} not allowed as child of \u{201c}figure\u{201d} in this context." == $0 }.count)
 }
 
+// Case 554591 (item 12): a colgroup takes col children or a span attribute,
+// not both (html5/tables.rnc), so a col, or a template, is reported only in a
+// colgroup that has a span attribute; and upstream's TableChecker counts a
+// colgroup's span only when no col in it has set the span aside (with a
+// warning at the first col if the span was a positive number), one column
+// for a colgroup without a usable span, and none for span="0", reading the
+// span as upstream does, with the first of duplicate attributes and character
+// references decoded. The port reported every col in any colgroup, and
+// counted both a colgroup's span and its cols. Each case is a whole document
+// and vnu.jar's error and warning messages for it.
+@Test(arguments: [
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><colgroup><col><col></colgroup><tr><td>a</td><td>b</td></tr></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><colgroup span=2><col></colgroup><tr><td>a</td><td>b</td></tr></table>\n", [("error", "A table row was 2 columns wide and exceeded the column count established using column markup (1)."), ("error", "Element \u{201c}col\u{201d} not allowed as child of \u{201c}colgroup\u{201d} in this context."), ("warning", "A col element causes a span attribute with value 2 to be ignored on the parent colgroup.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><colgroup span=2><col><col></colgroup><tr><td>a</td><td>b</td></tr></table>\n", [("error", "Element \u{201c}col\u{201d} not allowed as child of \u{201c}colgroup\u{201d} in this context."), ("error", "Element \u{201c}col\u{201d} not allowed as child of \u{201c}colgroup\u{201d} in this context."), ("warning", "A col element causes a span attribute with value 2 to be ignored on the parent colgroup.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><colgroup span=2></colgroup><tr><td>a</td><td>b</td></tr></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><colgroup span=0><col></colgroup><tr><td>a</td><td>b</td></tr></table>\n", [("error", "A table row was 2 columns wide and exceeded the column count established using column markup (1)."), ("error", "Bad value \u{201c}0\u{201d} for attribute \u{201c}span\u{201d} on element \u{201c}colgroup\u{201d}."), ("error", "Element \u{201c}col\u{201d} not allowed as child of \u{201c}colgroup\u{201d} in this context.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><colgroup span><col></colgroup><tr><td>a</td><td>b</td></tr></table>\n", [("error", "A table row was 2 columns wide and exceeded the column count established using column markup (1)."), ("error", "Bad value \u{201c}\u{201d} for attribute \u{201c}span\u{201d} on element \u{201c}colgroup\u{201d}."), ("error", "Element \u{201c}col\u{201d} not allowed as child of \u{201c}colgroup\u{201d} in this context.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><colgroup span=x><col></colgroup><tr><td>a</td><td>b</td></tr></table>\n", [("error", "A table row was 2 columns wide and exceeded the column count established using column markup (1)."), ("error", "Bad value \u{201c}x\u{201d} for attribute \u{201c}span\u{201d} on element \u{201c}colgroup\u{201d}."), ("error", "Element \u{201c}col\u{201d} not allowed as child of \u{201c}colgroup\u{201d} in this context.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><colgroup><template></template><col><col></colgroup><tr><td>a</td><td>b</td></tr></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><colgroup span=2><template></template></colgroup><tr><td>a</td><td>b</td></tr></table>\n", [("error", "Element \u{201c}template\u{201d} not allowed as child of \u{201c}colgroup\u{201d} in this context.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><col><col><tr><td>a</td><td>b</td></tr></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><colgroup span=2><col span=2></colgroup><tr><td>a</td><td>b</td></tr></table>\n", [("error", "Element \u{201c}col\u{201d} not allowed as child of \u{201c}colgroup\u{201d} in this context."), ("warning", "A col element causes a span attribute with value 2 to be ignored on the parent colgroup.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><colgroup SPAN=2><col></colgroup><tr><td>a</td><td>b</td></tr></table>\n", [("error", "A table row was 2 columns wide and exceeded the column count established using column markup (1)."), ("error", "Element \u{201c}col\u{201d} not allowed as child of \u{201c}colgroup\u{201d} in this context."), ("warning", "A col element causes a span attribute with value 2 to be ignored on the parent colgroup.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><colgroup span=2><col></colgroup><colgroup><col><col></colgroup><tr><td>a</td><td>b</td><td>c</td><td>d</td></tr></table>\n", [("error", "A table row was 4 columns wide and exceeded the column count established using column markup (3)."), ("error", "Element \u{201c}col\u{201d} not allowed as child of \u{201c}colgroup\u{201d} in this context."), ("warning", "A col element causes a span attribute with value 2 to be ignored on the parent colgroup.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><colgroup span=2>\n  </colgroup><tr><td>a</td><td>b</td></tr></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><colgroup span=2><!-- c --></colgroup><tr><td>a</td><td>b</td></tr></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><colgroup span=&#50;><col></colgroup><tr><td>a</td><td>b</td></tr></table>\n", [("error", "A table row was 2 columns wide and exceeded the column count established using column markup (1)."), ("error", "Element \u{201c}col\u{201d} not allowed as child of \u{201c}colgroup\u{201d} in this context."), ("warning", "A col element causes a span attribute with value 2 to be ignored on the parent colgroup.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><colgroup span=2><col><tr><td>a</td><td>b</td></tr></table>\n", [("error", "A table row was 2 columns wide and exceeded the column count established using column markup (1)."), ("error", "Element \u{201c}col\u{201d} not allowed as child of \u{201c}colgroup\u{201d} in this context."), ("warning", "A col element causes a span attribute with value 2 to be ignored on the parent colgroup.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><col><colgroup span=1><col></colgroup><tr><td>a</td><td>b</td></tr></table>\n", [("error", "Element \u{201c}col\u{201d} not allowed as child of \u{201c}colgroup\u{201d} in this context."), ("warning", "A col element causes a span attribute with value 1 to be ignored on the parent colgroup.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><colgroup span=2 span=3><col></colgroup><tr><td>a</td><td>b</td></tr></table>\n", [("error", "A table row was 2 columns wide and exceeded the column count established using column markup (1)."), ("error", "Duplicate attribute \u{201c}span\u{201d}."), ("error", "Element \u{201c}col\u{201d} not allowed as child of \u{201c}colgroup\u{201d} in this context."), ("warning", "A col element causes a span attribute with value 2 to be ignored on the parent colgroup.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><colgroup span=2><template><col></template></colgroup><tr><td>a</td><td>b</td></tr></table>\n", [("error", "A table row was 2 columns wide and exceeded the column count established using column markup (1)."), ("error", "Element \u{201c}template\u{201d} not allowed as child of \u{201c}colgroup\u{201d} in this context."), ("warning", "A col element causes a span attribute with value 2 to be ignored on the parent colgroup.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<div><colgroup span=2><col></colgroup></div>\n", [("error", "Stray end tag \u{201c}colgroup\u{201d}."), ("error", "Stray start tag \u{201c}colgroup\u{201d}."), ("error", "Stray start tag \u{201c}col\u{201d}.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><colgroup span=2><!--x--><col></colgroup><tr><td>a</td><td>b</td></tr></table>\n", [("error", "A table row was 2 columns wide and exceeded the column count established using column markup (1)."), ("error", "Element \u{201c}col\u{201d} not allowed as child of \u{201c}colgroup\u{201d} in this context."), ("warning", "A col element causes a span attribute with value 2 to be ignored on the parent colgroup.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<svg><foreignObject><table><colgroup span=2><col></colgroup><tr><td>a</td><td>b</td></tr></table></foreignObject></svg>\n", [("error", "A table row was 2 columns wide and exceeded the column count established using column markup (1)."), ("error", "Element \u{201c}col\u{201d} not allowed as child of \u{201c}colgroup\u{201d} in this context."), ("warning", "A col element causes a span attribute with value 2 to be ignored on the parent colgroup.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<math><mtext><table><colgroup span=2><col></colgroup><tr><td>a</td><td>b</td></tr></table></mtext></math>\n", [("error", "A table row was 2 columns wide and exceeded the column count established using column markup (1)."), ("error", "Element \u{201c}table\u{201d} not allowed as child of \u{201c}mtext\u{201d} in this context."), ("warning", "A col element causes a span attribute with value 2 to be ignored on the parent colgroup.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><colgroup span=2000><col></colgroup><tr><td>a</td><td>b</td></tr></table>\n", [("error", "A table row was 2 columns wide and exceeded the column count established using column markup (1)."), ("error", "Element \u{201c}col\u{201d} not allowed as child of \u{201c}colgroup\u{201d} in this context."), ("error", "The value of the \u{201c}span\u{201d} attribute must be less than or equal to 1000."), ("warning", "A col element causes a span attribute with value 1000 to be ignored on the parent colgroup.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><caption>x</caption><colgroup span=2><col></colgroup><tr><td>a</td><td>b</td></tr></table>\n", [("error", "A table row was 2 columns wide and exceeded the column count established using column markup (1)."), ("error", "Element \u{201c}col\u{201d} not allowed as child of \u{201c}colgroup\u{201d} in this context."), ("warning", "A col element causes a span attribute with value 2 to be ignored on the parent colgroup.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><tr><td><table><colgroup span=2><col></colgroup><tr><td>a</td><td>b</td></tr></table></td><td>b</td></tr></table>\n", [("error", "A table row was 2 columns wide and exceeded the column count established using column markup (1)."), ("error", "Element \u{201c}col\u{201d} not allowed as child of \u{201c}colgroup\u{201d} in this context."), ("warning", "A col element causes a span attribute with value 2 to be ignored on the parent colgroup.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><colgroup></colgroup><tr><td>a</td><td>b</td></tr></table>\n", [("error", "A table row was 2 columns wide and exceeded the column count established using column markup (1).")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><colgroup></colgroup><colgroup span=2></colgroup><tr><td>a</td><td>b</td><td>c</td></tr></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><colgroup span=0></colgroup><colgroup span=2></colgroup><tr><td>a</td><td>b</td></tr></table>\n", [("error", "Bad value \u{201c}0\u{201d} for attribute \u{201c}span\u{201d} on element \u{201c}colgroup\u{201d}.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<select><option>a</option></select><table><colgroup span=2><col></colgroup><tr><td>a</td><td>b</td></tr></table>\n", [("error", "A table row was 2 columns wide and exceeded the column count established using column markup (1)."), ("error", "Element \u{201c}col\u{201d} not allowed as child of \u{201c}colgroup\u{201d} in this context."), ("warning", "A col element causes a span attribute with value 2 to be ignored on the parent colgroup.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<template><colgroup span=2><col></colgroup></template>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<span><table><colgroup span=2><col></colgroup><tr><td>a</td><td>b</td></tr></table></span>\n", [("error", "A table row was 2 columns wide and exceeded the column count established using column markup (1)."), ("error", "Element \u{201c}table\u{201d} not allowed as child of \u{201c}span\u{201d} in this context."), ("warning", "A col element causes a span attribute with value 2 to be ignored on the parent colgroup.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><colgroup span=0></colgroup><tr><td>a</td><td>b</td></tr><tr><td>c</td></tr></table>\n", [("error", "A table row was 1 columns wide and exceeded the column count established using column markup (0)."), ("error", "A table row was 2 columns wide and exceeded the column count established using column markup (0)."), ("error", "Bad value \u{201c}0\u{201d} for attribute \u{201c}span\u{201d} on element \u{201c}colgroup\u{201d}.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><colgroup span=0><col></colgroup><tr><td>a</td></tr></table>\n", [("error", "Bad value \u{201c}0\u{201d} for attribute \u{201c}span\u{201d} on element \u{201c}colgroup\u{201d}."), ("error", "Element \u{201c}col\u{201d} not allowed as child of \u{201c}colgroup\u{201d} in this context.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><colgroup span=1></colgroup><colgroup span=0></colgroup><tr><td>a</td><td>b</td></tr></table>\n", [("error", "A table row was 2 columns wide and exceeded the column count established using column markup (1)."), ("error", "Bad value \u{201c}0\u{201d} for attribute \u{201c}span\u{201d} on element \u{201c}colgroup\u{201d}.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><colgroup span=2></colgroup><colgroup><col></colgroup><colgroup></colgroup><tr><td>a</td><td>b</td><td>c</td><td>d</td></tr></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><colgroup span=\"-1\"><col></colgroup><tr><td>a</td><td>b</td></tr></table>\n", [("error", "A table row was 2 columns wide and exceeded the column count established using column markup (1)."), ("error", "Bad value \u{201c}-1\u{201d} for attribute \u{201c}span\u{201d} on element \u{201c}colgroup\u{201d}."), ("error", "Element \u{201c}col\u{201d} not allowed as child of \u{201c}colgroup\u{201d} in this context.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><colgroup span=\"007\"><col></colgroup><tr><td>a</td><td>b</td></tr></table>\n", [("error", "A table row was 2 columns wide and exceeded the column count established using column markup (1)."), ("error", "Element \u{201c}col\u{201d} not allowed as child of \u{201c}colgroup\u{201d} in this context."), ("warning", "A col element causes a span attribute with value 7 to be ignored on the parent colgroup.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><colgroup span=\"-0\"><col></colgroup><tr><td>a</td><td>b</td></tr></table>\n", [("error", "A table row was 2 columns wide and exceeded the column count established using column markup (1)."), ("error", "Bad value \u{201c}-0\u{201d} for attribute \u{201c}span\u{201d} on element \u{201c}colgroup\u{201d}."), ("error", "Element \u{201c}col\u{201d} not allowed as child of \u{201c}colgroup\u{201d} in this context.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><colgroup span=\"+2\"><col></colgroup><tr><td>a</td><td>b</td></tr></table>\n", [("error", "A table row was 2 columns wide and exceeded the column count established using column markup (1)."), ("error", "Bad value \u{201c}+2\u{201d} for attribute \u{201c}span\u{201d} on element \u{201c}colgroup\u{201d}."), ("error", "Element \u{201c}col\u{201d} not allowed as child of \u{201c}colgroup\u{201d} in this context.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><colgroup span=\"007\"></colgroup><tr><td>x</td><td>x</td><td>x</td><td>x</td><td>x</td><td>x</td><td>x</td></tr></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><colgroup span=\"-3\"></colgroup><tr><td>a</td><td>b</td></tr></table>\n", [("error", "A table row was 2 columns wide and exceeded the column count established using column markup (1)."), ("error", "Bad value \u{201c}-3\u{201d} for attribute \u{201c}span\u{201d} on element \u{201c}colgroup\u{201d}.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><colgroup span=\"2147483647\"><col></colgroup><tr><td>a</td><td>b</td></tr></table>\n", [("error", "A table row was 2 columns wide and exceeded the column count established using column markup (1)."), ("error", "Element \u{201c}col\u{201d} not allowed as child of \u{201c}colgroup\u{201d} in this context."), ("error", "The value of the \u{201c}span\u{201d} attribute must be less than or equal to 1000."), ("warning", "A col element causes a span attribute with value 1000 to be ignored on the parent colgroup.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><colgroup span=\"\u{ff12}\"><col></colgroup><tr><td>a</td><td>b</td></tr></table>\n", [("error", "A table row was 2 columns wide and exceeded the column count established using column markup (1)."), ("error", "Bad value \u{201c}\u{ff12}\u{201d} for attribute \u{201c}span\u{201d} on element \u{201c}colgroup\u{201d}."), ("error", "Element \u{201c}col\u{201d} not allowed as child of \u{201c}colgroup\u{201d} in this context.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><colgroup span=\"-0\"></colgroup><tr><td>a</td><td>b</td></tr></table>\n", [("error", "A table row was 2 columns wide and exceeded the column count established using column markup (0)."), ("error", "Bad value \u{201c}-0\u{201d} for attribute \u{201c}span\u{201d} on element \u{201c}colgroup\u{201d}.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><colgroup span=2></colgroup><colgroup><col></colgroup><tr><td>a</td><td>b</td><td>c</td></tr></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><col><tr><td>a</td><td>b</td></tr></table>\n", [("error", "A table row was 2 columns wide and exceeded the column count established using column markup (1).")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><colgroup span=\"\"></colgroup><tr><td>a</td><td>b</td></tr></table>\n", [("error", "A table row was 2 columns wide and exceeded the column count established using column markup (1)."), ("error", "Bad value \u{201c}\u{201d} for attribute \u{201c}span\u{201d} on element \u{201c}colgroup\u{201d}.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><colgroup span=2><template><li>x</li></template></colgroup><tr><td>a</td><td>b</td></tr></table>\n", [("error", "Element \u{201c}template\u{201d} not allowed as child of \u{201c}colgroup\u{201d} in this context.")]),
+    // (From item 12's review: upstream's table checker ignores column markup
+    // after the rows, in a cell or a row group, or nested in a colgroup; the
+    // parser ends a colgroup at anything but a col or a template; and table
+    // attributes are read as the parser delivers them.)
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><tbody><template><colgroup></colgroup></template><tr><td>a</td><td>b</td></tr></tbody></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><tr><td><template><colgroup></colgroup></template>a</td><td>b</td></tr></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><tr><td><template><colgroup span=2><col></colgroup></template>a</td></tr></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><colgroup><template><colgroup span=\"1\"></colgroup></template></colgroup><tr><td>a</td><td>b</td><td>c</td></tr></table>\n", [("error", "A table row was 3 columns wide and exceeded the column count established using column markup (1).")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><colgroup span=2><template><colgroup span=3><col></colgroup></template></colgroup><tr><td>a</td><td>b</td></tr></table>\n", [("error", "Element \u{201c}template\u{201d} not allowed as child of \u{201c}colgroup\u{201d} in this context.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><colgroup span=3><template><colgroup></colgroup></template></colgroup><tr><td>a</td><td>b</td><td>c</td></tr></table>\n", [("error", "Element \u{201c}template\u{201d} not allowed as child of \u{201c}colgroup\u{201d} in this context.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><colgroup span=2><col span=x></colgroup><tr><td>a</td><td>b</td></tr></table>\n", [("error", "A table row was 2 columns wide and exceeded the column count established using column markup (1)."), ("error", "Element \u{201c}col\u{201d} not allowed as child of \u{201c}colgroup\u{201d} in this context."), ("warning", "A col element causes a span attribute with value 2 to be ignored on the parent colgroup.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><colgroup span=2><template><p>x</p></template></colgroup><tr><td>a</td><td>b</td></tr></table>\n", [("error", "Element \u{201c}template\u{201d} not allowed as child of \u{201c}colgroup\u{201d} in this context.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><colgroup><col></col><col></colgroup><tr><td>a</td><td>b</td></tr></table>\n", [("error", "Stray end tag \u{201c}col\u{201d}.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table role=\"grid foo\"><tr><td role=\"gridcell\">a</td></tr></table>\n", [("error", "Discarding unrecognized token \u{201c}foo\u{201d} from value of attribute \u{201c}role\u{201d}. Browsers ignore any token that is not a defined ARIA non-abstract role.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table role=\"GRID\"><tr><td role=\"gridcell\">a</td></tr></table>\n", [("error", "Bad value \u{201c}GRID\u{201d} for attribute \u{201c}role\u{201d} on element \u{201c}table\u{201d}.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table role=\"\"><tr><td role=\"gridcell\">a</td></tr></table>\n", [("error", "Bad value \u{201c}\u{201d} for attribute \u{201c}role\u{201d} on element \u{201c}table\u{201d}.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table role=\" grid\"><tr><td role=\"gridcell\">a</td></tr></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><tr><th id=\"a&#160;b\">H</th></tr><tr><td headers=\"a&#160;b\">x</td></tr></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><tr><th id=a>A</th><th id=b>B</th></tr><tr><td headers=\"a&#12;b\">x</td><td>y</td></tr></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><tr><th id=a>A</th><th id=b>B</th></tr><tr><td headers=\"a&#9;b\">x</td><td>y</td></tr></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table role=\"presentation\"><tr><td role=\"gridcell\">a</td></tr></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><script></script><colgroup span=2><col></colgroup><tr><td>a</td><td>b</td></tr></table>\n", [("error", "A table row was 2 columns wide and exceeded the column count established using column markup (1)."), ("error", "Element \u{201c}col\u{201d} not allowed as child of \u{201c}colgroup\u{201d} in this context."), ("warning", "A col element causes a span attribute with value 2 to be ignored on the parent colgroup.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><caption>c</caption><colgroup span=2><col></colgroup><tr><td>a</td><td>b</td></tr></table>\n", [("error", "A table row was 2 columns wide and exceeded the column count established using column markup (1)."), ("error", "Element \u{201c}col\u{201d} not allowed as child of \u{201c}colgroup\u{201d} in this context."), ("warning", "A col element causes a span attribute with value 2 to be ignored on the parent colgroup.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><colgroup span=2></colgroup><colgroup span=2><col></colgroup><tr><td>a</td><td>b</td><td>c</td></tr></table>\n", [("error", "Element \u{201c}col\u{201d} not allowed as child of \u{201c}colgroup\u{201d} in this context."), ("warning", "A col element causes a span attribute with value 2 to be ignored on the parent colgroup.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><col></colgroup><tr><td>a</td></tr></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><col><col></colgroup><tr><td>a</td><td>b</td></tr></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><col><template></template></colgroup><tr><td>a</td></tr></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><col><tbody></colgroup><tr><td>a</td></tr></table>\n", [("error", "Stray end tag \u{201c}colgroup\u{201d}.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><col> <!--c--> </colgroup><tr><td>a</td></tr></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><colgroup><col></colgroup></colgroup><tr><td>a</td></tr></table>\n", [("error", "Stray end tag \u{201c}colgroup\u{201d}.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><colgroup span=3><template><colgroup></colgroup></template><col></colgroup><tr><td>a</td></tr></table>\n", [("error", "Element \u{201c}col\u{201d} not allowed as child of \u{201c}colgroup\u{201d} in this context."), ("error", "Element \u{201c}template\u{201d} not allowed as child of \u{201c}colgroup\u{201d} in this context."), ("warning", "A col element causes a span attribute with value 3 to be ignored on the parent colgroup.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><colgroup span=2></template><col></colgroup><tr><td>a</td><td>b</td></tr></table>\n", [("error", "A table row was 2 columns wide and exceeded the column count established using column markup (1)."), ("error", "Element \u{201c}col\u{201d} not allowed as child of \u{201c}colgroup\u{201d} in this context."), ("error", "Stray end tag \u{201c}template\u{201d}."), ("warning", "A col element causes a span attribute with value 2 to be ignored on the parent colgroup.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><col span=99999999999><tr><td>a</td></tr></table>\n", []),
+    // (From item 12's second review: what upstream's Table ignores, and the
+    // spans its schema checks.)
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table>\n<colgroup>\n<template><tr><td>x</td></tr></template>\n<col>\n</colgroup>\n<colgroup span=2></colgroup>\n<tr><td>a</td><td>b</td><td>c</td></tr>\n<tr><td>a</td><td>b</td><td>c</td></tr>\n</table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><colgroup><template><tr><td>x</td></tr></template></colgroup><colgroup></colgroup><tr><td>x</td><td>x</td></tr></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><col><template><tr><td>t</td></tr></template><colgroup><col></colgroup><tr><td>a</td><td>b</td></tr></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><template><td>a</td></template><colgroup span=2></colgroup><tr><td>a</td><td>b</td></tr></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table>\n<template id=cell><td></td></template>\n<colgroup span=2></colgroup>\n<tr><td>1<td>2<td>3\n</table>\n", [("error", "A table row was 3 columns wide and exceeded the column count established using column markup (2).")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table>\n<colgroup><template><tr><td></td></tr></template></colgroup>\n<colgroup span=2></colgroup>\n<tr><td>1<td>2<td>3<td>4\n</table>\n", [("error", "A table row was 4 columns wide and exceeded the column count established using column markup (3).")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table>\n<template id=row><tr><td>x</td></tr></template>\n<colgroup span=0></colgroup>\n<tr><td>a</td></tr>\n</table>\n", [("error", "Bad value \u{201c}0\u{201d} for attribute \u{201c}span\u{201d} on element \u{201c}colgroup\u{201d}.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><template><tr><td>a</td></tr></template><colgroup span=0></colgroup><tr><td>a</td><td>b</td></tr></table>\n", [("error", "Bad value \u{201c}0\u{201d} for attribute \u{201c}span\u{201d} on element \u{201c}colgroup\u{201d}."), ("warning", "A table row was 2 columns wide and exceeded the column count established by the first row (1).")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table>\n<colgroup span=\"2\">&#10;</colgroup>\n<tr><td>1</td><td>2</td></tr>\n</table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table>\n<colgroup>&#9;<col>&#9;<col>&#9;</colgroup>\n<tr><td>1</td><td>2</td></tr>\n</table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table>&#13;\n<colgroup>&#13;\n<col style=\"width:50%\">&#13;\n<col>&#13;\n</colgroup>&#13;\n<tr><td>1</td><td>2</td></tr>&#13;\n</table>\n", [("error", "A numeric character reference expanded to carriage return."), ("error", "A numeric character reference expanded to carriage return."), ("error", "A numeric character reference expanded to carriage return."), ("error", "A numeric character reference expanded to carriage return."), ("error", "A numeric character reference expanded to carriage return."), ("error", "A numeric character reference expanded to carriage return.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><colgroup span=2>&#10;</colgroup><tr><td>a</td><td>b</td></tr></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><colgroup>&#10;<col><col></colgroup><tr><td>a</td><td>b</td></tr></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><colgroup span=2>&#32;<col></colgroup><tr><td>a</td><td>b</td></tr></table>\n", [("error", "A table row was 2 columns wide and exceeded the column count established using column markup (1)."), ("error", "Element \u{201c}col\u{201d} not allowed as child of \u{201c}colgroup\u{201d} in this context."), ("warning", "A col element causes a span attribute with value 2 to be ignored on the parent colgroup.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><col><template></template><colgroup span=2><col></colgroup><tr><td>a</td><td>b</td></tr></table>\n", [("error", "Element \u{201c}col\u{201d} not allowed as child of \u{201c}colgroup\u{201d} in this context."), ("warning", "A col element causes a span attribute with value 2 to be ignored on the parent colgroup.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table>\n<col>\n<template id=cell><span>x</span></template>\n<colgroup span=2><col></colgroup>\n<tr><td>a</td><td>b</td></tr>\n</table>\n", [("error", "Element \u{201c}col\u{201d} not allowed as child of \u{201c}colgroup\u{201d} in this context."), ("warning", "A col element causes a span attribute with value 2 to be ignored on the parent colgroup.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table>\n<col>\n<template></template>\n<colgroup span=2>\n<col>\n</colgroup>\n<tr><td>1<td>2<td>3</tr>\n</table>\n", [("error", "A table row was 3 columns wide and exceeded the column count established using column markup (2)."), ("error", "Element \u{201c}col\u{201d} not allowed as child of \u{201c}colgroup\u{201d} in this context."), ("warning", "A col element causes a span attribute with value 2 to be ignored on the parent colgroup.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table>\n<col>\n<template></template>\n<colgroup span=2><template></template></colgroup>\n<tr><td>1<td>2<td>3\n</table>\n", [("error", "Element \u{201c}template\u{201d} not allowed as child of \u{201c}colgroup\u{201d} in this context.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<form action=\"/a\">\n<table>\n<col><col>\n<form action=\"/b\">\n</colgroup>\n<tr><td>a</td><td>b</td></tr>\n</table>\n</form>\n", [("error", "Saw a \u{201c}form\u{201d} start tag, but there was already an active \u{201c}form\u{201d} element. Nested forms are not allowed. Ignoring the tag."), ("error", "Stray end tag \u{201c}colgroup\u{201d}.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><col><frame></colgroup><tr><td>a</td></tr></table>\n", [("error", "Start tag \u{201c}frame\u{201d} seen in \u{201c}table\u{201d}."), ("error", "Stray end tag \u{201c}colgroup\u{201d}."), ("error", "Stray start tag \u{201c}frame\u{201d}.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><colgroup><template><colgroup><script></script></colgroup></template></colgroup><tr><td>a</td></tr></table>\n", [("error", "Stray end tag \u{201c}colgroup\u{201d}.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><tr><td>a</td><td>b</td></tr><template><colgroup><template></template></colgroup></template><tr><td>a</td><td>b</td><td>c</td></tr></table>\n", [("warning", "A table row was 3 columns wide and exceeded the column count established by the first row (2).")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table>\n<col>\n<template><tr><td>x</td></tr></template>\n<col>\n<tr><td>a</td><td>b</td></tr>\n<tr><td>a</td><td>b</td></tr>\n</table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><col span=2></caption><template><tr><td>t</td></tr></template><tr><td>a</td><td>b</td></tr></table>\n", [("error", "A table row was 1 columns wide, which is less than the column count established using column markup (2)."), ("error", "Stray end tag \u{201c}caption\u{201d}.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><col span=2></colgroup><template><tr><td>t</td></tr></template><tr><td>a</td><td>b</td></tr></table>\n", [("error", "A table row was 1 columns wide, which is less than the column count established using column markup (2).")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><col span=2><frame><template><tr><td>t</td></tr></template><tr><td>a</td><td>b</td></tr></table>\n", [("error", "A table row was 1 columns wide, which is less than the column count established using column markup (2)."), ("error", "Start tag \u{201c}frame\u{201d} seen in \u{201c}table\u{201d}."), ("error", "Stray start tag \u{201c}frame\u{201d}.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><col span=2><!-- c --> <template><tr><td>t</td><td>u</td></tr></template><tr><td>a</td><td>b</td></tr></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><colgroup><col><col></colgroup><thead><tr><th>A<th>B</thead><tbody><template id=row><tr><td><td></tr></template></tbody></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table>\n<template><tr><td>1<td>2</td></tr></template>\n<colgroup span=1></colgroup>\n<tr><td>1<td>2<td>3\n</table>\n", [("warning", "A table row was 3 columns wide and exceeded the column count established by the first row (2).")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><tr><td>a<template><td>b</td></template></td><td>c</td></tr><tr><td>1</td><td>2</td><td>3</td></tr></table>\n", [("warning", "A table row was 3 columns wide and exceeded the column count established by the first row (2).")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><tr><td>a</td><template><tr><td>x</td></tr></template><td>b</td></tr><tr><td>1</td><td>2</td><td>3</td></tr></table>\n", [("warning", "A table row was 3 columns wide and exceeded the column count established by the first row (2).")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><colgroup span=\" 2\"><col></colgroup><tr><td>a</td><td>b</td></tr></table>\n", [("error", "A table row was 2 columns wide and exceeded the column count established using column markup (1)."), ("error", "Bad value \u{201c} 2\u{201d} for attribute \u{201c}span\u{201d} on element \u{201c}colgroup\u{201d}."), ("error", "Element \u{201c}col\u{201d} not allowed as child of \u{201c}colgroup\u{201d} in this context."), ("warning", "A col element causes a span attribute with value 2 to be ignored on the parent colgroup.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><colgroup span=\"2 \"></colgroup><tr><td>a</td><td>b</td></tr></table>\n", [("error", "A table row was 2 columns wide and exceeded the column count established using column markup (1)."), ("error", "Bad value \u{201c}2 \u{201d} for attribute \u{201c}span\u{201d} on element \u{201c}colgroup\u{201d}.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<template><table><colgroup span=0></colgroup></table></template>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><template><tr><td>a</td></tr></template><col span=0><tr><td>a</td></tr></table>\n", [("error", "Bad value \u{201c}0\u{201d} for attribute \u{201c}span\u{201d} on element \u{201c}col\u{201d}.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><col span=2></col><template><tr><td>t</td></tr></template><tr><td>a</td><td>b</td></tr></table>\n", [("error", "Stray end tag \u{201c}col\u{201d}.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><col span=2><html><template><tr><td>t</td></tr></template><tr><td>a</td><td>b</td></tr></table>\n", [("error", "Stray start tag \u{201c}html\u{201d}.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><colgroup span=2>&#12;</colgroup><tr><td>a</td><td>b</td></tr></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><colgroup span=2><html><col></colgroup><tr><td>a</td><td>b</td></tr></table>\n", [("error", "A table row was 2 columns wide and exceeded the column count established using column markup (1)."), ("error", "Element \u{201c}col\u{201d} not allowed as child of \u{201c}colgroup\u{201d} in this context."), ("error", "Stray start tag \u{201c}html\u{201d}."), ("warning", "A col element causes a span attribute with value 2 to be ignored on the parent colgroup.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><col span=2><template></template><template><tr><td>t</td></tr></template><tr><td>a</td><td>b</td></tr></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><tr><td>a</td><td>b</td></tr><template><td>x</td></template><tr><td>1</td><td>2</td><td>3</td></tr></table>\n", [("warning", "A table row was 3 columns wide and exceeded the column count established by the first row (2).")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><td>a</td><template><td>b</td></template><tr><td>1</td><td>2</td><td>3</td></tr></table>\n", [("error", "\u{201c}td\u{201d} start tag in table body."), ("warning", "A table row was 3 columns wide and exceeded the column count established by the first row (2).")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><colgroup span=3><template><colgroup><script></script></colgroup></template><col></colgroup><tr><td>a</td><td>b</td><td>c</td></tr></table>\n", [("error", "A table row was 3 columns wide and exceeded the column count established using column markup (1)."), ("error", "Element \u{201c}col\u{201d} not allowed as child of \u{201c}colgroup\u{201d} in this context."), ("error", "Element \u{201c}template\u{201d} not allowed as child of \u{201c}colgroup\u{201d} in this context."), ("error", "Stray end tag \u{201c}colgroup\u{201d}."), ("warning", "A col element causes a span attribute with value 3 to be ignored on the parent colgroup.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><col span=2><template><tbody><tr><td>t</td></tr></tbody></template><colgroup span=3></colgroup><tr><td>1</td><td>2</td><td>3</td><td>4</td><td>5</td></tr></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><tr><td>a<template><tr><td>x</td></tr></template></td><td>b</td></tr><tr><td>1</td><td>2</td><td>3</td></tr></table>\n", [("warning", "A table row was 3 columns wide and exceeded the column count established by the first row (2).")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><colgroup span=2></colgroup><template><td>a</td><td>b</td><td>c</td></template><tr><td>1</td><td>2</td></tr></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><tr><td>a</td><td>b</td></tr><template><td>z</td></template><tr><td>c</td><td>d</td></tr></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><col><template><table><tr><td>x</td></tr></table></template><template></template><colgroup span=0></colgroup><tr><td>a</td></tr></table>\n", [("error", "Bad value \u{201c}0\u{201d} for attribute \u{201c}span\u{201d} on element \u{201c}colgroup\u{201d}.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><col><template><table><tr><td>x</td></tr></table></template><template></template><colgroup span=2><col></colgroup><tr><td>a</td><td>b</td></tr></table>\n", [("error", "Element \u{201c}col\u{201d} not allowed as child of \u{201c}colgroup\u{201d} in this context."), ("warning", "A col element causes a span attribute with value 2 to be ignored on the parent colgroup.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><colgroup span=2></colgroup><tbody><template><td>a</td></template><tr><td>1</td><td>2</td></tr></tbody></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><colgroup span=2></colgroup><template><tr><td>a</td><td>b</td></tr><tr><td>c</td><td>d</td></tr></template><tr><td>1</td><td>2</td></tr></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><template><caption>c</caption><tr><td>x</td></tr></template><colgroup span=3></colgroup><tr><td>1</td><td>2</td></tr><tr><td>1</td><td>2</td></tr></table>\n", [("warning", "A table row was 2 columns wide and exceeded the column count established by the first row (1)."), ("warning", "A table row was 2 columns wide and exceeded the column count established by the first row (1).")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><colgroup span=2></colgroup><template><tr><td>a</td><td>b</td></tr><tr><td>c</td></tr></template><tr><td>1</td><td>2</td></tr></table>\n", [("error", "A table row was 1 columns wide, which is less than the column count established using column markup (2).")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><template><td>a</td><td>b</td></template><tr><td>x</td></tr></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><template><tr><td>a</td><td>b</td></tr></template><colgroup span=2></colgroup><tr><td>x</td><td>y</td></tr></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><template><caption></caption><tr><td>b</td></tr></template><colgroup span=3></colgroup><tr><td>x</td></tr></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><tr><td>x</td><template><td>a</td><td>b</td></template></tr><tr><td>y</td></tr></table>\n", [("warning", "A table row was 1 columns wide, which is less than the column count established by the first row (3).")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table>\n<col class=a>\n<template id=detail><p>detail</p></template>\n<template id=row><tr><td>r</td></tr></template>\n<colgroup span=\" 2\"></colgroup>\n<tr><td>a</td><td>b</td><td>c</td></tr>\n</table>\n", [("error", "Bad value \u{201c} 2\u{201d} for attribute \u{201c}span\u{201d} on element \u{201c}colgroup\u{201d}.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><col><template><table><tr><td>x</td></tr></table></template><colgroup span=2><col></colgroup><tr><td>a</td><td>b</td></tr></table>\n", [("error", "Element \u{201c}col\u{201d} not allowed as child of \u{201c}colgroup\u{201d} in this context."), ("warning", "A col element causes a span attribute with value 2 to be ignored on the parent colgroup.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><col><template><p>x</p></template><template></template><colgroup span=2><col></colgroup><tr><td>a</td><td>b</td></tr></table>\n", [("error", "Element \u{201c}col\u{201d} not allowed as child of \u{201c}colgroup\u{201d} in this context."), ("warning", "A col element causes a span attribute with value 2 to be ignored on the parent colgroup.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><col><template><table><tr><td>x</td></tr></table></template></colgroup><tr><td>a</td></tr></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table>\n<col class=a>\n<template id=detail><table><tr><td>detail</td></tr></table></template>\n<template id=row><tr><td>r</td></tr></template>\n<colgroup span=\" 2\"></colgroup>\n<tr><td>a</td><td>b</td><td>c</td></tr>\n</table>\n", [("error", "Bad value \u{201c} 2\u{201d} for attribute \u{201c}span\u{201d} on element \u{201c}colgroup\u{201d}.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><template><td>b</td><td>c</td></template><tr><td>x</td></tr></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><template><colgroup></colgroup><tr><td>b</td><td>c</td></tr></template><tr><td>x</td></tr></table>\n", [("error", "A table row was 2 columns wide and exceeded the column count established using column markup (1).")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><template><tr><td>a</td></tr></template><colgroup span=3></colgroup><tr><td>x</td></tr></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><template><td>b</td></template><colgroup span=3></colgroup><tr><td>x</td><td>y</td><td>z</td></tr></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><col><template><template><tr><td>x</td><td>y</td></tr></template></template><tr><td>a</td></tr></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><col><template><table><tr><td>x</td><td>y</td></tr></table></template><tr><td>a</td></tr></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><col><template><col span=2></template><tr><td>a</td><td>b</td><td>c</td></tr></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><col><template><colgroup span=2></colgroup></template><tr><td>a</td></tr></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><colgroup span=3><template><col span=2></template></colgroup><tr><td>a</td><td>b</td></tr></table>\n", [("error", "Element \u{201c}template\u{201d} not allowed as child of \u{201c}colgroup\u{201d} in this context."), ("warning", "A col element causes a span attribute with value 3 to be ignored on the parent colgroup.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><col><template></template><template><tr><td>x</td><td>y</td></tr></template><tr><td>a</td></tr></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><caption>c</caption><col><template><tr><td>x</td><td>y</td></tr></template><tr><td>a</td></tr></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><colgroup></colgroup><col><template><tr><td>x</td><td>y</td></tr></template><tr><td>a</td><td>b</td></tr></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><col><template></colgroup></template><template><tr><td>x</td><td>y</td></tr></template><tr><td>a</td></tr></table>\n", [("error", "Stray end tag \u{201c}colgroup\u{201d}.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<template><table><col><template><tr><td>x</td><td>y</td></tr></template><tr><td>a</td></tr></table></template>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><tr><template><td>a<td>b</template><td>c</td></tr><tr><td>p</td><td>q</td><td>r</td></tr></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><template><tr><td>a</td></tr><template><td>b</td></template></template><tr><td>x</td></tr></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><template><svg></svg><tr><td>x</td><td>y</td></tr></template><tr><td>a</td></tr></table>\n", [("error", "Stray end tag \u{201c}td\u{201d}."), ("error", "Stray end tag \u{201c}td\u{201d}."), ("error", "Stray end tag \u{201c}tr\u{201d}."), ("error", "Stray start tag \u{201c}td\u{201d}."), ("error", "Stray start tag \u{201c}td\u{201d}."), ("error", "Stray start tag \u{201c}tr\u{201d}.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><template><div></div><tr><td>x</td><td>y</td></tr></template><tr><td>a</td></tr></table>\n", [("error", "Stray end tag \u{201c}td\u{201d}."), ("error", "Stray end tag \u{201c}td\u{201d}."), ("error", "Stray end tag \u{201c}tr\u{201d}."), ("error", "Stray start tag \u{201c}td\u{201d}."), ("error", "Stray start tag \u{201c}td\u{201d}."), ("error", "Stray start tag \u{201c}tr\u{201d}.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<template><table><tr><td>a<td>b</tr><tr><td>c</tr></table></template>\n", [("warning", "A table row was 1 columns wide, which is less than the column count established by the first row (2).")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><template><caption>c</caption><tr><td>x</td><td>y</td></tr></template><tr><td>a</td></tr></table>\n", [("warning", "A table row was 1 columns wide, which is less than the column count established by the first row (2).")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><tbody><template><caption>c</caption><tr><td>x</td><td>y</td></tr></template><tr><td>a</td></tr></tbody></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><col span=2><template><table><col><tr><td>x</td></tr></table></template><template></template><colgroup span=0></colgroup><tr><td>a</td><td>b</td></tr></table>\n", [("error", "Bad value \u{201c}0\u{201d} for attribute \u{201c}span\u{201d} on element \u{201c}colgroup\u{201d}.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><tbody><template><caption>c</caption><tr><td>x</td></tr></template><tr><td>a</td></tr><tr><td>b</td><td>c</td></tr></tbody></table>\n", [("warning", "A table row was 2 columns wide and exceeded the column count established by the first row (1).")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><template><caption>c</caption><tr><td rowspan=3>x</td></tr></template><tr><td>a</td></tr><tr><td>b</td></tr></table>\n", [("error", "Table cell spans past the end of its row group established by a \u{201c}tbody\u{201d} element; clipped to the end of the row group.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><tr><td><template><table><tr><td>a</td><td>b</td></tr><tr><td>c</td></tr></table></template></td></tr></table>\n", [("warning", "A table row was 1 columns wide, which is less than the column count established by the first row (2).")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><col><template><table><frame></table></template><template></template><colgroup span=0></colgroup><tr><td>a</td></tr></table>\n", [("error", "Bad value \u{201c}0\u{201d} for attribute \u{201c}span\u{201d} on element \u{201c}colgroup\u{201d}."), ("error", "Start tag \u{201c}frame\u{201d} seen in \u{201c}table\u{201d}."), ("error", "Stray start tag \u{201c}frame\u{201d}.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><tr><td>a</td></tr><template><caption>c</caption><tr><td>b</td><td>c</td></tr></template><tr><td>d</td></tr></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><td>a</td><template><tr><td>x</td><td>y</td></tr></template><tr><td>b</td></tr></table>\n", [("error", "\u{201c}td\u{201d} start tag in table body.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><tbody><tr><td>a</td></tr><template><tbody><tr><td>x</td><td>y</td></tr></tbody></template></tbody></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><tr><td>a</td></tr><template><tbody><tr><td>x</td><td>y</td></tr></tbody></template><tr><td>b</td></tr></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><template><tbody><tr><td>x</td><td>y</td></tr></tbody></template><tr><td>b</td></tr></table>\n", [("warning", "A table row was 1 columns wide, which is less than the column count established by the first row (2).")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><template><tr><td>a</td></tr></template><template><tbody><tr><td>x</td><td>y</td></tr></tbody></template><tr><td>b</td></tr></table>\n", [("warning", "A table row was 2 columns wide and exceeded the column count established by the first row (1).")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><td>a</td></thead><template><tr><td>x</td><td>y</td></tr></template><tr><td>b</td></tr></table>\n", [("error", "Stray end tag \u{201c}thead\u{201d}."), ("error", "\u{201c}td\u{201d} start tag in table body.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><template><caption>c</caption><tr><td>a</td></tr><template><tbody><tr><td>b</td><td>c</td></tr></tbody></template></template></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><template><td>a</td></template><template><tbody><tr><td>b</td><td>c</td></tr></tbody></template></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><template><td>a</td></template><template><tr><td>b</td><td>c</td></tr></template></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><template><tr><td>x</td></tr></template><td>a</td><template><tbody><tr><td>b</td><td>c</td></tr></tbody></template></table>\n", [("error", "\u{201c}td\u{201d} start tag in table body.")]),
+] as [(String, [(String, String)])])
+func colgroupSpanAndColsMatchUpstream(document: String, expected: [(String, String)]) {
+    let actual = checkHTML(document).messages
+        .filter { "info" != $0.type || "warning" == $0.subType }
+        .map { "\("info" == $0.type ? "warning" : "error"): \($0.message)" }
+        .sorted()
+    #expect(actual == expected.map { "\($0.0): \($0.1)" }.sorted(), "\(document)")
+}
+
+// Case 554591 (item 12): the same in an XHTML document, where any element in a
+// colgroup with a span attribute is reported (the tree is as written), where
+// these went unreported, and where the cols in such a colgroup used to be left
+// out of the column count. The expected messages are vnu.jar's.
+@Test(arguments: [
+    ("<table><colgroup><col/><col/></colgroup><tr><td>a</td><td>b</td></tr></table>", []),
+    ("<table><colgroup span=\"2\"><col/></colgroup><tr><td>a</td><td>b</td></tr></table>", [("error", "A table row was 2 columns wide and exceeded the column count established using column markup (1)."), ("error", "Element \u{201c}col\u{201d} not allowed as child of \u{201c}colgroup\u{201d} in this context."), ("warning", "A col element causes a span attribute with value 2 to be ignored on the parent colgroup.")]),
+    ("<table><colgroup span=\"2\"></colgroup><tr><td>a</td><td>b</td></tr></table>", []),
+    ("<table><colgroup span=\"2\"><col/><col/></colgroup><tr><td>a</td><td>b</td></tr></table>", [("error", "Element \u{201c}col\u{201d} not allowed as child of \u{201c}colgroup\u{201d} in this context."), ("error", "Element \u{201c}col\u{201d} not allowed as child of \u{201c}colgroup\u{201d} in this context."), ("warning", "A col element causes a span attribute with value 2 to be ignored on the parent colgroup.")]),
+    ("<table><colgroup span=\"2\"><template></template></colgroup><tr><td>a</td><td>b</td></tr></table>", [("error", "Element \u{201c}template\u{201d} not allowed as child of \u{201c}colgroup\u{201d} in this context.")]),
+    ("<table><colgroup span=\"2\"><script></script></colgroup><tr><td>a</td><td>b</td></tr></table>", [("error", "Element \u{201c}script\u{201d} not allowed as child of \u{201c}colgroup\u{201d} in this context.")]),
+    ("<table><col/><colgroup span=\"2\"><col/></colgroup><tr><td>a</td><td>b</td><td>c</td></tr></table>", [("error", "A table row was 3 columns wide and exceeded the column count established using column markup (2)."), ("error", "Element \u{201c}col\u{201d} not allowed as child of \u{201c}colgroup\u{201d} in this context."), ("error", "Element \u{201c}col\u{201d} not allowed as child of \u{201c}table\u{201d} in this context."), ("warning", "A col element causes a span attribute with value 2 to be ignored on the parent colgroup.")]),
+    ("<table><colgroup span=\"0\"><col/></colgroup><tr><td>a</td><td>b</td></tr></table>", [("error", "A table row was 2 columns wide and exceeded the column count established using column markup (1)."), ("error", "Bad value \u{201c}0\u{201d} for attribute \u{201c}span\u{201d} on element \u{201c}colgroup\u{201d}."), ("error", "Element \u{201c}col\u{201d} not allowed as child of \u{201c}colgroup\u{201d} in this context.")]),
+    ("<table><colgroup span=\"2\"><svg xmlns=\"http://www.w3.org/2000/svg\"/></colgroup><tr><td>a</td><td>b</td></tr></table>", [("error", "Element \u{201c}svg\u{201d} not allowed as child of \u{201c}colgroup\u{201d} in this context.")]),
+    ("<table><colgroup><template></template><col/></colgroup><tr><td>a</td><td>b</td></tr></table>", [("error", "A table row was 2 columns wide and exceeded the column count established using column markup (1).")]),
+    ("<table><colgroup></colgroup><tr><td>a</td><td>b</td></tr></table>", [("error", "A table row was 2 columns wide and exceeded the column count established using column markup (1).")]),
+    ("<table><colgroup span=\"2\"></colgroup><colgroup><col/></colgroup><tr><td>a</td><td>b</td><td>c</td></tr></table>", []),
+    ("<table><colgroup span=\"2\"><div><figure><figcaption>A</figcaption><figcaption>B</figcaption></figure></div></colgroup><tr><td>a</td><td>b</td></tr></table>", [("error", "Element \u{201c}div\u{201d} not allowed as child of \u{201c}colgroup\u{201d} in this context.")]),
+    // (From item 12's review: misplaced colgroups, unchecked content, and
+    // the children a colgroup without a span takes.)
+    ("<table><colgroup span=\"2\"><colgroup><col/></colgroup></colgroup><tr><td>a</td><td>b</td></tr></table>", [("error", "Element \u{201c}colgroup\u{201d} not allowed as child of \u{201c}colgroup\u{201d} in this context.")]),
+    ("<svg xmlns=\"http://www.w3.org/2000/svg\"><desc><table xmlns=\"http://www.w3.org/1999/xhtml\"><colgroup span=\"2\"><col/></colgroup><tr><td>a</td><td>b</td></tr></table></desc></svg>", [("error", "A table row was 2 columns wide and exceeded the column count established using column markup (1)."), ("warning", "A col element causes a span attribute with value 2 to be ignored on the parent colgroup.")]),
+    ("<math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mi>x</mi><annotation-xml encoding=\"application/xhtml+xml\"><table xmlns=\"http://www.w3.org/1999/xhtml\"><colgroup span=\"2\"><col/></colgroup><tr><td>a</td><td>b</td></tr></table></annotation-xml></semantics></math>", [("error", "A table row was 2 columns wide and exceeded the column count established using column markup (1)."), ("warning", "A col element causes a span attribute with value 2 to be ignored on the parent colgroup.")]),
+    ("<table><colgroup><svg xmlns=\"http://www.w3.org/2000/svg\"/><col/></colgroup><tr><td>a</td></tr></table>", [("error", "Element \u{201c}svg\u{201d} not allowed as child of \u{201c}colgroup\u{201d} in this context.")]),
+    ("<table><colgroup><div/></colgroup><tr><td>a</td><td>b</td></tr></table>", [("error", "A table row was 2 columns wide and exceeded the column count established using column markup (1)."), ("error", "Element \u{201c}div\u{201d} not allowed as child of \u{201c}colgroup\u{201d} in this context.")]),
+    ("<table><colgroup><script></script><template></template><col/><col/></colgroup><tr><td>a</td><td>b</td></tr></table>", []),
+    ("<table><colgroup span=\"2\"><col span=\"x\"/></colgroup><tr><td>a</td><td>b</td></tr></table>", [("error", "A table row was 2 columns wide and exceeded the column count established using column markup (1)."), ("error", "Element \u{201c}col\u{201d} not allowed as child of \u{201c}colgroup\u{201d} in this context."), ("warning", "A col element causes a span attribute with value 2 to be ignored on the parent colgroup.")]),
+    ("<svg xmlns=\"http://www.w3.org/2000/svg\"><desc><figure xmlns=\"http://www.w3.org/1999/xhtml\"><p>x</p><figcaption>C</figcaption><p>y</p></figure></desc></svg>", []),
+    ("<table><colgroup span=\"2\"><tbody><col/></tbody></colgroup><tr><td>a</td><td>b</td></tr></table>", [("error", "Element \u{201c}tbody\u{201d} not allowed as child of \u{201c}colgroup\u{201d} in this context.")]),
+    ("<svg xmlns=\"http://www.w3.org/2000/svg\"><desc><g><table xmlns=\"http://www.w3.org/1999/xhtml\"><colgroup span=\"2\"><col/></colgroup><tr><td>a</td><td>b</td></tr></table></g></desc></svg>", [("error", "A table row was 2 columns wide and exceeded the column count established using column markup (1)."), ("warning", "A col element causes a span attribute with value 2 to be ignored on the parent colgroup.")]),
+    ("<math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mi>x</mi><annotation-xml encoding=\"MathML-Presentation\"><mi>y</mi></annotation-xml></semantics></math>", []),
+    ("<table><colgroup><col/><p>x</p><col/></colgroup><tr><td>a</td><td>b</td></tr></table>", [("error", "Element \u{201c}p\u{201d} not allowed as child of \u{201c}colgroup\u{201d} in this context.")]),
+    ("<math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mi>x</mi><annotation-xml encoding=\"application/xhtml+xml\"><span xmlns=\"http://www.w3.org/1999/xhtml\">y</span></annotation-xml></semantics></math><div><table><colgroup span=\"2\"><col/></colgroup><tr><td>a</td><td>b</td></tr></table></div>", [("error", "A table row was 2 columns wide and exceeded the column count established using column markup (1)."), ("error", "Element \u{201c}col\u{201d} not allowed as child of \u{201c}colgroup\u{201d} in this context."), ("warning", "A col element causes a span attribute with value 2 to be ignored on the parent colgroup.")]),
+    ("<math xmlns=\"http://www.w3.org/1998/Math/MathML\"><semantics><mi>x</mi><annotation-xml encoding=\"application/xhtml+xml\"><span xmlns=\"http://www.w3.org/1999/xhtml\">y</span></annotation-xml></semantics></math><div><div><div><table><colgroup span=\"2\"><col/></colgroup><tr><td>a</td><td>b</td></tr></table></div></div></div>", [("error", "A table row was 2 columns wide and exceeded the column count established using column markup (1)."), ("error", "Element \u{201c}col\u{201d} not allowed as child of \u{201c}colgroup\u{201d} in this context."), ("warning", "A col element causes a span attribute with value 2 to be ignored on the parent colgroup.")]),
+    // (From item 12's second review: what upstream's Table ignores, and the
+    // spans its schema checks.)
+    ("<table><colgroup span=\"2\"><tr><td>a</td></tr></colgroup><colgroup span=\"2\"/><tr><td>1</td><td>2</td><td>3</td><td>4</td></tr></table>", [("error", "Element \u{201c}tr\u{201d} not allowed as child of \u{201c}colgroup\u{201d} in this context.")]),
+    ("<table><colgroup><tr><td>r</td></tr></colgroup><colgroup span=\"2\"/><tr><td>a</td><td>b</td><td>c</td></tr></table>", [("error", "Element \u{201c}tr\u{201d} not allowed as child of \u{201c}colgroup\u{201d} in this context.")]),
+    ("<table><col><colgroup/></col><tr><td>a</td><td>b</td></tr></table>", [("error", "A table row was 2 columns wide and exceeded the column count established using column markup (1)."), ("error", "Element \u{201c}col\u{201d} not allowed as child of \u{201c}table\u{201d} in this context.")]),
+    ("<table><colgroup span=\"2\"><col><col/></col></colgroup><tr><td>a</td></tr></table>", [("error", "Element \u{201c}col\u{201d} not allowed as child of \u{201c}colgroup\u{201d} in this context."), ("warning", "A col element causes a span attribute with value 2 to be ignored on the parent colgroup.")]),
+    ("<table><template><tr><td>a</td></tr></template><colgroup span=\"0\"/><tr><td>a</td><td>b</td></tr></table>", [("error", "Bad value \u{201c}0\u{201d} for attribute \u{201c}span\u{201d} on element \u{201c}colgroup\u{201d}."), ("warning", "A table row was 2 columns wide and exceeded the column count established by the first row (1).")]),
+    ("<table><colgroup span=\" 2\"><col/></colgroup><tr><td>a</td><td>b</td></tr></table>", [("error", "A table row was 2 columns wide and exceeded the column count established using column markup (1)."), ("error", "Bad value \u{201c} 2\u{201d} for attribute \u{201c}span\u{201d} on element \u{201c}colgroup\u{201d}."), ("error", "Element \u{201c}col\u{201d} not allowed as child of \u{201c}colgroup\u{201d} in this context."), ("warning", "A col element causes a span attribute with value 2 to be ignored on the parent colgroup.")]),
+    ("<table><colgroup><col span=\"x\"/></colgroup><tr><td>a</td></tr></table>", [("error", "Bad value \u{201c}x\u{201d} for attribute \u{201c}span\u{201d} on element \u{201c}col\u{201d}.")]),
+    ("<table><colgroup span=\"2\"><col><tr><td>x</td></tr></col></colgroup><tr><td>a</td><td>b</td></tr></table>", [("error", "A table row was 2 columns wide and exceeded the column count established using column markup (1)."), ("error", "Element \u{201c}col\u{201d} not allowed as child of \u{201c}colgroup\u{201d} in this context."), ("warning", "A col element causes a span attribute with value 2 to be ignored on the parent colgroup.")]),
+    ("<table><tr><td>a</td><td>b</td></tr><col/><tr><td>c</td></tr></table>", [("error", "Element \u{201c}col\u{201d} not allowed as child of \u{201c}table\u{201d} in this context."), ("warning", "A table row was 1 columns wide, which is less than the column count established by the first row (2).")]),
+    ("<table><colgroup><colgroup span=\"x\"/></colgroup><tr><td>a</td></tr></table>", [("error", "Element \u{201c}colgroup\u{201d} not allowed as child of \u{201c}colgroup\u{201d} in this context.")]),
+    ("<table><tr><td><table><tr><td>a</td><td>b</td></tr><tr><td>c</td></tr></table></td></tr></table>", [("warning", "A table row was 1 columns wide, which is less than the column count established by the first row (2).")]),
+] as [(String, [(String, String)])])
+func xhtmlColgroupSpanAndColsMatchUpstream(_ body: String, _ expected: [(String, String)]) {
+    let result = NuValidator().check(
+        input: DocumentInput(data: Data("<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<html xmlns=\"http://www.w3.org/1999/xhtml\" lang=\"en\"><head><title>T</title></head><body>\n\(body)\n</body></html>\n".utf8), contentType: "application/xhtml+xml; charset=utf-8"),
+        options: CheckerOptions(parameters: ["out": ["json"]])
+    )
+    let actual = result.messages
+        .filter { "info" != $0.type || "warning" == $0.subType }
+        .map { "\("info" == $0.type ? "warning" : "error"): \($0.message)" }
+        .sorted()
+    #expect(actual == expected.map { "\($0.0): \($0.1)" }.sorted(), "\(body)")
+}
+
+// Case 554591 (item 12): nothing in a colgroup with a span is reported where
+// upstream's schema checks nothing, in a template or an SVG <desc>, or, in an
+// XHTML document, a template or a <center>; but upstream's TableChecker, which
+// isn't the schema, still sets the span aside there, with its warning. (vnu.jar
+// also reports that the col's column has no cells beginning in it, which the
+// port's table checker doesn't yet, so these look at the two messages alone.)
+@Test(arguments: [
+    ("<template><table><colgroup span=2><col></colgroup></table></template>", false),
+    ("<svg><desc><table><colgroup span=2><col></colgroup></table></desc></svg>", false),
+    ("<template><table><colgroup span=\"2\"><col/></colgroup></table></template>", true),
+    ("<center><table><colgroup span=\"2\"><col/></colgroup><tr><td>a</td><td>b</td></tr></table></center>", true),
+])
+func colgroupRuleLooksOnlyAtWhatUpstreamChecks(_ body: String, _ isXHTML: Bool) {
+    let messages: [String]
+    if isXHTML {
+        messages = NuValidator().check(
+            input: DocumentInput(data: Data("<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<html xmlns=\"http://www.w3.org/1999/xhtml\" lang=\"en\"><head><title>T</title></head><body>\n\(body)\n</body></html>\n".utf8), contentType: "application/xhtml+xml; charset=utf-8"),
+            options: CheckerOptions(parameters: ["out": ["json"]])
+        ).messages.map(\.message)
+    } else {
+        messages = checkHTML("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n\(body)\n").messages.map(\.message)
+    }
+    #expect(!messages.contains { $0.contains("not allowed as child of \u{201c}colgroup\u{201d}") }, "\(body)")
+    #expect(messages.contains { "A col element causes a span attribute with value 2 to be ignored on the parent colgroup." == $0 }, "\(body)")
+}
+
+// Case 554591 (item 12): in an HTML document, only a col or a template in a
+// colgroup with a span is reported: upstream's parser ends the colgroup at any
+// other element, such as this <script>, and so, since item 12's review, does
+// the port's (it kept the script in the colgroup). The </colgroup> after it is
+// then a stray end tag, as vnu.jar reports it.
+@Test func colgroupRuleIgnoresWhatTheParserMovesOut() {
+    let messages = checkHTML("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><colgroup span=2><script></script></colgroup><tr><td>a</td><td>b</td></tr></table>\n").messages.map(\.message)
+    #expect(!messages.contains { $0.contains("not allowed as child of \u{201c}colgroup\u{201d}") })
+    #expect(messages.contains { "Stray end tag \u{201c}colgroup\u{201d}." == $0 })
+}
+
+// Case 554591 (item 12): a colgroup's span as upstream's TableChecker reads
+// it, which its warning for a col in the colgroup repeats: leading spaces,
+// tabs and line feeds are skipped, but not a form feed; nothing may follow
+// the digits; a minus sign makes it no span at all, unless it's -0, and a
+// plus sign isn't allowed; a number a Java int can't hold is no span, and one
+// over 1000 is 1000; and character references are decoded. (vnu.jar also
+// reports some of these values as bad, which the port doesn't for a few that
+// its own reading accepts, so this looks at the warning alone.)
+@Test(arguments: [
+    ("2 ", nil), (" 2", 2), ("\t2", 2), ("\n3", 3), ("\u{0C}2", nil),
+    ("2147483647", 1000), ("2147483648", nil), ("2000", 1000),
+    ("-1", nil), ("-0", nil), ("+2", nil), ("007", 7), ("\u{FF12}", nil),
+    ("&#50;", 2), ("x", nil), ("", nil),
+] as [(String, Int?)])
+func colgroupSpanIsReadAsUpstreamReadsIt(_ span: String, _ warnedValue: Int?) {
+    let warnings = checkHTML("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><colgroup span=\"\(span)\"><col></colgroup><tr><td>a</td><td>b</td></tr></table>\n").messages
+        .map(\.message)
+        .filter { $0.hasPrefix("A col element causes a span attribute") }
+    #expect(warnings == (warnedValue.map { ["A col element causes a span attribute with value \($0) to be ignored on the parent colgroup."] } ?? []), "\(span)")
+}
+
+// Case 554591 (item 12): in an XHTML document an attribute's name is as
+// written, so SPAN="2" isn't the colgroup's span, and its col isn't reported.
+// (vnu.jar reports the SPAN attribute itself as not allowed, which the XML
+// checker doesn't yet.)
+@Test func xhtmlColgroupSpanIsReadAsWritten() {
+    let result = NuValidator().check(
+        input: DocumentInput(data: Data("<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<html xmlns=\"http://www.w3.org/1999/xhtml\" lang=\"en\"><head><title>T</title></head><body>\n<table><colgroup SPAN=\"2\"><col/></colgroup><tr><td>a</td><td>b</td></tr></table>\n</body></html>\n".utf8), contentType: "application/xhtml+xml; charset=utf-8"),
+        options: CheckerOptions(parameters: ["out": ["json"]])
+    )
+    #expect(!result.messages.contains { $0.message.contains("not allowed as child of \u{201c}colgroup\u{201d}") })
+}
+
+// Case 554591 (item 12): the messages item 12 is about (a colgroup's
+// children, the span warning, row widths against column markup, a span's bad
+// value, a stray </colgroup>, headers references and the td role rule), for
+// documents where vnu.jar also says something the port doesn't yet: that a
+// colgroup after the rows, a style or a hidden input in a table, or the
+// column a col establishes with no cells in it, is an error, say. The
+// expected messages are vnu.jar's, of those kinds.
+private func isColgroupItemMessage(_ message: String) -> Bool {
+    message.contains("not allowed as child of \u{201c}colgroup\u{201d}")
+        || message.hasPrefix("A col element causes a span attribute")
+        || message.contains("established using column markup")
+        || (message.hasPrefix("Bad value") && message.contains("attribute \u{201c}span\u{201d}"))
+        || "Stray end tag \u{201c}colgroup\u{201d}." == message
+        || message.contains("\u{201c}headers\u{201d} attribute on the element")
+        || message.hasPrefix("The \u{201c}role\u{201d} attribute must not be used on a \u{201c}td\u{201d}")
+}
+
+@Test(arguments: [
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<template><table><colgroup span=2><col></colgroup></table></template>\n", [("warning", "A col element causes a span attribute with value 2 to be ignored on the parent colgroup.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<svg><desc><table><colgroup span=2><col></colgroup></table></desc></svg>\n", [("warning", "A col element causes a span attribute with value 2 to be ignored on the parent colgroup.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><colgroup span=2><script></script><col></colgroup><tr><td>a</td><td>b</td></tr></table>\n", [("error", "A table row was 2 columns wide, which is less than the column count established using column markup (3).")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><colgroup span=2></colgroup><col><tr><td>a</td><td>b</td></tr></table>\n", [("error", "A table row was 2 columns wide, which is less than the column count established using column markup (3).")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><colgroup span=2><colgroup><col><tr><td>a</td><td>b</td></tr></table>\n", [("error", "A table row was 2 columns wide, which is less than the column count established using column markup (3).")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><colgroup><col><col span=0></colgroup><tr><td>a</td></tr></table>\n", [("error", "Bad value \u{201c}0\u{201d} for attribute \u{201c}span\u{201d} on element \u{201c}col\u{201d}.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><tr><td>a</td><td>b</td></tr><colgroup span=2><col></colgroup></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><colgroup span=2><col></table>\n", [("error", "Element \u{201c}col\u{201d} not allowed as child of \u{201c}colgroup\u{201d} in this context."), ("warning", "A col element causes a span attribute with value 2 to be ignored on the parent colgroup.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><colgroup span=3><col span=0><col></colgroup><tr><td>a</td><td>b</td></tr></table>\n", [("error", "A table row was 2 columns wide and exceeded the column count established using column markup (1)."), ("error", "Element \u{201c}col\u{201d} not allowed as child of \u{201c}colgroup\u{201d} in this context."), ("error", "Element \u{201c}col\u{201d} not allowed as child of \u{201c}colgroup\u{201d} in this context."), ("warning", "A col element causes a span attribute with value 3 to be ignored on the parent colgroup.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p><b><table><colgroup span=2><col></colgroup><tr><td>a</td><td>b</td></tr></table></b>\n", [("error", "A table row was 2 columns wide and exceeded the column count established using column markup (1)."), ("error", "Element \u{201c}col\u{201d} not allowed as child of \u{201c}colgroup\u{201d} in this context."), ("warning", "A col element causes a span attribute with value 2 to be ignored on the parent colgroup.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><colgroup span=99999999999><col></colgroup><tr><td>a</td><td>b</td></tr></table>\n", [("error", "A table row was 2 columns wide and exceeded the column count established using column markup (1)."), ("error", "Element \u{201c}col\u{201d} not allowed as child of \u{201c}colgroup\u{201d} in this context.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><colgroup span=99999999999></colgroup><tr><td>a</td><td>b</td></tr></table>\n", [("error", "A table row was 2 columns wide and exceeded the column count established using column markup (1).")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n</head><noscript><table><colgroup span=2><col></colgroup></table></noscript>\n", [("error", "Element \u{201c}col\u{201d} not allowed as child of \u{201c}colgroup\u{201d} in this context."), ("warning", "A col element causes a span attribute with value 2 to be ignored on the parent colgroup.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><colgroup span=\"2147483648\"><col></colgroup><tr><td>a</td><td>b</td></tr></table>\n", [("error", "A table row was 2 columns wide and exceeded the column count established using column markup (1)."), ("error", "Element \u{201c}col\u{201d} not allowed as child of \u{201c}colgroup\u{201d} in this context.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><colgroup span=\"1000\"></colgroup><tr><td>a</td><td>b</td></tr></table>\n", [("error", "A table row was 2 columns wide, which is less than the column count established using column markup (1000).")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><thead><tr><th>a</th><th>b</th></tr></thead><colgroup></colgroup><tbody><tr><td>a</td><td>b</td></tr></tbody></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><tr><td>a</td><td>b</td></tr><colgroup span=0></colgroup></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><thead><tr><th>a</th><th>b</th></tr></thead><colgroup span=2><col></colgroup><tbody><tr><td>a</td><td>b</td></tr></tbody></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><tr><td>a</td><td>b</td></tr><colgroup span=x></colgroup></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><tr><td>a</td><td>b</td></tr><colgroup span=2000></colgroup></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><tr><td>a</td><td>b</td></tr><colgroup span=2><template></template></colgroup></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><tr><td>a</td><td>b</td></tr><col span=x></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><col span=99999999999><tr><td>a</td><td>b</td></tr></table>\n", [("error", "A table row was 2 columns wide and exceeded the column count established using column markup (1).")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><colgroup><col><col span=0></colgroup><tr><td>a</td></tr></table>\n", [("error", "Bad value \u{201c}0\u{201d} for attribute \u{201c}span\u{201d} on element \u{201c}col\u{201d}.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><colgroup span=2><style></style><col></colgroup><tr><td>a</td><td>b</td></tr></table>\n", [("error", "A table row was 2 columns wide, which is less than the column count established using column markup (3).")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><colgroup span=2><input type=hidden><col></colgroup><tr><td>a</td><td>b</td></tr></table>\n", [("error", "A table row was 2 columns wide, which is less than the column count established using column markup (3).")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><colgroup span=2></div><col></colgroup><tr><td>a</td><td>b</td></tr></table>\n", [("error", "A table row was 2 columns wide, which is less than the column count established using column markup (3).")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><colgroup span=\"2\"></span><col><col></colgroup><tr><td>a</td><td>b</td></tr></table>\n", [("error", "A table row was 2 columns wide, which is less than the column count established using column markup (4).")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><colgroup span=2></body><col></colgroup><tr><td>a</td><td>b</td></tr></table>\n", [("error", "A table row was 2 columns wide, which is less than the column count established using column markup (3).")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><colgroup><col><script></script><col></colgroup><tr><td>a</td><td>b</td></tr></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><colgroup> x <col></colgroup><tr><td>a</td><td>b</td></tr></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table role=\"&#160;grid\"><tr><td role=\"gridcell\">a</td></tr></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table role=\"&#116;able\"><tr><td role=\"gridcell\">a</td></tr></table>\n", [("error", "The \u{201c}role\u{201d} attribute must not be used on a \u{201c}td\u{201d} element which has a \u{201c}table\u{201d} ancestor with no \u{201c}role\u{201d} attribute, or with a \u{201c}role\u{201d} attribute whose value is \u{201c}table\u{201d}, \u{201c}grid\u{201d}, or \u{201c}treegrid\u{201d}.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><tr role=\"row\"><td>a</td></tr></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><colgroup span=2></colgroup><script></script><colgroup span=2><col></colgroup><tr><td>a</td><td>b</td><td>c</td><td>d</td></tr></table>\n", [("error", "A table row was 4 columns wide and exceeded the column count established using column markup (3)."), ("warning", "A col element causes a span attribute with value 2 to be ignored on the parent colgroup.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><colgroup></colgroup><template></template><colgroup span=2><col></colgroup><tr><td>a</td><td>b</td><td>c</td></tr></table>\n", [("error", "A table row was 3 columns wide and exceeded the column count established using column markup (2)."), ("warning", "A col element causes a span attribute with value 2 to be ignored on the parent colgroup.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><col><script></script><colgroup span=2><col></colgroup><tr><td>a</td><td>b</td></tr></table>\n", [("warning", "A col element causes a span attribute with value 2 to be ignored on the parent colgroup.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><colgroup></colgroup><style></style><colgroup span=2><col></colgroup><tr><td>a</td><td>b</td><td>c</td></tr></table>\n", [("error", "A table row was 3 columns wide and exceeded the column count established using column markup (2)."), ("error", "Element \u{201c}col\u{201d} not allowed as child of \u{201c}colgroup\u{201d} in this context."), ("warning", "A col element causes a span attribute with value 2 to be ignored on the parent colgroup.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><td>a</td><td>b</td><colgroup span=2><col></colgroup></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><tr></tr><colgroup span=2><col></colgroup><tr><td>a</td><td>b</td></tr></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><col></div></colgroup><tr><td>a</td></tr></table>\n", [("error", "Stray end tag \u{201c}colgroup\u{201d}.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><col></span></colgroup><tr><td>a</td></tr></table>\n", [("error", "Stray end tag \u{201c}colgroup\u{201d}.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><col span=1001><tr><td>a</td></tr></table>\n", [("error", "A table row was 1 columns wide, which is less than the column count established using column markup (1000).")]),
+    // (From item 12's second review: what upstream's Table ignores, and the
+    // spans its schema checks.)
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><colgroup></colgroup><script></script><colgroup span=0></colgroup><tr><td>a</td></tr></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><colgroup span=2>\u{0}<col></colgroup><tr><td>a</td><td>b</td></tr></table>\n", [("error", "A table row was 2 columns wide and exceeded the column count established using column markup (1)."), ("error", "Element \u{201c}col\u{201d} not allowed as child of \u{201c}colgroup\u{201d} in this context."), ("warning", "A col element causes a span attribute with value 2 to be ignored on the parent colgroup.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><colgroup span=2><frame><col></colgroup><tr><td>a</td><td>b</td></tr></table>\n", [("error", "A table row was 2 columns wide, which is less than the column count established using column markup (3).")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><colgroup span=2><body><col></colgroup><tr><td>a</td><td>b</td><td>c</td></tr></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><tbody><template><td>a</td></template></tbody><colgroup span=2></colgroup><tr><td>1<td>2<td>3</table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><tr><td>a</td></tr><col><template><tr><td>x</td><td>y</td></tr></template><tr><td>b</td></tr></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><col span=\"&#12;2\"><tr><td>a</td></tr></table>\n", [("error", "A table row was 1 columns wide, which is less than the column count established using column markup (2)."), ("error", "Bad value \u{201c} 2\u{201d} for attribute \u{201c}span\u{201d} on element \u{201c}col\u{201d}.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><colgroup span=2><col span=0></colgroup><tr><td>a</td></tr></table>\n", [("error", "A table row was 1 columns wide and exceeded the column count established using column markup (0)."), ("error", "Element \u{201c}col\u{201d} not allowed as child of \u{201c}colgroup\u{201d} in this context."), ("warning", "A col element causes a span attribute with value 2 to be ignored on the parent colgroup.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><tr><td>a</td></tr><col><tr><td>b</td><td>c</td></tr></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><tr><td>a</td></tr><col><col><template><tr><td>x</td><td>y</td></tr></template><tr><td>b</td><td>c</td></tr></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><colgroup span=2></colgroup><template><tr><td>a</td><td>b</td></tr><td>c</td></template><tr><td>1</td><td>2</td></tr></table>\n", [("error", "A table row was 1 columns wide, which is less than the column count established using column markup (2).")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><template><caption>c</caption><td>x</td></template><colgroup span=3></colgroup><tr><td>1</td><td>2</td></tr><tr><td>1</td><td>2</td></tr></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><template><thead><tr><th>h</th></tr></thead><td>x</td></template><tr><td>1</td><td>2</td></tr></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><colgroup span=3></colgroup><template><tr><td>a</td><td>b</td><td>c</td></tr><td>d<tr><td>e</td><td>f</td></tr></template><tr><td>1</td><td>2</td><td>3</td></tr></table>\n", [("error", "A table row was 1 columns wide, which is less than the column count established using column markup (3)."), ("error", "A table row was 2 columns wide, which is less than the column count established using column markup (3).")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><colgroup span=2></colgroup><tbody><template><tr><td>a</td><td>b</td></tr><th>c</th></template><tr><td>1</td><td>2</td></tr></tbody></table>\n", [("error", "A table row was 1 columns wide, which is less than the column count established using column markup (2).")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><colgroup span=2></colgroup><template><tbody><tr><td>a</td><td>b</td></tr></tbody><td>c</td></template><tr><td>1</td><td>2</td></tr></table>\n", [("error", "A table row was 1 columns wide, which is less than the column count established using column markup (2).")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><col><col><tr><td>a</td><td>b</td></tr><template><tr><td>x</td><td>y</td></tr><td>z</td></template></table>\n", [("error", "A table row was 1 columns wide, which is less than the column count established using column markup (2).")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><colgroup span=2></colgroup><template><caption>c</caption><td>z</td></template><tr><td>a</td><td>b</td></tr></table>\n", [("error", "A table row was 1 columns wide, which is less than the column count established using column markup (2).")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><col><col><tr><td>a</td><template><tr><td>x</td></tr><td>y</td></template><td>b</td></tr></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><col><template><table><tr><td>x</td></tr></table></template><template></template><col span=0><tr><td>a</td></tr></table>\n", [("error", "Bad value \u{201c}0\u{201d} for attribute \u{201c}span\u{201d} on element \u{201c}col\u{201d}.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><col><template><table><tr><td>x</td></tr></table></template><col span=0><tr><td>a</td></tr></table>\n", [("error", "Bad value \u{201c}0\u{201d} for attribute \u{201c}span\u{201d} on element \u{201c}col\u{201d}.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><template><colgroup></colgroup><td>x</td></template><colgroup span=3></colgroup><tr><td>1</td><td>2</td></tr></table>\n", [("error", "A table row was 2 columns wide and exceeded the column count established using column markup (1).")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><template><tr><td>a</td><td>b</td></tr><td>c</td></template><tr><td>1</td><td>2</td></tr></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><template><caption></caption><td>b</td></template><colgroup span=3></colgroup><tr><td>x</td></tr></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><template><tr><td>a</td></tr><td>b</td><td>c</td></template><tr><td>x</td></tr></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><template><colgroup></colgroup><td>b</td><td>c</td></template><tr><td>x</td></tr></table>\n", [("error", "A table row was 2 columns wide and exceeded the column count established using column markup (1).")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><tr><td>x</td><template><tr><td>a</td></tr><td>b</td><td>c</td></template></tr><tr><td>y</td></tr></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><template><caption></caption><td>b</td><td>c</td></template><tr><td>x</td></tr></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><template><tbody></tbody><td>b</td><td>c</td></template><tr><td>x</td></tr></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><template><thead></thead><th>b</th><th>c</th></template><tr><td>x</td></tr></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><template><tr><td>a</td></tr><th>b</th><th>c</th></template><tr><td>x</td></tr></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><tbody><template><tr><td>a</td></tr><td>b</td><td>c</td></template><tr><td>x</td></tr></tbody></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><template><tr><td>a</td></tr><td>b</td><td>c</td></template><colgroup span=3></colgroup><tr><td>x</td><td>y</td><td>z</td></tr></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><template><tbody></tbody><td>b</td></template><colgroup span=3></colgroup><tr><td>x</td></tr></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><template><caption></caption><td>b</td></template><colgroup span=3></colgroup><tr><td>x</td><td>y</td><td>z</td></tr></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><tbody><template><caption></caption><td>b</td><td>c</td></template><tr><td>x</td></tr></tbody></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><template><thead></thead><td>b</td><tr><td>p</td><td>q</td><td>r</td></tr></template><tr><td>x</td></tr></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><col><col><tr><td>a</td><td>b</td></tr><template><tr><td>x</td><td>y</td></tr><th>z</th></template></table>\n", [("error", "A table row was 1 columns wide, which is less than the column count established using column markup (2).")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><colgroup span=2></colgroup><template><tr><td>x</td><td>y</td></tr><td>z</td></template><tr><td>a</td><td>b</td></tr></table>\n", [("error", "A table row was 1 columns wide, which is less than the column count established using column markup (2).")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><tr><td>a</td><td>b</td></tr><template><tr><td>x</td><td>y</td></tr><td>z</td></template></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><colgroup span=2></colgroup><template><tbody></tbody><td>z</td></template><tr><td>a</td><td>b</td></tr></table>\n", [("error", "A table row was 1 columns wide, which is less than the column count established using column markup (2).")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><template><colgroup span=2></colgroup><td>z</td></template><tr><td>a</td><td>b</td></tr></table>\n", [("error", "A table row was 1 columns wide, which is less than the column count established using column markup (2).")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><col><col><tr><td>a</td><template><tr><td>x</td></tr><th>y</th></template><td>b</td></tr></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><col><template><table></table></template><template></template><col span=0><tr><td>a</td></tr></table>\n", [("error", "Bad value \u{201c}0\u{201d} for attribute \u{201c}span\u{201d} on element \u{201c}col\u{201d}.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><col><template><table><col></table></template><template></template><col span=0><tr><td>a</td></tr></table>\n", [("error", "Bad value \u{201c}0\u{201d} for attribute \u{201c}span\u{201d} on element \u{201c}col\u{201d}.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><colgroup><template><table><tr><td>x</td></tr></table></template><template></template><col span=0></colgroup><tr><td>a</td></tr></table>\n", [("error", "A table row was 1 columns wide and exceeded the column count established using column markup (0)."), ("error", "Bad value \u{201c}0\u{201d} for attribute \u{201c}span\u{201d} on element \u{201c}col\u{201d}.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><template><caption>c</caption><td>b</td><td>c</td></template><tr><td>x</td></tr></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><template><thead><tr><th>h</th></tr></thead><td>b</td><td>c</td></template><tr><td>x</td></tr></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><template><tr></tr><td>b</td><td>c</td></template><tr><td>x</td></tr></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><tr><td>x</td><template><tr><td>a</td></tr><td>b</td><td>c</td></template></tr></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><template><tr><th>a</th></tr><th>b</th><th>c</th></template><tr><td>x</td></tr></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><col><col><template><tr><td>a</td></tr><td>b</td></template><tr><td>x</td><td>y</td></tr></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><template><tbody><tr><td>a</td><td>a2</td></tr></tbody><td>b</td></template><tr><td>x</td><td>y</td></tr></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><template><tr><td>a</td></tr></template><template><caption></caption><td>b</td><td>c</td></template><tr><td>x</td></tr></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><template><tr><th id=h>a</th></tr><td headers=h>b</td></template><tr><td headers=zz>x</td></tr></table>\n", [("error", "The \u{201c}headers\u{201d} attribute on the element \u{201c}td\u{201d} refers to the ID \u{201c}zz\u{201d}, but there is no \u{201c}th\u{201d} element with that ID in the same table.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><template><tbody></tbody><td>b</td></template><col span=3><tr><td>x</td></tr></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><template><thead></thead><th>b</th></template><colgroup span=2></colgroup><tr><td>x</td></tr></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><tr><td>a</td></tr><col><template><col span=5></template><tr><td>b</td></tr></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><tr><td>a</td></tr><col><template><tr><td>x</td><td>y</td></tr></template>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<template><table><col><template><tr><td>x</td><td>y</td></tr></template></template><table><tr><td>a</td></tr></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><tr><td><table><col><template><tr><td>x</td><td>y</td></tr></template></table></td></tr><tr><td>a</td></tr></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><tr><td>x<template><td>a<tr><td>b<td>c</template></td></tr></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><tr><template><td>a</td></tr><tr><td>b</td></tr></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><tr><td>x</td><template><td>a<tbody><tr><td>b</td><td>c</td></tr></tbody></template></tr></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><tbody><template><tr><td>a</td></tr><td>b</td><td>c</td></template></tbody><tr><td>x</td></tr></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><tr><td>x<template><tr><td>a</td></tr><td>b</td></template></td></tr></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><template><caption></caption><td>b<td>c</template><tr><td>x</td></tr></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><thead><tr><th>A</th><th>B</th></tr></thead><tbody><template><tr><td>1</td><td>2</td></tr><td>3</td><td>4</td></template></tbody><tbody><tr><td>5</td><td>6</td><td>7</td></tr></tbody></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><td>a<colgroup></colgroup><td>b</td><tr><td>c</td><td>d</td></tr></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><td>a<col><td>b</td><tr><td>c</td><td>d</td></tr></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><tr><td>a</td></tr><colgroup></colgroup><tr><td>b</td></tr><tr><td>c</td><td>d</td></tr></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><template><td>x</td><tr><td>y</td><td>z</td></tr></template><tr><td>a</td></tr></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><template><col><tr><td>x</td><td>y</td></tr></template><tr><td>a</td></tr></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><template><thead><tr><td>h</td></tr></thead><td>x</td><td>y</td><tbody><tr><td>b</td></tr></tbody></template><tr><td>a</td><td>a</td></tr></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><tr><td>a</td><template><tr></tr><td>y</td></template></tr><tr><td>1</td><td>2</td></tr></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><template><script></script><tr><td>x</td><td>y</td></tr><td>z</td></template><tr><td>a</td></tr></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><col><template><table><tr><td>x</td></tr></table></template><template></template><col span=\" 2\"><tr><td>a</td></tr></table>\n", [("error", "A table row was 1 columns wide, which is less than the column count established using column markup (3)."), ("error", "Bad value \u{201c} 2\u{201d} for attribute \u{201c}span\u{201d} on element \u{201c}col\u{201d}.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><template><col><col span=3></template><tr><td>a</td></tr></table>\n", [("error", "A table row was 1 columns wide, which is less than the column count established using column markup (4).")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><template><tr><td>1</td><td>2</td></tr><td>a</td><caption>c</caption><td>b</td></template></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><template><tr><td>1</td><td>2</td></tr><td>a</td><tbody><tr><td>x</td><td>y</td></tr></tbody><td>b</td></template></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><template><tr><td>x</td></tr><td>a</td></template><td>b</td><tr><td>1</td><td>2</td></tr></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><template><tr><td>1</td></tr><td>a</td><tr><td>2</td></tr><td>b</td><td>c</td></template></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><template><caption>c</caption><td>a</td><tr><td>2</td></tr><td>b</td><td>c</td></template></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><td>a</td><template><tfoot></tfoot><td>z</td><td>w</td></template><tr><td>a</td></tr></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><th>h</th></tbody><template><tr><td>a</td><td>b</td><td>c</td></tr></template></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><td>a</td></tr><td>b</td><td>c</td></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><td>a</td><caption>c</caption><template><tr><td>x</td><td>y</td></tr></template></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><tr><td>a</td></tr><colgroup span=2></colgroup><template><tbody><tr><td>x</td><td>y</td></tr></tbody></template></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><tr><td>a</td></tr></tbody><template><caption>c</caption><tr><td>x</td><td>y</td></tr></template></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><td>a</td></tr><template><tbody><tr><td>x</td><td>y</td></tr></tbody></template><tr><td>b</td></tr></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><template><tr><td rowspan=3>a</td></tr></template><template><colgroup></colgroup><tr><td>b</td></tr></template></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><template><tr><td>x</td></tr><td>a</td><template><tbody><tr><td>b</td><td>c</td></tr></tbody></template></template></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><template><tr><td rowspan=2>x</td></tr></template></tbody><template><tr><td>y</td></tr></template></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><template><tr><td rowspan=2>x</td></tr></template><caption>c</caption><template><tr><td>y</td></tr></template></table>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<table><template><tr><td rowspan=2>x</td></tr></template><colgroup></colgroup><template><tr><td>y</td></tr></template></table>\n", []),
+] as [(String, [(String, String)])])
+func colgroupMessagesMatchUpstreamWhereItSaysMore(document: String, expected: [(String, String)]) {
+    let actual = checkHTML(document).messages
+        .filter { ("info" != $0.type || "warning" == $0.subType) && isColgroupItemMessage($0.message) }
+        .map { "\("info" == $0.type ? "warning" : "error"): \($0.message)" }
+        .sorted()
+    #expect(actual == expected.map { "\($0.0): \($0.1)" }.sorted(), "\(document)")
+}
+
+@Test(arguments: [
+    ("<template><table><colgroup span=\"2\"><col/></colgroup></table></template>", [("warning", "A col element causes a span attribute with value 2 to be ignored on the parent colgroup.")]),
+    ("<center><table><colgroup span=\"2\"><col/></colgroup><tr><td>a</td><td>b</td></tr></table></center>", [("error", "A table row was 2 columns wide and exceeded the column count established using column markup (1)."), ("warning", "A col element causes a span attribute with value 2 to be ignored on the parent colgroup.")]),
+    ("<table><colgroup SPAN=\"2\"><col/></colgroup><tr><td>a</td><td>b</td></tr></table>", [("error", "A table row was 2 columns wide and exceeded the column count established using column markup (1).")]),
+    ("<div><colgroup span=\"2\"><col/></colgroup></div>", []),
+    ("<table><tr><td>a</td><td>b</td></tr><colgroup span=\"2\"><col/></colgroup></table>", []),
+    ("<table><tr><td><colgroup span=\"2\"><col/></colgroup></td></tr></table>", []),
+    ("<table><tbody><colgroup span=\"2\"><col/></colgroup><tr><td>a</td><td>b</td></tr></tbody></table>", []),
+    ("<table><colgroup span=\"2\"></colgroup><script></script><colgroup span=\"2\"><col/></colgroup><tr><td>a</td><td>b</td><td>c</td><td>d</td></tr></table>", [("error", "A table row was 4 columns wide and exceeded the column count established using column markup (3)."), ("warning", "A col element causes a span attribute with value 2 to be ignored on the parent colgroup.")]),
+    ("<div><colgroup><figure><p>x</p><figcaption>C</figcaption><p>y</p></figure></colgroup></div>", []),
+    ("<table><colgroup span=\"2\"></colgroup><tr><td>a</td><td>b</td></tr><colgroup><col/></colgroup></table>", []),
+    ("<p><a href=\"x\"><table><colgroup span=\"2\"><col/></colgroup><tr><td>a</td><td>b</td></tr></table></a></p>", [("error", "A table row was 2 columns wide and exceeded the column count established using column markup (1)."), ("warning", "A col element causes a span attribute with value 2 to be ignored on the parent colgroup.")]),
+    ("<p><table><colgroup span=\"2\"><col/></colgroup><tr><td>a</td><td>b</td></tr></table></p>", [("error", "A table row was 2 columns wide and exceeded the column count established using column markup (1)."), ("warning", "A col element causes a span attribute with value 2 to be ignored on the parent colgroup.")]),
+    ("<span><table><colgroup><svg xmlns=\"http://www.w3.org/2000/svg\"/></colgroup><tr><td>a</td><td>b</td></tr></table></span>", [("error", "A table row was 2 columns wide and exceeded the column count established using column markup (1).")]),
+    // (From item 12's second review: what upstream's Table ignores, and the
+    // spans its schema checks.)
+    ("<table><td>a</td><colgroup span=\"2\"/><tr><td>1</td><td>2</td><td>3</td></tr></table>", [("error", "A table row was 3 columns wide and exceeded the column count established using column markup (2).")]),
+    ("<table><col span=\"0\"/><tr><td>a</td></tr></table>", [("error", "A table row was 1 columns wide and exceeded the column count established using column markup (0).")]),
+    ("<template><table><colgroup span=\"x\"/></table></template>", []),
+    ("<table><tr><td>a</td></tr><colgroup span=\"x\"/></table>", []),
+    ("<table><colgroup><tr><td>r</td></tr></colgroup><colgroup span=\"&#45;1\"/><tr><td>a</td></tr></table>", [("error", "A table row was 1 columns wide, which is less than the column count established using column markup (2)."), ("error", "Bad value \u{201c}-1\u{201d} for attribute \u{201c}span\u{201d} on element \u{201c}colgroup\u{201d}."), ("error", "Element \u{201c}tr\u{201d} not allowed as child of \u{201c}colgroup\u{201d} in this context.")]),
+    ("<table><tr><td>a</td><td>b</td></tr><colgroup><div/></colgroup><tr><td>a</td><td>b</td><td>c</td></tr></table>", []),
+    ("<table><tr><td>a<td>b</td></td><td>c</td></tr><tr><td>1</td><td>2</td><td>3</td></tr></table>", []),
+    ("<table><tr><td>a</td><td>b</td></tr><tr><tr><td>x</td></tr></tr><tr><td>1</td><td>2</td><td>3</td></tr></table>", []),
+    ("<table><tbody><tbody><tr><td>x</td></tr></tbody><tr><td>a</td><td>b</td></tr></tbody></table>", []),
+    ("<table><tr><td>a<tr><td>x</td></tr></td><td>b</td></tr><tr><td>1</td><td>2</td><td>3</td></tr></table>", []),
+] as [(String, [(String, String)])])
+func xhtmlColgroupMessagesMatchUpstreamWhereItSaysMore(_ body: String, _ expected: [(String, String)]) {
+    let result = NuValidator().check(
+        input: DocumentInput(data: Data("<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<html xmlns=\"http://www.w3.org/1999/xhtml\" lang=\"en\"><head><title>T</title></head><body>\n\(body)\n</body></html>\n".utf8), contentType: "application/xhtml+xml; charset=utf-8"),
+        options: CheckerOptions(parameters: ["out": ["json"]])
+    )
+    let actual = result.messages
+        .filter { ("info" != $0.type || "warning" == $0.subType) && isColgroupItemMessage($0.message) }
+        .map { "\("info" == $0.type ? "warning" : "error"): \($0.message)" }
+        .sorted()
+    #expect(actual == expected.map { "\($0.0): \($0.1)" }.sorted(), "\(body)")
+}
+
+// Case 554591 (item 12, from its second review): the rows upstream's
+// TableChecker counts, by its row-width messages, for documents where vnu.jar
+// also says something the port doesn't yet. Its Table ignores a table element
+// wherever it doesn't take one, with the table elements inside it: a row in a
+// colgroup (through a <template>, in an HTML document, where a col directly
+// in a table is in the colgroup the parser implies until a stray end tag or an
+// ignored start tag, too, ends it), a cell outside a row (in a <template>
+// directly in a table or a row group), a cell in a cell, and anything in an
+// XHTML col. The port counted them, or, once it ignored them, kept ignoring
+// what came after them. (From the third review: a cell directly in a
+// template is in a row the parser implies there, which Table judges as any
+// row, when the template's content began with a row, a caption, a colgroup or
+// a row group; and Table never sees a table part the parser drops from a
+// template's content, such as a row or colgroup after a template's first
+// cell.) The expected messages are vnu.jar's.
+@Test(arguments: [
+    ("<table><colgroup span=2>\u{0}<col></colgroup><tr><td>a</td><td>b</td></tr></table>", false, [("error", "A table row was 2 columns wide and exceeded the column count established using column markup (1).")]),
+    ("<table><colgroup span=2><frame><col></colgroup><tr><td>a</td><td>b</td></tr></table>", false, [("error", "A table row was 2 columns wide, which is less than the column count established using column markup (3).")]),
+    ("<table><colgroup span=2><body><col></colgroup><tr><td>a</td><td>b</td><td>c</td></tr></table>", false, []),
+    ("<table><tbody><template><td>a</td></template></tbody><colgroup span=2></colgroup><tr><td>1<td>2<td>3</table>", false, []),
+    ("<table><tr><td>a</td></tr><col><template><tr><td>x</td><td>y</td></tr></template><tr><td>b</td></tr></table>", false, []),
+    ("<table><col span=\"&#12;2\"><tr><td>a</td></tr></table>", false, [("error", "A table row was 1 columns wide, which is less than the column count established using column markup (2).")]),
+    ("<table><colgroup span=2><col span=0></colgroup><tr><td>a</td></tr></table>", false, [("error", "A table row was 1 columns wide and exceeded the column count established using column markup (0).")]),
+    ("<table><td>a</td><colgroup span=\"2\"/><tr><td>1</td><td>2</td><td>3</td></tr></table>", true, [("error", "A table row was 3 columns wide and exceeded the column count established using column markup (2).")]),
+    ("<table><col span=\"0\"/><tr><td>a</td></tr></table>", true, [("error", "A table row was 1 columns wide and exceeded the column count established using column markup (0).")]),
+    ("<table><colgroup><tr><td>r</td></tr></colgroup><colgroup span=\"&#45;1\"/><tr><td>a</td></tr></table>", true, [("error", "A table row was 1 columns wide, which is less than the column count established using column markup (2).")]),
+    ("<table><tr><td>a</td><td>b</td></tr><colgroup><div/></colgroup><tr><td>a</td><td>b</td><td>c</td></tr></table>", true, [("warning", "A table row was 3 columns wide and exceeded the column count established by the first row (2).")]),
+    ("<table><tr><td>a<td>b</td></td><td>c</td></tr><tr><td>1</td><td>2</td><td>3</td></tr></table>", true, [("warning", "A table row was 3 columns wide and exceeded the column count established by the first row (2).")]),
+    ("<table><tr><td>a</td></tr><col><tr><td>b</td><td>c</td></tr></table>", false, [("warning", "A table row was 2 columns wide and exceeded the column count established by the first row (1).")]),
+    ("<table><tr><td>a</td></tr><col><col><template><tr><td>x</td><td>y</td></tr></template><tr><td>b</td><td>c</td></tr></table>", false, [("warning", "A table row was 2 columns wide and exceeded the column count established by the first row (1).")]),
+    ("<table><tbody><tbody><tr><td>x</td></tr></tbody><tr><td>a</td><td>b</td></tr></tbody></table>", true, []),
+    ("<table><tr><td>a<tr><td>x</td></tr></td><td>b</td></tr><tr><td>1</td><td>2</td><td>3</td></tr></table>", true, [("warning", "A table row was 3 columns wide and exceeded the column count established by the first row (2).")]),
+    ("<table><colgroup span=2></colgroup><template><tr><td>a</td><td>b</td></tr><td>c</td></template><tr><td>1</td><td>2</td></tr></table>", false, [("error", "A table row was 1 columns wide, which is less than the column count established using column markup (2).")]),
+    ("<table><template><caption>c</caption><td>x</td></template><colgroup span=3></colgroup><tr><td>1</td><td>2</td></tr><tr><td>1</td><td>2</td></tr></table>", false, [("warning", "A table row was 2 columns wide and exceeded the column count established by the first row (1)."), ("warning", "A table row was 2 columns wide and exceeded the column count established by the first row (1).")]),
+    ("<table><colgroup span=3></colgroup><template><tr><td>a</td><td>b</td><td>c</td></tr><td>d<tr><td>e</td><td>f</td></tr></template><tr><td>1</td><td>2</td><td>3</td></tr></table>", false, [("error", "A table row was 1 columns wide, which is less than the column count established using column markup (3)."), ("error", "A table row was 2 columns wide, which is less than the column count established using column markup (3).")]),
+    ("<table><colgroup span=2></colgroup><tbody><template><tr><td>a</td><td>b</td></tr><th>c</th></template><tr><td>1</td><td>2</td></tr></tbody></table>", false, [("error", "A table row was 1 columns wide, which is less than the column count established using column markup (2).")]),
+    ("<table><colgroup span=2></colgroup><template><tbody><tr><td>a</td><td>b</td></tr></tbody><td>c</td></template><tr><td>1</td><td>2</td></tr></table>", false, [("error", "A table row was 1 columns wide, which is less than the column count established using column markup (2).")]),
+    ("<table><col><col><tr><td>a</td><td>b</td></tr><template><tr><td>x</td><td>y</td></tr><td>z</td></template></table>", false, [("error", "A table row was 1 columns wide, which is less than the column count established using column markup (2).")]),
+    ("<table><colgroup span=2></colgroup><template><caption>c</caption><td>z</td></template><tr><td>a</td><td>b</td></tr></table>", false, [("error", "A table row was 1 columns wide, which is less than the column count established using column markup (2).")]),
+    ("<table><col><col><tr><td>a</td><template><tr><td>x</td></tr><td>y</td></template><td>b</td></tr></table>", false, []),
+    ("<table><col><template><table><tr><td>x</td></tr></table></template><template></template><col span=0><tr><td>a</td></tr></table>", false, []),
+    ("<table><col><template><table><tr><td>x</td></tr></table></template><col span=0><tr><td>a</td></tr></table>", false, []),
+    ("<table><template><colgroup></colgroup><td>x</td></template><colgroup span=3></colgroup><tr><td>1</td><td>2</td></tr></table>", false, [("error", "A table row was 2 columns wide and exceeded the column count established using column markup (1).")]),
+    ("<table><template><tr><td>a</td><td>b</td></tr><td>c</td></template><tr><td>1</td><td>2</td></tr></table>", false, [("warning", "A table row was 1 columns wide, which is less than the column count established by the first row (2).")]),
+    ("<table><template><caption></caption><td>b</td></template><colgroup span=3></colgroup><tr><td>x</td></tr></table>", false, []),
+    ("<table><template><tr><td>a</td></tr><td>b</td><td>c</td></template><tr><td>x</td></tr></table>", false, [("warning", "A table row was 2 columns wide and exceeded the column count established by the first row (1).")]),
+    ("<table><template><colgroup></colgroup><td>b</td><td>c</td></template><tr><td>x</td></tr></table>", false, [("error", "A table row was 2 columns wide and exceeded the column count established using column markup (1).")]),
+    ("<table><tr><td>x</td><template><tr><td>a</td></tr><td>b</td><td>c</td></template></tr><tr><td>y</td></tr></table>", false, []),
+    ("<table><template><caption></caption><td>b</td><td>c</td></template><tr><td>x</td></tr></table>", false, [("warning", "A table row was 1 columns wide, which is less than the column count established by the first row (2).")]),
+    ("<table><template><tbody></tbody><td>b</td><td>c</td></template><tr><td>x</td></tr></table>", false, [("warning", "A table row was 1 columns wide, which is less than the column count established by the first row (2).")]),
+    ("<table><template><thead></thead><th>b</th><th>c</th></template><tr><td>x</td></tr></table>", false, [("warning", "A table row was 1 columns wide, which is less than the column count established by the first row (2).")]),
+    ("<table><template><tr><td>a</td></tr><th>b</th><th>c</th></template><tr><td>x</td></tr></table>", false, [("warning", "A table row was 2 columns wide and exceeded the column count established by the first row (1).")]),
+    ("<table><tbody><template><tr><td>a</td></tr><td>b</td><td>c</td></template><tr><td>x</td></tr></tbody></table>", false, [("warning", "A table row was 2 columns wide and exceeded the column count established by the first row (1).")]),
+    ("<table><template><tr><td>a</td></tr><td>b</td><td>c</td></template><colgroup span=3></colgroup><tr><td>x</td><td>y</td><td>z</td></tr></table>", false, [("warning", "A table row was 2 columns wide and exceeded the column count established by the first row (1)."), ("warning", "A table row was 3 columns wide and exceeded the column count established by the first row (1).")]),
+    ("<table><template><tbody></tbody><td>b</td></template><colgroup span=3></colgroup><tr><td>x</td></tr></table>", false, []),
+    ("<table><template><caption></caption><td>b</td></template><colgroup span=3></colgroup><tr><td>x</td><td>y</td><td>z</td></tr></table>", false, [("warning", "A table row was 3 columns wide and exceeded the column count established by the first row (1).")]),
+    ("<table><tbody><template><caption></caption><td>b</td><td>c</td></template><tr><td>x</td></tr></tbody></table>", false, []),
+    ("<table><template><thead></thead><td>b</td><tr><td>p</td><td>q</td><td>r</td></tr></template><tr><td>x</td></tr></table>", false, [("warning", "A table row was 3 columns wide and exceeded the column count established by the first row (1).")]),
+    ("<table><col><col><tr><td>a</td><td>b</td></tr><template><tr><td>x</td><td>y</td></tr><th>z</th></template></table>", false, [("error", "A table row was 1 columns wide, which is less than the column count established using column markup (2).")]),
+    ("<table><colgroup span=2></colgroup><template><tr><td>x</td><td>y</td></tr><td>z</td></template><tr><td>a</td><td>b</td></tr></table>", false, [("error", "A table row was 1 columns wide, which is less than the column count established using column markup (2).")]),
+    ("<table><tr><td>a</td><td>b</td></tr><template><tr><td>x</td><td>y</td></tr><td>z</td></template></table>", false, [("warning", "A table row was 1 columns wide, which is less than the column count established by the first row (2).")]),
+    ("<table><colgroup span=2></colgroup><template><tbody></tbody><td>z</td></template><tr><td>a</td><td>b</td></tr></table>", false, [("error", "A table row was 1 columns wide, which is less than the column count established using column markup (2).")]),
+    ("<table><template><colgroup span=2></colgroup><td>z</td></template><tr><td>a</td><td>b</td></tr></table>", false, [("error", "A table row was 1 columns wide, which is less than the column count established using column markup (2).")]),
+    ("<table><col><col><tr><td>a</td><template><tr><td>x</td></tr><th>y</th></template><td>b</td></tr></table>", false, []),
+    ("<table><col><template><table></table></template><template></template><col span=0><tr><td>a</td></tr></table>", false, []),
+    ("<table><col><template><table><col></table></template><template></template><col span=0><tr><td>a</td></tr></table>", false, []),
+    ("<table><colgroup><template><table><tr><td>x</td></tr></table></template><template></template><col span=0></colgroup><tr><td>a</td></tr></table>", false, [("error", "A table row was 1 columns wide and exceeded the column count established using column markup (0).")]),
+    ("<table><template><caption>c</caption><td>b</td><td>c</td></template><tr><td>x</td></tr></table>", false, [("warning", "A table row was 1 columns wide, which is less than the column count established by the first row (2).")]),
+    ("<table><template><thead><tr><th>h</th></tr></thead><td>b</td><td>c</td></template><tr><td>x</td></tr></table>", false, [("warning", "A table row was 2 columns wide and exceeded the column count established by the first row (1).")]),
+    ("<table><tr><td>x</td><template><tr><td>a</td></tr><td>b</td><td>c</td></template></tr></table>", false, []),
+    ("<table><template><tr><th>a</th></tr><th>b</th><th>c</th></template><tr><td>x</td></tr></table>", false, [("warning", "A table row was 2 columns wide and exceeded the column count established by the first row (1).")]),
+    ("<table><col><col><template><tr><td>a</td></tr><td>b</td></template><tr><td>x</td><td>y</td></tr></table>", false, []),
+    ("<table><template><tbody><tr><td>a</td><td>a2</td></tr></tbody><td>b</td></template><tr><td>x</td><td>y</td></tr></table>", false, [("warning", "A table row was 1 columns wide, which is less than the column count established by the first row (2).")]),
+    ("<table><template><tr><td>a</td></tr></template><template><caption></caption><td>b</td><td>c</td></template><tr><td>x</td></tr></table>", false, [("warning", "A table row was 2 columns wide and exceeded the column count established by the first row (1).")]),
+    ("<table><template><tbody></tbody><td>b</td></template><col span=3><tr><td>x</td></tr></table>", false, []),
+    ("<table><template><thead></thead><th>b</th></template><colgroup span=2></colgroup><tr><td>x</td></tr></table>", false, []),
+    ("<table><tr><td>a</td></tr><col><template><col span=5></template><tr><td>b</td></tr></table>", false, []),
+    ("<table><tr><td>a</td></tr><col><template><tr><td>x</td><td>y</td></tr></template>", false, []),
+    ("<template><table><col><template><tr><td>x</td><td>y</td></tr></template></template><table><tr><td>a</td></tr></table>", false, []),
+    ("<table><tr><td><table><col><template><tr><td>x</td><td>y</td></tr></template></table></td></tr><tr><td>a</td></tr></table>", false, []),
+    ("<table><tbody><template><tr><td>a</td></tr><td>b</td><td>c</td></template></tbody><tr><td>x</td></tr></table>", false, [("warning", "A table row was 2 columns wide and exceeded the column count established by the first row (1).")]),
+    ("<table><template><caption></caption><td>b<td>c</template><tr><td>x</td></tr></table>", false, [("warning", "A table row was 1 columns wide, which is less than the column count established by the first row (2).")]),
+    ("<table><template><td>x</td><colgroup span=3></colgroup></template><tr><td>a</td></tr></table>", false, []),
+    ("<table><template><td>x</td><colgroup span=3></colgroup></template><tr><td>a</td></tr></table>", false, []),
+    ("<table><template><td>x</td><tr><td>y</td><td>z</td></tr></template><tr><td>a</td></tr></table>", false, []),
+    ("<table><template><col><tr><td>x</td><td>y</td></tr></template><tr><td>a</td></tr></table>", false, []),
+    ("<table><template><tr><td>a</td></tr><colgroup span=3></colgroup></template><tr><td>b</td></tr></table>", false, []),
+    ("<table><template><thead><tr><td>h</td></tr></thead><td>x</td><td>y</td><tbody><tr><td>b</td></tr></tbody></template><tr><td>a</td><td>a</td></tr></table>", false, [("warning", "A table row was 2 columns wide and exceeded the column count established by the first row (1)."), ("warning", "A table row was 2 columns wide and exceeded the column count established by the first row (1).")]),
+    ("<table><tr><td>a</td><template><tr></tr><td>y</td></template></tr><tr><td>1</td><td>2</td></tr></table>", false, [("warning", "A table row was 2 columns wide and exceeded the column count established by the first row (1).")]),
+    ("<table><template><script></script><tr><td>x</td><td>y</td></tr><td>z</td></template><tr><td>a</td></tr></table>", false, [("warning", "A table row was 1 columns wide, which is less than the column count established by the first row (2)."), ("warning", "A table row was 1 columns wide, which is less than the column count established by the first row (2).")]),
+    ("<table><template><tr><td>1</td><td>2</td></tr><td>a</td><caption>c</caption><td>b</td></template></table>", false, [("warning", "A table row was 1 columns wide, which is less than the column count established by the first row (2)."), ("warning", "A table row was 1 columns wide, which is less than the column count established by the first row (2).")]),
+    ("<table><template><tr><td>1</td><td>2</td></tr><td>a</td><tbody><tr><td>x</td><td>y</td></tr></tbody><td>b</td></template></table>", false, [("warning", "A table row was 1 columns wide, which is less than the column count established by the first row (2)."), ("warning", "A table row was 1 columns wide, which is less than the column count established by the first row (2).")]),
+    ("<table><template><tr><td>x</td></tr><td>a</td></template><td>b</td><tr><td>1</td><td>2</td></tr></table>", false, [("warning", "A table row was 2 columns wide and exceeded the column count established by the first row (1).")]),
+    ("<table><template><tr><td>1</td></tr><td>a</td><tr><td>2</td></tr><td>b</td><td>c</td></template></table>", false, [("warning", "A table row was 2 columns wide and exceeded the column count established by the first row (1).")]),
+    ("<table><template><caption>c</caption><td>a</td><tr><td>2</td></tr><td>b</td><td>c</td></template></table>", false, [("warning", "A table row was 2 columns wide and exceeded the column count established by the first row (1).")]),
+    ("<table><td>a</td><template><tfoot></tfoot><td>z</td><td>w</td></template><tr><td>a</td></tr></table>", false, []),
+    ("<table><th>h</th></tbody><template><tr><td>a</td><td>b</td><td>c</td></tr></template></table>", false, [("warning", "A table row was 3 columns wide and exceeded the column count established by the first row (1).")]),
+    ("<table><td>a</td></tr><td>b</td><td>c</td></table>", false, [("warning", "A table row was 2 columns wide and exceeded the column count established by the first row (1).")]),
+    ("<table><td>a</td><caption>c</caption><template><tr><td>x</td><td>y</td></tr></template></table>", false, [("warning", "A table row was 2 columns wide and exceeded the column count established by the first row (1).")]),
+    ("<table><tr><td>a</td></tr><colgroup span=2></colgroup><template><tbody><tr><td>x</td><td>y</td></tr></tbody></template></table>", false, [("warning", "A table row was 2 columns wide and exceeded the column count established by the first row (1).")]),
+    ("<table><tr><td>a</td></tr></tbody><template><caption>c</caption><tr><td>x</td><td>y</td></tr></template></table>", false, [("warning", "A table row was 2 columns wide and exceeded the column count established by the first row (1).")]),
+    ("<table><td>a</td></tr><template><tbody><tr><td>x</td><td>y</td></tr></tbody></template><tr><td>b</td></tr></table>", false, []),
+    ("<table><template><tr><td rowspan=3>a</td></tr></template><template><colgroup></colgroup><tr><td>b</td></tr></template></table>", false, []),
+    ("<table><template><tr><td>x</td></tr><td>a</td><template><tbody><tr><td>b</td><td>c</td></tr></tbody></template></template></table>", false, []),
+    ("<table><template><tr><td rowspan=2>x</td></tr></template><colgroup></colgroup><template><tr><td>y</td></tr></template></table>", false, [("warning", "A table row was 2 columns wide and exceeded the column count established by the first row (1).")]),
+] as [(String, Bool, [(String, String)])])
+func tableRowWidthsFollowUpstreamsTableModel(_ body: String, _ isXHTML: Bool, _ expected: [(String, String)]) {
+    let result = isXHTML
+        ? NuValidator().check(
+            input: DocumentInput(data: Data("<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<html xmlns=\"http://www.w3.org/1999/xhtml\" lang=\"en\"><head><title>T</title></head><body>\n\(body)\n</body></html>\n".utf8), contentType: "application/xhtml+xml; charset=utf-8"),
+            options: CheckerOptions(parameters: ["out": ["json"]])
+        )
+        : checkHTML("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n\(body)\n")
+    let actual = result.messages
+        .filter { $0.message.hasPrefix("A table row was") }
+        .map { "\("info" == $0.type ? "warning" : "error"): \($0.message)" }
+        .sorted()
+    #expect(actual == expected.map { "\($0.0): \($0.1)" }.sorted(), "\(body)")
+}
+
+// Case 554591 (item 12, from its review): "The value of the “span” attribute
+// must be less than or equal to 1000." as upstream's clampSpan gives it, by
+// its own reading of the number (AttributeUtil.parseNonNegativeInteger):
+// leading spaces, tabs, CRs and LFs are skipped, but nothing may follow the
+// digits, no plus sign is allowed, and a number a Java int can't hold isn't
+// one. The port went by its own reading, which took "1001 " and 99999999999
+// for numbers over 1000. vnu.jar's answers, for a colgroup and for a col.
+@Test(arguments: [
+    ("1001", true), (" 1001", true), ("\t1001", true), ("01001", true), ("2147483647", true),
+    ("1001 ", false), ("99999999999", false), ("2147483648", false), ("+1001", false), ("1000", false),
+] as [(String, Bool)])
+func colgroupSpanLimitIsReadAsUpstreamReadsIt(_ span: String, _ isOverTheLimit: Bool) {
+    for markup in ["<table><colgroup span=\"\(span)\"></colgroup><tr><td>a</td></tr></table>", "<table><col span=\"\(span)\"><tr><td>a</td></tr></table>"] {
+        let messages = checkHTML("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n\(markup)\n").messages.map(\.message)
+        #expect(isOverTheLimit == messages.contains { "The value of the \u{201c}span\u{201d} attribute must be less than or equal to 1000." == $0 }, "\(markup)")
+    }
+}
+
+// Case 554591 (item 12, from its third review): a colgroup or col that
+// upstream's parser drops from a template's content (here, after the
+// template's first cell, and after its first row) never reaches its table
+// checker, so its span gets no "must be less than or equal to 1000". vnu.jar
+// reports only the parser's errors, "No table row to close." and "Stray end
+// tag “colgroup”.", or "Stray start tag “col”.", which the port doesn't yet.
+@Test(arguments: [
+    "<table><template><td>x</td><colgroup span=2000></colgroup></template><tr><td>a</td></tr></table>",
+    "<table><template><tr><td>a</td></tr><col span=2000></template><tr><td>b</td></tr></table>",
+])
+func spanLimitIsNotCheckedWhereTheParserDropsTheElement(_ body: String) {
+    let messages = checkHTML("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n\(body)\n").messages.map(\.message)
+    #expect(!messages.contains { "The value of the \u{201c}span\u{201d} attribute must be less than or equal to 1000." == $0 }, "\(body)")
+    #expect(!messages.contains { $0.hasPrefix("A table row was") }, "\(body)")
+}
+
+// Case 554591 (item 12, from its review): in an XHTML document, the schema
+// checks nothing inside a colgroup it rejects (here, one in a <div>), so the
+// figure rules don't either: vnu.jar reports the colgroup alone, which the XML
+// checker doesn't yet.
+@Test func xhtmlFigureRulesLookNotInAMisplacedColgroup() {
+    let result = NuValidator().check(
+        input: DocumentInput(data: Data("<?xml version=\"1.0\" encoding=\"utf-8\"?>\n<html xmlns=\"http://www.w3.org/1999/xhtml\" lang=\"en\"><head><title>T</title></head><body>\n<div><colgroup><figure><p>x</p><figcaption>C</figcaption><p>y</p></figure></colgroup></div>\n</body></html>\n".utf8), contentType: "application/xhtml+xml; charset=utf-8"),
+        options: CheckerOptions(parameters: ["out": ["json"]])
+    )
+    #expect(!result.messages.contains { $0.message.contains("not allowed as child of \u{201c}figure\u{201d}") })
+}
+
 @Test func htmlDocumentParserEmitsBalancedTreeEvents() {
     let source = "<!doctype html><ul><li>one<li>two</ul><br><p>x<div>y</div>"
     let locations = SourceLocationMap(source)

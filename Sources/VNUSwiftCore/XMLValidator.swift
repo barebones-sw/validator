@@ -36,6 +36,29 @@ public final class XMLValidator: NSObject, XMLParserDelegate, @unchecked Sendabl
         var figcaptionIsLast = false
     }
 
+    /// Case 554591 (item 12): an open colgroup the schema takes where it is
+    /// (see noteColgroupStart): where it is on elementStack, and, as with
+    /// FigureContext, the number of SVG and MathML elements open when it
+    /// started; and whether it has a span attribute, which leaves it no
+    /// children at all (see noteColgroupChild).
+    private struct ColgroupContext {
+        var depth: Int
+        var foreignDepth: Int
+        var hasSpan: Bool
+    }
+
+    /// Case 554591 (item 12, from its review): an open table's column
+    /// section, as HTMLValidator's TableColumnSection has it: where the
+    /// table is (as in ColgroupContext), whether a colgroup has come, and
+    /// whether no more may (once a row group or row, or a script or
+    /// template after a colgroup, has come).
+    private struct TableColumnSection {
+        var depth: Int
+        var foreignDepth: Int
+        var sawColgroup = false
+        var isClosed = false
+    }
+
     private struct RubyContext {
         var location: SourceLocation
         var directChildNames: [String] = []
@@ -61,8 +84,17 @@ public final class XMLValidator: NSObject, XMLParserDelegate, @unchecked Sendabl
     // elements of any namespace) of the element the figure rules last found
     // not allowed, or of a template or legacy element, while it's open:
     // upstream's schema checks nothing more inside it, so neither do they.
+    // (Item 12's colgroup rule shares it, and adds the content the schema
+    // takes unchecked; see noteColgroupChild and noteUncheckedContent.)
     private var foreignDepth = 0
     private var figureRulesSuppressedAbove: Int?
+    // Case 554591 (item 12): the open colgroups the schema takes where
+    // they are, innermost last; and, from its review, the open tables'
+    // column sections, and the depths (open elements of any namespace)
+    // of the open MathML annotation-xml elements, likewise.
+    private var openColgroups: [ColgroupContext] = []
+    private var tableColumnSections: [TableColumnSection] = []
+    private var annotationXMLDepths: [Int] = []
     private var rubyContexts: [RubyContext] = []
     private var sawElement = false
     private var tableChecker = HTMLTableModelChecker(mode: .xhtml)
@@ -78,6 +110,9 @@ public final class XMLValidator: NSObject, XMLParserDelegate, @unchecked Sendabl
         figureContexts = []
         foreignDepth = 0
         figureRulesSuppressedAbove = nil
+        openColgroups = []
+        tableColumnSections = []
+        annotationXMLDepths = []
         rubyContexts = []
         sawElement = false
         tableChecker = HTMLTableModelChecker(mode: .xhtml)
@@ -122,6 +157,11 @@ public final class XMLValidator: NSObject, XMLParserDelegate, @unchecked Sendabl
             // parser keeps SVG's camelCase names); everything in it is the
             // foreign element's, not the figure's.
             noteFigureChild(elementName, isXHTML: false, location: location)
+            // (Case 554591, item 12: one directly in a colgroup is reported,
+            // as a colgroup takes nothing in another namespace; and one can
+            // start content the schema takes unchecked.)
+            noteColgroupChild(elementName, isXHTML: false, location: location)
+            noteUncheckedContent(elementName, namespaceURI: namespaceURI)
             foreignDepth += 1
             return
         }
@@ -130,9 +170,13 @@ public final class XMLValidator: NSObject, XMLParserDelegate, @unchecked Sendabl
             idElementNames[id] = name
         }
         let normalizedAttributes = normalizedAttributes(attributeDict)
+        // (Case 554591, item 12: with the attributes' names as written, as
+        // upstream's TableChecker reads them; an XHTML attribute named SPAN
+        // or COLSPAN isn't span or colspan. Lowercased, SPAN="2" got the new
+        // warning for a col in its colgroup, which vnu.jar doesn't give.)
         tableChecker.startElement(HTMLTableElementInfo(
             name: name,
-            attributes: normalizedAttributes,
+            attributes: attributeDict,
             location: location,
             extract: nil
         ))
@@ -144,6 +188,8 @@ public final class XMLValidator: NSObject, XMLParserDelegate, @unchecked Sendabl
         }
         appendXHTMLContentModelMessages(element: name, attributes: normalizedAttributes, location: location)
         noteFigureChild(name, isXHTML: true, location: location)
+        noteColgroupChild(name, isXHTML: true, location: location)
+        noteUncheckedContent(name, namespaceURI: namespaceURI)
         // (Case 554591, item 4: upstream's schema checks nothing in a
         // template, or in a legacy element that takes anything, such as
         // <center>; so neither do the figure rules, from here until it ends.)
@@ -214,6 +260,22 @@ public final class XMLValidator: NSObject, XMLParserDelegate, @unchecked Sendabl
         if name == "figure" {
             figureContexts.append(FigureContext(depth: elementStack.count, foreignDepth: foreignDepth))
         }
+        // (Case 554591, item 12: an XHTML attribute's name is as written, so
+        // this is attributeDict's span, not normalizedAttributes'.)
+        if "colgroup" == name {
+            noteColgroupStart(hasSpan: nil != attributeDict["span"])
+        } else {
+            noteTableChild(name)
+        }
+        // (Case 554591, item 12, from its second review: a span the schema
+        // checks; see spanIsCheckedBySchema.)
+        if "colgroup" == name || "col" == name, let span = attributeDict["span"], !HTMLValidator.isPositiveInteger(span), spanIsCheckedBySchema(name) {
+            appendBadAttributeValue(span, attribute: "span", element: name, location: location)
+        }
+        if "table" == name {
+            tableColumnSections.append(TableColumnSection(depth: elementStack.count, foreignDepth: foreignDepth))
+            noteTablePlacement()
+        }
         if name == "ruby" {
             rubyContexts.append(RubyContext(location: location))
         }
@@ -231,6 +293,10 @@ public final class XMLValidator: NSObject, XMLParserDelegate, @unchecked Sendabl
         guard isXHTMLElement(namespaceURI) else {
             // (Case 554591, item 4: see foreignDepth.)
             foreignDepth -= 1
+            // (Case 554591, item 12: see noteUncheckedContent.)
+            if annotationXMLDepths.last == elementStack.count + foreignDepth {
+                annotationXMLDepths.removeLast()
+            }
             noteElementEnded()
             return
         }
@@ -252,8 +318,172 @@ public final class XMLValidator: NSObject, XMLParserDelegate, @unchecked Sendabl
             elementStack.removeSubrange(index...)
             anchorHrefStack.removeSubrange(index...)
         }
+        // (Case 554591, item 12: a colgroup or table that has ended, with
+        // whatever the end tag closed above it, takes no more children.)
+        while let colgroup = openColgroups.last, colgroup.depth >= elementStack.count {
+            openColgroups.removeLast()
+        }
+        while let section = tableColumnSections.last, section.depth >= elementStack.count {
+            tableColumnSections.removeLast()
+        }
         noteElementEnded()
     }
+
+    /// Case 554591 (item 12): an element (XHTML, SVG or MathML) directly in a
+    /// colgroup the schema takes (see noteColgroupStart), when the
+    /// colgroup's content model (html5/tables.rnc) rejects it: a colgroup
+    /// with a span attribute takes no children at all, and one without takes
+    /// col, script and template (see HTMLValidator's
+    /// colgroupContentModelMessage, where only a col or a template can be
+    /// in one). In an XHTML document the tree is as written, so a colgroup
+    /// can hold anything, and none of this was reported. Then, as with the
+    /// figure rules, whose record of where the schema checks nothing this
+    /// shares (see figureRulesSuppressedAbove), nothing more is checked
+    /// inside the rejected element. Nothing is reported in a template, in a
+    /// legacy element such as <center>, in content the schema takes
+    /// unchecked (see noteUncheckedContent), or inside an element these
+    /// rules have rejected; but the XML checker doesn't know everywhere the
+    /// schema rejects a table (in a <ul>, say, or in a <div> in a MathML
+    /// <mtext>), and the cols in one are still reported.
+    private func noteColgroupChild(_ name: String, isXHTML: Bool, location: SourceLocation) {
+        guard "colgroup" == elementStack.last, let colgroup = openColgroups.last,
+              elementStack.count - 1 == colgroup.depth, foreignDepth == colgroup.foreignDepth else {
+            return
+        }
+        if let depth = figureRulesSuppressedAbove, elementStack.count + foreignDepth > depth {
+            return
+        }
+        if !colgroup.hasSpan, isXHTML, Self.xhtmlColgroupChildren.contains(name) {
+            return
+        }
+        messages.append(.error(
+            "Element \u{201c}\(name)\u{201d} not allowed as child of \u{201c}colgroup\u{201d} in this context.",
+            location: location
+        ))
+        figureRulesSuppressedAbove = elementStack.count + foreignDepth
+    }
+
+    /// Case 554591 (item 12, from its second review): whether the schema
+    /// checks the span attribute of the XHTML colgroup or col starting now, as
+    /// a positive integer (HTMLValidator.isPositiveInteger): a colgroup it
+    /// takes where it is (noteColgroupStart has just recorded it), or a col in
+    /// such a colgroup that has no span (one with a span rejects it); and
+    /// never where it checks nothing (see figureRulesSuppressedAbove). It
+    /// rejects a col directly in a table (see HTMLTableModelChecker). The
+    /// table checker used to report a bad span, by its own trimming reader,
+    /// wherever its own state machine took the element.
+    private func spanIsCheckedBySchema(_ name: String) -> Bool {
+        if let depth = figureRulesSuppressedAbove, elementStack.count + foreignDepth > depth {
+            return false
+        }
+        guard let colgroup = openColgroups.last, foreignDepth == colgroup.foreignDepth else {
+            return false
+        }
+        if "colgroup" == name {
+            return elementStack.count == colgroup.depth
+        }
+        return "colgroup" == elementStack.last && elementStack.count - 1 == colgroup.depth && !colgroup.hasSpan
+    }
+
+    /// Case 554591 (item 12): the children a colgroup without a span
+    /// attribute takes (col.elem* & common.elem.script-supporting*).
+    private static let xhtmlColgroupChildren: Set<String> = ["col", "script", "template"]
+
+    /// Case 554591 (item 12, from its review): an XHTML colgroup starting.
+    /// The schema takes one only directly in a table, before the table's
+    /// column section has closed (see TableColumnSection); its children are
+    /// then checked (see noteColgroupChild). It rejects one anywhere else (in
+    /// a <div>, a cell or a row group, or after the rows) and checks nothing
+    /// in it ("Element “colgroup” not allowed as child of …"). The XML
+    /// checker doesn't report that yet, but it now checks nothing in it
+    /// either, where it reported the cols in it.
+    private func noteColgroupStart(hasSpan: Bool) {
+        if let index = parentTableSectionIndex, !tableColumnSections[index].isClosed {
+            tableColumnSections[index].sawColgroup = true
+            openColgroups.append(ColgroupContext(depth: elementStack.count, foreignDepth: foreignDepth, hasSpan: hasSpan))
+        } else if nil == figureRulesSuppressedAbove {
+            figureRulesSuppressedAbove = elementStack.count + foreignDepth
+        }
+    }
+
+    /// Case 554591 (item 12, from its review): an XHTML element other than a
+    /// colgroup starting, which moves the column section of the table it's
+    /// directly in along, if it's in one: a row group or a row closes it, as
+    /// does a script or template after a colgroup. (A td or th directly in an
+    /// XHTML table, where the schema rejects it, doesn't; nor does anything
+    /// else the schema rejects there.)
+    private func noteTableChild(_ name: String) {
+        guard let index = parentTableSectionIndex else { return }
+        switch name {
+        case "script", "template":
+            if tableColumnSections[index].sawColgroup {
+                tableColumnSections[index].isClosed = true
+            }
+        case "thead", "tbody", "tfoot", "tr":
+            tableColumnSections[index].isClosed = true
+        default:
+            break
+        }
+    }
+
+    /// Case 554591 (item 12, from its review): an XHTML table starting where
+    /// the schema rejects it, as its parent takes phrasing content only (a
+    /// <p>, a <span> or a <button>, say, looking through a, ins, del and the
+    /// other transparent elements, as HTMLValidator's contentModelMessage
+    /// does): vnu.jar reports that ("Element “table” not allowed as child of
+    /// “p”"), which the XML checker doesn't yet, and checks nothing inside
+    /// the table; so, now, neither do the colgroup and figure rules (see
+    /// figureRulesSuppressedAbove), where the colgroup rule reported the
+    /// cols in a spanned colgroup in one. (Only outside SVG and MathML
+    /// content, where elementStack is the table's ancestry; and not for the
+    /// parents whose content HTMLValidator doesn't check either, such as
+    /// <ul>: see items 25 and 28 in the case notes.)
+    private func noteTablePlacement() {
+        guard 0 == foreignDepth, nil == figureRulesSuppressedAbove,
+              let parent = elementStack.last(where: { !HTMLVocabulary.transparentElements.contains($0) }),
+              HTMLVocabulary.phrasingOnlyContainers.contains(parent) else {
+            return
+        }
+        figureRulesSuppressedAbove = elementStack.count + foreignDepth
+    }
+
+    /// Case 554591 (item 12, from its review): the index in
+    /// tableColumnSections of the table the element starting now is directly
+    /// in, if it's in one.
+    private var parentTableSectionIndex: Int? {
+        guard "table" == elementStack.last, let index = tableColumnSections.indices.last,
+              elementStack.count - 1 == tableColumnSections[index].depth, foreignDepth == tableColumnSections[index].foreignDepth else {
+            return nil
+        }
+        return index
+    }
+
+    /// Case 554591 (item 12, from its review): an element starting where the
+    /// schema takes content unchecked, as HTMLValidator's inAnyElementContent
+    /// has it: anything in an SVG <desc>, at any depth, and an element other
+    /// than MathML in a MathML <annotation-xml>, with everything in it.
+    /// Nothing is checked there from here until it ends (see
+    /// figureRulesSuppressedAbove). The colgroup rule reported a col in a
+    /// table in a desc, and item 4's figure rules a figure's content there,
+    /// where vnu.jar reports neither. (The element itself is checked as its
+    /// parent's child, which a desc or an annotation-xml has no rules for.)
+    private func noteUncheckedContent(_ name: String, namespaceURI: String?) {
+        let depth = elementStack.count + foreignDepth
+        let isMathML = Self.mathMLNamespace == namespaceURI
+        if nil == figureRulesSuppressedAbove {
+            if Self.svgNamespace == namespaceURI, "desc" == name {
+                figureRulesSuppressedAbove = depth
+            } else if !isMathML, let annotationXMLDepth = annotationXMLDepths.last, annotationXMLDepth + 1 == depth {
+                figureRulesSuppressedAbove = depth
+            }
+        }
+        if isMathML, "annotation-xml" == name {
+            annotationXMLDepths.append(depth)
+        }
+    }
+
+    private static let svgNamespace = "http://www.w3.org/2000/svg"
+    private static let mathMLNamespace = "http://www.w3.org/1998/Math/MathML"
 
     /// Case 554591 (item 4): an element (XHTML, SVG or MathML), for the
     /// content model of the figure it's directly in, if any (see

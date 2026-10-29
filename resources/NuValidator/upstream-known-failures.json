@@ -320,10 +320,6 @@
       "category" : "valid",
       "failure" : "Expected no errors or warnings but encountered error “Bad value “hint” for attribute “popover” on element “div”.”."
     },
-    "html/elements/colgroup/span-ignored-with-col-children-novalid.html" : {
-      "category" : "invalid",
-      "failure" : "Expected “Element “col” not allowed as child of “colgroup” in this context.” but instead encountered “A table row was 1 columns wide, which is less than the column count established using column markup (4).”."
-    },
     "html/elements/custom/colon-name-isvalid.html" : {
       "category" : "valid",
       "failure" : "Expected no errors or warnings but encountered error “Element “andy-custom:menu” not allowed.”."
@@ -722,7 +718,7 @@
   "passCounts" : {
     "hasinfo" : 5,
     "haswarn" : 138,
-    "invalid" : 3584,
+    "invalid" : 3585,
     "valid" : 1715
   },
   "version" : 2

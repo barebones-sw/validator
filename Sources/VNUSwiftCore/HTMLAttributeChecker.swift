@@ -1338,9 +1338,10 @@ struct HTMLGeneralAttributeChecker {
         switch element.namespace {
         case .html:
             appendRDFaAttributeMessages(for: element, locations: locations, messages: &messages)
-            if parent == "colgroup", element.name == "col" {
-                appendMessage("Element \u{201c}col\u{201d} not allowed as child of \u{201c}colgroup\u{201d} in this context.", for: element, locations: locations, messages: &messages)
-            }
+            // (Case 554591, item 12: a col in a colgroup, which was reported
+            // here for every colgroup, is HTMLValidator's now, and reported
+            // only when the colgroup has a span; see its
+            // colgroupContentModelMessage.)
             if parent == "dialog", element.name == "dt" {
                 appendMessage("Element \u{201c}dt\u{201d} not allowed as child of \u{201c}dialog\u{201d} in this context.", for: element, locations: locations, messages: &messages)
             }

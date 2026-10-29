@@ -41,9 +41,35 @@ enum HTMLDocumentEvent: Equatable, Sendable {
     case comment(String, range: HTMLSourceRange)
 }
 
+/// Case 554591 (item 12, from its third review): an end tag that closes a tr
+/// or tbody upstream's parser implied in an HTML table (see
+/// HTMLParsedDocument.impliedTablePartEnds): where in the events, and its name.
+struct HTMLImpliedTablePartEnd: Equatable, Sendable {
+    var index: Int
+    var name: String
+}
+
 struct HTMLParsedDocument: Equatable, Sendable {
     var tokens: [HTMLToken]
     var events: [HTMLDocumentEvent]
+    /// Case 554591 (item 12, from its second review): where, in events, each
+    /// colgroup that upstream's parser implies for a col directly in a table
+    /// ends: the index of the first event after the token that ends it,
+    /// ascending. The events have no element for an implied colgroup (nor
+    /// for an implied tbody or tr), since every checker would see it; only
+    /// the table checker needs it, to ignore the rows in a <template> in it,
+    /// as upstream's Table does (see
+    /// HTMLTableModelChecker.TableState.impliedColgroupIsOpen). It ends at
+    /// tokens that leave no event, a stray end tag or a start tag the parser
+    /// ignores, so the table checker can't work it out from the events.
+    var impliedColgroupEnds: [Int]
+    /// Case 554591 (item 12, from its third review): likewise, each </tr> or
+    /// </tbody> that comes while an HTML table is the current node, which
+    /// closes the tr, or the tbody and tr, that upstream's parser implied for
+    /// rows or cells directly in the table (if they're open), elements the
+    /// events don't have; it leaves no event, as the tree has nothing to
+    /// close. The table checker ends its own record of them there.
+    var impliedTablePartEnds: [HTMLImpliedTablePartEnd]
 }
 
 struct HTMLDocumentParser {
@@ -58,8 +84,8 @@ struct HTMLDocumentParser {
     func parse() -> HTMLParsedDocument {
         // Review item A2: the tokenizer runs the tree builder as it goes (see
         // HTMLTreeEventBuilder), so one pass produces both.
-        let (tokens, events) = HTMLTokenizer(source: source, locations: locations).tokenizeAndBuildTree()
-        return HTMLParsedDocument(tokens: tokens, events: events)
+        let (tokens, events, impliedColgroupEnds, impliedTablePartEnds) = HTMLTokenizer(source: source, locations: locations).tokenizeAndBuildTree()
+        return HTMLParsedDocument(tokens: tokens, events: events, impliedColgroupEnds: impliedColgroupEnds, impliedTablePartEnds: impliedTablePartEnds)
     }
 }
 
@@ -93,9 +119,17 @@ struct HTMLTreeEventBuilder {
         /// Review item A2: the element is inside a <template> (see
         /// isInTemplateContents).
         var isInTemplateContents: Bool
+        /// Case 554591 (item 12, from its second review): for an HTML table,
+        /// whether the colgroup upstream's parser implies for a col directly
+        /// in it is open (see endImpliedColgroup); unused otherwise.
+        var impliedColgroupIsOpen = false
     }
 
     private var events: [HTMLDocumentEvent] = [.startDocument]
+    // Case 554591 (item 12, from its second and third reviews): see
+    // HTMLParsedDocument.impliedColgroupEnds and impliedTablePartEnds.
+    private(set) var impliedColgroupEnds: [Int] = []
+    private(set) var impliedTablePartEnds: [HTMLImpliedTablePartEnd] = []
     private var stack: [OpenElement] = []
     // Quirks mode changes one implicit closure (<table> doesn't close an
     // open <p>); see HTMLImplicitClosures.isQuirksMode.
@@ -163,6 +197,17 @@ struct HTMLTreeEventBuilder {
             // stray <frame> or table part) still closes the head first, as
             // upstream's "anything else" rule in the head does.
             if nil != HTMLImplicitClosures.ignoredStartTag(name, namespace: namespace, sections: sections, inTemplateContents: isInTemplateContents, formIsOpen: stack.contains(where: { .html == $0.namespace && "form" == $0.name }), tableContext: tableContext) {
+                // (Case 554591, item 12, from its second review: in "in column
+                // group" mode the tag is "anything else" first, which ends a
+                // colgroup that is the current node before the tag is ignored
+                // in the table; an <html> start tag goes by the "in body" rules
+                // and ends nothing. HTMLValidator does the same.)
+                if "html" != name, let current = stack.last, .html == current.namespace, "colgroup" == current.name {
+                    closeTop()
+                }
+                if "html" != name {
+                    endImpliedColgroup()
+                }
                 if sections.isInHead, !isInTemplateContents, HTMLImplicitClosures.startTagImpliesBody(name, namespace: namespace) {
                     closeHead()
                     sections.noteBodyStarted()
@@ -194,11 +239,25 @@ struct HTMLTreeEventBuilder {
             // HTML's implied end tags apply only to tags processed as HTML
             // (an HTML element, or the <svg> or <math> that starts foreign
             // content), never to a foreign element's children.
+            // (Case 554591, item 12, from its second review: an implied
+            // colgroup ends at any start tag but col's, template's (a template
+            // goes in it) and html's, as an explicit one does in
+            // HTMLImplicitClosures.beforeStartTag.)
+            if !(.html == namespace && ("col" == name || "template" == name || "html" == name)) {
+                endImpliedColgroup()
+            }
             if !HTMLForeignContent.isHandledAsForeign(name, namespace: namespace, parentChildrenAreHTML: stack.last?.childrenAreHTML ?? true) {
                 closeImplicitElements(beforeStarting: name)
                 // Review item A2: a template's first content start tag sets
                 // its insertion mode (see TemplateContentMode).
                 noteTemplateContent(name, namespace: namespace)
+            }
+            // (Case 554591, item 12, from its second review: and a col directly
+            // in a table, where upstream's "in table" mode implies a colgroup
+            // for it, starts one. In a template's content, where the col goes
+            // in the template itself, it doesn't.)
+            if .html == namespace, "col" == name, let current = stack.last, .html == current.namespace, "table" == current.name {
+                stack[stack.count - 1].impliedColgroupIsOpen = true
             }
             sections.noteStartTag(name, namespace: namespace, ignored: false, inTemplateContents: isInTemplateContents)
             let range = HTMLSourceRange(offset: offset, length: length)
@@ -215,9 +274,38 @@ struct HTMLTreeEventBuilder {
                 stack.append(OpenElement(name: name, range: range, namespace: namespace, childrenAreHTML: HTMLForeignContent.childrenAreHTML(name, namespace: namespace, attributes: attributes), templateMode: .inTemplate, isInTemplateContents: isInTemplateContents))
             }
         case let .endTag(name, offset, length):
+            // Case 554591 (item 12, from its review): "in column group" mode
+            // ends a colgroup that is the current node at most end tags, as
+            // it does at most start tags (see
+            // HTMLImplicitClosures.endTagEndsColumnGroup); HTMLValidator's
+            // stack does the same.
+            if HTMLImplicitClosures.endTagEndsColumnGroup(name), let current = stack.last, .html == current.namespace, "colgroup" == current.name {
+                closeTop()
+            }
+            // (Case 554591, item 12, from its second review: an implied
+            // colgroup ends at the same end tags, and at </colgroup>, which
+            // closes it.)
+            if "col" != name, "template" != name {
+                endImpliedColgroup()
+            }
+            // (Case 554591, item 12, from its third review: see
+            // HTMLParsedDocument.impliedTablePartEnds. Any explicit tr or tbody
+            // would be the current node, or inside it; with the table current,
+            // one of these can only close what the parser implied.)
+            if "tr" == name || "tbody" == name, let current = stack.last, .html == current.namespace, "table" == current.name {
+                impliedTablePartEnds.append(HTMLImpliedTablePartEnd(index: events.count, name: name))
+            }
             closeElements(forEndTag: name, range: HTMLSourceRange(offset: offset, length: length))
         case let .text(content, offset, length):
             guard !content.isEmpty else { return }
+            // (Case 554591, item 12: and at non-space text, which upstream's
+            // parser then handles as text in the table; see textEndsColumnGroup.)
+            if let current = stack.last, .html == current.namespace, "colgroup" == current.name, HTMLImplicitClosures.textEndsColumnGroup(content) {
+                closeTop()
+            }
+            if let current = stack.last, current.impliedColgroupIsOpen, HTMLImplicitClosures.textEndsColumnGroup(content) {
+                endImpliedColgroup()
+            }
             // Review item A2: non-space text in the head (directly in it, not
             // in its <title> or <style>) ends the head and starts the body, as
             // upstream's "anything else" rule does; the text is then body
@@ -306,6 +394,19 @@ struct HTMLTreeEventBuilder {
         events.append(.endElement(name: element.name, range: element.range, implicit: true))
     }
 
+    /// Case 554591 (item 12, from its second review): the colgroup upstream's
+    /// parser implied for a col directly in the current node ending, if the
+    /// current node is an HTML table with one open (see
+    /// OpenElement.impliedColgroupIsOpen and
+    /// HTMLParsedDocument.impliedColgroupEnds). The rest of the token is then
+    /// handled as in the table, as upstream's "in column group" mode
+    /// reprocesses it in "in table" mode.
+    private mutating func endImpliedColgroup() {
+        guard let current = stack.last, current.impliedColgroupIsOpen else { return }
+        stack[stack.count - 1].impliedColgroupIsOpen = false
+        impliedColgroupEnds.append(events.count)
+    }
+
     private mutating func closeElements(forEndTag name: String, range: HTMLSourceRange) {
         // Review item A2: the same model as HTMLValidator's. With a foreign
         // current node, the end tag closes the nearest matching foreign element
@@ -379,6 +480,14 @@ struct HTMLTreeEventBuilder {
                 events.append(.startElement(HTMLStartElement(name: name, attributes: [], selfClosing: false, namespace: .html, range: range)))
                 events.append(.endElement(name: name, range: range, implicit: true))
             }
+            return
+        }
+        // (Case 554591, item 12, from its second review: </colgroup> closes
+        // only a colgroup that is the current node; anywhere else upstream's
+        // parser ignores it, whatever colgroup is open further down. This
+        // closed one around a template through the template, once the
+        // colgroup in the template had ended. HTMLValidator reports it.)
+        if "colgroup" == name, !(stack.last.map { .html == $0.namespace && "colgroup" == $0.name } ?? false) {
             return
         }
         guard !HTMLVocabulary.voidElements.contains(name), let match = htmlMatch else {
@@ -815,6 +924,33 @@ enum HTMLImplicitClosures {
         text.utf8.contains { 0x20 != $0 && 0x09 != $0 && 0x0A != $0 && 0x0C != $0 && 0x0D != $0 }
     }
 
+    /// Case 554591 (item 12, from its review): whether an end tag ends a
+    /// colgroup that is the current node, in "in column group" mode, before
+    /// it's handled as in the table ("anything else"): every end tag but
+    /// </colgroup>, which closes the colgroup itself, </col>, which is
+    /// ignored, and </template>, which goes by the "in head" rules. (Both
+    /// stacks kept the colgroup open, so a col after a stray </div> or </p>
+    /// in one was still in it; see beforeStartTag for start tags.)
+    static func endTagEndsColumnGroup(_ name: String) -> Bool {
+        "colgroup" != name && "col" != name && "template" != name
+    }
+
+    /// Case 554591 (item 12, from its second review): whether text ends a
+    /// colgroup that is the current node, in "in column group" mode: whether,
+    /// as upstream's tokenizer delivers it, it has a character other than
+    /// HTML's space characters. The text here is as written, so a reference
+    /// to one (&#10;, &#9;, &#13;, &Tab;, as some serializers write the CR of
+    /// a CRLF) is decoded first: containsNonSpace took "&#10;" for text, and
+    /// so ended the colgroup at it, giving a valid table a stray </colgroup>
+    /// and row-width errors. And a NUL doesn't count: upstream's tree builder
+    /// adds it to the colgroup as U+FFFD without leaving the mode
+    /// (zeroOriginatingReplacementCharacter). (A reference to a NUL, which
+    /// the tokenizer makes U+FFFD, does end it.)
+    static func textEndsColumnGroup(_ text: String) -> Bool {
+        let decoded = text.contains("&") ? HTMLCharacterReferences.decode(text) : text
+        return decoded.utf8.contains { 0x20 != $0 && 0x09 != $0 && 0x0A != $0 && 0x0C != $0 && 0x0D != $0 && 0x00 != $0 }
+    }
+
     /// Review item A2: the mode a start tag switches a template in "in
     /// template" mode to, or nil if it leaves it there (head content).
     /// Review item A2: the template whose insertion mode a start tag can set
@@ -910,6 +1046,22 @@ enum HTMLImplicitClosures {
         // the rest of the page stayed inside <head>, and an omitted </body>
         // then made </html> report open elements.
         if "head" == names.last, !headContentStartTags.contains(name) {
+            names.removeLast()
+        }
+        // Case 554591 (item 12, from its review): "in column group" mode. A
+        // colgroup that is the current node takes a col or a template; any
+        // other start tag ends it first and is then handled as it would be in
+        // the table ("anything else"; an <html> start tag goes by the "in
+        // body" rules instead, and ends nothing). Both stacks kept the
+        // colgroup open, so a <script>, <style> or <input type=hidden> stayed
+        // in it, and so did the col after one: <colgroup span=2><script>
+        // </script><col> got "Element “col” not allowed as child of
+        // “colgroup”", and the table checker set the span aside for that col,
+        // where upstream's parser ends the colgroup at the script and puts
+        // the col in a new one, as the port now does (without the colgroup it
+        // implies, which it doesn't model). See HTMLValidator and
+        // HTMLTreeEventBuilder for the end tags and text that end it too.
+        if "colgroup" == names.last, "col" != name, "template" != name, "html" != name {
             names.removeLast()
         }
 
