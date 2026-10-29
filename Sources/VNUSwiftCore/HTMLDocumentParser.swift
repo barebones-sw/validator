@@ -44,9 +44,20 @@ enum HTMLDocumentEvent: Equatable, Sendable {
 /// Case 554591 (item 12, from its third review): an end tag that closes a tr
 /// or tbody upstream's parser implied in an HTML table (see
 /// HTMLParsedDocument.impliedTablePartEnds): where in the events, and its name.
+/// (Case 554591, U11: and its range, where upstream's table checker reports
+/// the end of the row it closes; see HTMLTableModelChecker.finishCurrentRow.)
 struct HTMLImpliedTablePartEnd: Equatable, Sendable {
     var index: Int
     var name: String
+    var range: HTMLSourceRange
+}
+
+/// Case 554591 (U11, review items A17 and A43): the token that closed an
+/// element implicitly (see HTMLParsedDocument.implicitEndCauses): the index
+/// of the element's end event, and the token's range.
+struct HTMLImplicitEndCause: Equatable, Sendable {
+    var index: Int
+    var range: HTMLSourceRange
 }
 
 struct HTMLParsedDocument: Equatable, Sendable {
@@ -70,6 +81,20 @@ struct HTMLParsedDocument: Equatable, Sendable {
     /// events don't have; it leaves no event, as the tree has nothing to
     /// close. The table checker ends its own record of them there.
     var impliedTablePartEnds: [HTMLImpliedTablePartEnd]
+    /// Case 554591 (U11, review items A17 and A43): for each implicit end event
+    /// that closes an element still open when another token came (or the end
+    /// of the file), that token, ascending by event index. An implicit end
+    /// event's range is the element's start tag, which every checker that
+    /// reports an unclosed element relies on; but upstream reports what
+    /// happens at an element's end where the token that ended it is (its
+    /// locator is the tokenizer's, wherever the tree builder is then), and
+    /// its table checker reports a row's width at the row's end and a
+    /// colgroup's columns at the colgroup's, so the table checker needs the
+    /// token. It can be one that leaves no event of its own (a stray end tag
+    /// or an ignored start tag), so the events alone can't tell it. (A void
+    /// or self-closed element's end, which closes nothing still open, has no
+    /// entry: its event's range is the token.)
+    var implicitEndCauses: [HTMLImplicitEndCause]
 }
 
 struct HTMLDocumentParser {
@@ -84,8 +109,8 @@ struct HTMLDocumentParser {
     func parse() -> HTMLParsedDocument {
         // Review item A2: the tokenizer runs the tree builder as it goes (see
         // HTMLTreeEventBuilder), so one pass produces both.
-        let (tokens, events, impliedColgroupEnds, impliedTablePartEnds) = HTMLTokenizer(source: source, locations: locations).tokenizeAndBuildTree()
-        return HTMLParsedDocument(tokens: tokens, events: events, impliedColgroupEnds: impliedColgroupEnds, impliedTablePartEnds: impliedTablePartEnds)
+        let (tokens, events, impliedColgroupEnds, impliedTablePartEnds, implicitEndCauses) = HTMLTokenizer(source: source, locations: locations).tokenizeAndBuildTree()
+        return HTMLParsedDocument(tokens: tokens, events: events, impliedColgroupEnds: impliedColgroupEnds, impliedTablePartEnds: impliedTablePartEnds, implicitEndCauses: implicitEndCauses)
     }
 }
 
@@ -130,6 +155,11 @@ struct HTMLTreeEventBuilder {
     // HTMLParsedDocument.impliedColgroupEnds and impliedTablePartEnds.
     private(set) var impliedColgroupEnds: [Int] = []
     private(set) var impliedTablePartEnds: [HTMLImpliedTablePartEnd] = []
+    // Case 554591 (U11, review items A17 and A43): see
+    // HTMLParsedDocument.implicitEndCauses; the token being consumed (where a
+    // text token starts), or, once they all have been, the end of the file.
+    private(set) var implicitEndCauses: [HTMLImplicitEndCause] = []
+    private var currentTokenRange = HTMLSourceRange(offset: 0, length: 0)
     private var stack: [OpenElement] = []
     // Quirks mode changes one implicit closure (<table> doesn't close an
     // open <p>); see HTMLImplicitClosures.isQuirksMode.
@@ -175,6 +205,17 @@ struct HTMLTreeEventBuilder {
     }
 
     mutating func consume(_ token: HTMLToken) {
+        // (Case 554591, U11: for the elements it closes implicitly; see
+        // implicitEndCauses.)
+        switch token {
+        case let .startTag(_, _, _, _, offset, length), let .endTag(_, offset, length), let .doctype(offset, length), let .comment(_, offset, length), let .bogusMarkup(offset, length), let .parseError(_, offset, length):
+            currentTokenRange = HTMLSourceRange(offset: offset, length: length)
+        case let .text(_, offset, _):
+            // (From U11's review: text that ends a colgroup is placed where it
+            // starts, as vnu.jar has it, but not as the whole run, which can
+            // be any length; its extract was all of it.)
+            currentTokenRange = HTMLSourceRange(offset: offset, length: 0)
+        }
         switch token {
         case let .doctype(offset, length):
             events.append(.doctype(range: HTMLSourceRange(offset: offset, length: length)))
@@ -292,8 +333,8 @@ struct HTMLTreeEventBuilder {
             // HTMLParsedDocument.impliedTablePartEnds. Any explicit tr or tbody
             // would be the current node, or inside it; with the table current,
             // one of these can only close what the parser implied.)
-            if "tr" == name || "tbody" == name, let current = stack.last, .html == current.namespace, "table" == current.name {
-                impliedTablePartEnds.append(HTMLImpliedTablePartEnd(index: events.count, name: name))
+            if "tr" == name || "tbody" == name, closesImpliedTablePart(name) {
+                impliedTablePartEnds.append(HTMLImpliedTablePartEnd(index: events.count, name: name, range: HTMLSourceRange(offset: offset, length: length)))
             }
             closeElements(forEndTag: name, range: HTMLSourceRange(offset: offset, length: length))
         case let .text(content, offset, length):
@@ -361,7 +402,12 @@ struct HTMLTreeEventBuilder {
 
     /// The events, once every token has been consumed: the elements still
     /// open are closed (implicitly) at the end of the document.
-    mutating func finish() -> [HTMLDocumentEvent] {
+    mutating func finish(endOffset: Int) -> [HTMLDocumentEvent] {
+        // (Case 554591, U11: what's still open closes at the end of the file,
+        // `endOffset`, where HTMLValidator's "End of file seen…" is; see
+        // implicitEndCauses. From its review: not the end of the last token,
+        // which stops short of the end of a comment, say.)
+        currentTokenRange = HTMLSourceRange(offset: endOffset, length: 0)
         while !stack.isEmpty {
             closeTop()
         }
@@ -391,6 +437,8 @@ struct HTMLTreeEventBuilder {
 
     private mutating func closeTop() {
         guard let element = stack.popLast() else { return }
+        // (Case 554591, U11: see implicitEndCauses.)
+        implicitEndCauses.append(HTMLImplicitEndCause(index: events.count, range: currentTokenRange))
         events.append(.endElement(name: element.name, range: element.range, implicit: true))
     }
 
@@ -405,6 +453,37 @@ struct HTMLTreeEventBuilder {
         guard let current = stack.last, current.impliedColgroupIsOpen else { return }
         stack[stack.count - 1].impliedColgroupIsOpen = false
         impliedColgroupEnds.append(events.count)
+    }
+
+    /// Case 554591 (U11, from its review): whether a </tr> or </tbody> closes
+    /// the tr, or the tbody, upstream's parser implied in the innermost HTML
+    /// table (see HTMLParsedDocument.impliedTablePartEnds), which the tree has
+    /// no element for: the table is the innermost of the elements its table
+    /// scope stops at (a template is one too, and its content's implied parts
+    /// are the table checker's own), with no explicit tr in it (or, for
+    /// </tbody>, row group), which this end tag would close as an element; and
+    /// the table is the current node, or a cell directly in it is, or, for
+    /// </tr>, a cell directly in a row group of it. Upstream closes the cell
+    /// first ("in cell" mode passes the end tag on when the implied part is in
+    /// table scope), then the implied tr, and, for </tbody>, its tbody. This
+    /// recorded only the first, so the row went on: in
+    /// <table><td>a<td>b</tr><td>c, the c was in the same row as a and b.
+    private func closesImpliedTablePart(_ name: String) -> Bool {
+        guard let boundary = stack.lastIndex(where: { .html == $0.namespace && ("table" == $0.name || "template" == $0.name || "html" == $0.name) }), "table" == stack[boundary].name else {
+            return false
+        }
+        let inside = stack[(boundary + 1)...]
+        let closesAnElement = inside.contains { .html == $0.namespace && ("tr" == $0.name || ("tbody" == name && ("tbody" == $0.name || "thead" == $0.name || "tfoot" == $0.name))) }
+        guard !closesAnElement else { return false }
+        guard let first = inside.first else { return true }
+        let isCell = { (element: OpenElement) in .html == element.namespace && ("td" == element.name || "th" == element.name) }
+        if isCell(first) {
+            return true
+        }
+        guard "tr" == name, .html == first.namespace, "tbody" == first.name || "thead" == first.name || "tfoot" == first.name, let second = inside.dropFirst().first else {
+            return false
+        }
+        return isCell(second)
     }
 
     private mutating func closeElements(forEndTag name: String, range: HTMLSourceRange) {

@@ -272,6 +272,20 @@ public final class XMLValidator: NSObject, XMLParserDelegate, @unchecked Sendabl
         if "colgroup" == name || "col" == name, let span = attributeDict["span"], !HTMLValidator.isPositiveInteger(span), spanIsCheckedBySchema(name) {
             appendBadAttributeValue(span, attribute: "span", element: name, location: location)
         }
+        // (Case 554591, U11, and the notes' item 30: a cell's colspan and
+        // rowspan as the schema checks them (see HTMLValidator's), where it
+        // checks the cell: in a row, which is the only place it takes one,
+        // outside content it checks nothing in (see
+        // figureRulesSuppressedAbove). The table checker reported these, with
+        // its own reader, wherever it took the cell.)
+        if "td" == name || "th" == name, "tr" == elementStack.last, !(figureRulesSuppressedAbove.map { elementStack.count + foreignDepth > $0 } ?? false) {
+            if let colspan = attributeDict["colspan"], !HTMLValidator.isPositiveInteger(colspan) {
+                appendBadAttributeValue(colspan, attribute: "colspan", element: name, location: location)
+            }
+            if let rowspan = attributeDict["rowspan"], !HTMLValidator.isNonNegativeInteger(rowspan) {
+                appendBadAttributeValue(rowspan, attribute: "rowspan", element: name, location: location)
+            }
+        }
         if "table" == name {
             tableColumnSections.append(TableColumnSection(depth: elementStack.count, foreignDepth: foreignDepth))
             noteTablePlacement()
@@ -313,7 +327,20 @@ public final class XMLValidator: NSObject, XMLParserDelegate, @unchecked Sendabl
         if name == "ruby", let context = rubyContexts.popLast() {
             appendXHTMLRubyMessages(context)
         }
-        tableChecker.endElement(name)
+        // (Case 554591, U11: where the element ends, the parser's place now,
+        // where the table checker reports a row's messages and a colgroup's
+        // columns, as upstream's does.)
+        tableChecker.endElement(name, at: HTMLTableElementInfo(
+            name: name,
+            attributes: [:],
+            location: SourceLocation(
+                firstLine: parser.lineNumber,
+                firstColumn: parser.columnNumber,
+                lastLine: parser.lineNumber,
+                lastColumn: parser.columnNumber
+            ),
+            extract: nil
+        ))
         if let index = elementStack.lastIndex(of: name) {
             elementStack.removeSubrange(index...)
             anchorHrefStack.removeSubrange(index...)

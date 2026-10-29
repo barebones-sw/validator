@@ -1446,6 +1446,29 @@ public final class HTMLValidator: Sendable {
            spanIsCheckedBySchema(name, stack: contentStack, isMisplaced: elementFlags.contains(.inUncheckedElement), spannedColgroups: spannedColgroups, tableColumnSections: tableColumnSections) {
             appendError("Bad value \u{201c}\(span)\u{201d} for attribute \u{201c}span\u{201d} on element \u{201c}\(name)\u{201d}.", offset: offset, length: length, locations: locations, messages: &messages)
         }
+        // (Case 554591, U11, and the notes' item 30: a cell's colspan and
+        // rowspan as the schema checks them, with its datatypes, ASCII digits
+        // alone, not all zeros for a colspan (isPositiveInteger,
+        // isNonNegativeInteger), and wherever it checks the cell: not where it
+        // checks nothing (see schemaChecksChildren), as in a template, or in
+        // a table it has rejected, such as one in a <label>. The table checker
+        // reported these, with its own reader, which trimmed white space, so
+        // that " 2", "2 " and a no-break space before the digits passed,
+        // wherever it took the cell.)
+        if .html == namespace, "td" == name || "th" == name,
+           let parent = contentStack.last, .html == parent.namespace,
+           Self.schemaChecksChildren(of: parent, childNamespace: .html), !elementFlags.contains(.inUncheckedElement) {
+            // (In the order the attributes are written, as the schema checks
+            // them, the first of duplicates; from U11's review. XMLParser
+            // gives XMLValidator no order.)
+            var seen: Set<String> = []
+            for attribute in attributes where ("colspan" == attribute.name || "rowspan" == attribute.name) && seen.insert(attribute.name).inserted {
+                let value = HTMLCharacterReferences.decodeAttributeValue(attribute.value ?? "")
+                if "colspan" == attribute.name ? !Self.isPositiveInteger(value) : !Self.isNonNegativeInteger(value) {
+                    appendError("Bad value \u{201c}\(value)\u{201d} for attribute \u{201c}\(attribute.name)\u{201d} on element \u{201c}\(name)\u{201d}.", offset: offset, length: length, locations: locations, messages: &messages)
+                }
+            }
+        }
         if .html == contentStack.last?.namespace ?? .html, !(contentStack.last?.isInRejectedSubtree ?? false) {
             if let parentMessage = contentModelMessage(for: name, stack: contentStack, inHead: inHead) {
                 appendError(parentMessage, offset: offset, length: length, locations: locations, messages: &messages)
@@ -1683,6 +1706,14 @@ public final class HTMLValidator: Sendable {
     /// "Expected a digit but saw “ ” instead". (XMLValidator uses it too.)
     static func isPositiveInteger(_ value: String) -> Bool {
         !value.isEmpty && value.utf8.allSatisfy { 0x30 <= $0 && 0x39 >= $0 } && value.utf8.contains { 0x30 != $0 }
+    }
+
+    /// Case 554591 (U11): whether a value is a non-negative integer as the
+    /// schema's datatype for a cell's rowspan has it: ASCII digits, nothing
+    /// else, not even white space around them (see isPositiveInteger,
+    /// colspan's).
+    static func isNonNegativeInteger(_ value: String) -> Bool {
+        !value.isEmpty && value.utf8.allSatisfy { 0x30 <= $0 && 0x39 >= $0 }
     }
 
     /// Case 554591 (item 4): whether upstream's schema checks a child, in the
@@ -2439,6 +2470,10 @@ struct HTMLTableChecker {
         // impliedTablePartEnds).
         var nextImpliedColgroupEnd = 0
         var nextImpliedTablePartEnd = 0
+        // Case 554591 (U11, review items A17 and A43): the next of the tokens
+        // that closed an element implicitly (see
+        // HTMLParsedDocument.implicitEndCauses).
+        var nextImplicitEndCause = 0
 
         for (index, event) in document.events.enumerated() {
             while nextImpliedColgroupEnd < document.impliedColgroupEnds.count, document.impliedColgroupEnds[nextImpliedColgroupEnd] <= index {
@@ -2446,7 +2481,8 @@ struct HTMLTableChecker {
                 nextImpliedColgroupEnd += 1
             }
             while nextImpliedTablePartEnd < document.impliedTablePartEnds.count, document.impliedTablePartEnds[nextImpliedTablePartEnd].index <= index {
-                checker.impliedTablePartEnded(document.impliedTablePartEnds[nextImpliedTablePartEnd].name)
+                let end = document.impliedTablePartEnds[nextImpliedTablePartEnd]
+                checker.impliedTablePartEnded(end.name, at: position(named: end.name, range: end.range, locations: locations))
                 nextImpliedTablePartEnd += 1
             }
             switch event {
@@ -2455,9 +2491,26 @@ struct HTMLTableChecker {
                 if .html == element.namespace {
                     checker.startElement(info(for: element, locations: locations))
                 }
-            case let .endElement(name, _, _):
+            case let .endElement(name, range, implicit):
+                // (Case 554591, U11: where the element ended, which upstream's
+                // table checker reports a row's width and a colgroup's
+                // columns at: the end tag, or the token that closed the
+                // element implicitly, if it was still open then; an implicit
+                // end event's own range is the start tag.)
+                var endRange = range
+                if implicit {
+                    while nextImplicitEndCause < document.implicitEndCauses.count, document.implicitEndCauses[nextImplicitEndCause].index < index {
+                        nextImplicitEndCause += 1
+                    }
+                    if nextImplicitEndCause < document.implicitEndCauses.count, index == document.implicitEndCauses[nextImplicitEndCause].index {
+                        endRange = document.implicitEndCauses[nextImplicitEndCause].range
+                    }
+                }
                 if !(foreignStack.popLast() ?? false) {
-                    checker.endElement(name)
+                    // (Only the ends that can carry a message get a position,
+                    // as working one out for every element in a large document
+                    // isn't free.)
+                    checker.endElement(name, at: Self.positionedEnds.contains(name) ? position(named: name, range: endRange, locations: locations) : nil)
                 }
             default:
                 continue
@@ -2470,6 +2523,23 @@ struct HTMLTableChecker {
             }
             return .error(diagnostic.message, location: diagnostic.location, extract: diagnostic.extract)
         }
+    }
+
+    /// Case 554591 (U11): the elements whose end the table checker reports at
+    /// (see HTMLTableModelChecker.endElement): a row's, or the row group's,
+    /// table's or template's that ends the row the parser implied, for the
+    /// row's messages; and a colgroup's, for its columns.
+    private static let positionedEnds: Set<String> = ["tr", "tbody", "thead", "tfoot", "colgroup", "table", "template"]
+
+    /// Case 554591 (U11): a place in the source for the table checker's
+    /// messages, as an element named for what ends there.
+    private func position(named name: String, range: HTMLSourceRange, locations: SourceLocationMap) -> HTMLTableElementInfo {
+        HTMLTableElementInfo(
+            name: name,
+            attributes: [:],
+            location: locations.location(offset: range.offset, length: range.length),
+            extract: locations.extract(offset: range.offset, length: range.length)
+        )
     }
 
     private func info(for element: HTMLStartElement, locations: SourceLocationMap) -> HTMLTableElementInfo {
@@ -2506,11 +2576,36 @@ struct HTMLTableModelChecker {
     private struct TableState {
         var element: HTMLTableElementInfo
         var role: String?
-        var columnMarkupCount = 0
-        var globalRowCount = 0
-        var rows: [TableRow] = []
-        var cellEstablishedColumns: Set<Int> = []
-        var cellStartColumns: Set<Int> = []
+        /// Case 554591 (U11, review item A17): the column count rows are held
+        /// to (upstream's Table.columnCount): the columns the column markup
+        /// establishes, from 0 at the first colgroup or col (see
+        /// noteColumnMarkup), or else the first row's width, set at that
+        /// row's end (see finishCurrentRow); -1 until one of those. It was
+        /// the column markup's count alone; the rows were kept until the
+        /// table's end, and the first of them with any width at all stood
+        /// for the first row.
+        var columnCount = -1
+        /// Case 554591 (U11, review item A43): how many columns the table has
+        /// so far (upstream's realColumnCount): the column markup's, then as
+        /// many as the widest row so far has needed. A cell that reaches past
+        /// it establishes the columns past it (see noteCellColumns).
+        var realColumnCount = 0
+        /// Case 554591 (U11, review item A43 and the notes' item 29): the runs
+        /// of columns an element established in which no cell has begun yet,
+        /// in upstream's order (its ColumnRange list), linked from
+        /// firstColumnRange through ColumnRange.next, with the last one; and,
+        /// in the open row, the range its cells have reached and the one
+        /// before that (upstream's currentColRange and previousColRange).
+        /// Each is reported at the table's end, naming the element that
+        /// established it, where that element is. This kept the columns any
+        /// cell covered and the ones a cell began in, and reported the
+        /// difference as established by a td, at the table: it never named a
+        /// th, nor a col or colgroup, whose columns it didn't report at all.
+        var columnRanges: [ColumnRange] = []
+        var firstColumnRange: Int?
+        var lastColumnRange: Int?
+        var currentColumnRange: Int?
+        var previousColumnRange: Int?
         var thIDs: Set<String> = []
         var pendingHeaderReferences: [HeaderReference] = []
         var rowGroup: RowGroupState?
@@ -2573,8 +2668,22 @@ struct HTMLTableModelChecker {
 
     private struct RowGroupState {
         var name: String?
-        var rows: [TableRow] = []
-        var openSpans: [OpenSpan] = []
+        /// Case 554591 (U11, review item A17): the row group's current row,
+        /// counted from 0 within it (upstream's RowGroup.currentRow); -1
+        /// before its first row.
+        var currentRow = -1
+        /// Case 554591 (U11, review item A17): the cells from the rows so far
+        /// that span into a later row (upstream's cellsIfEffect), each
+        /// dropped at the end of the last row it spans (see
+        /// finishCurrentRow); the ones left when the group ends span past it
+        /// (see finishCurrentRowGroup). This kept every cell with a rowspan,
+        /// with the row after its last as a number counted through the whole
+        /// table, and compared that with the number of the group's last row,
+        /// one short: so a rowspan that ended on the group's last row, as in
+        /// <tr><th rowspan="2">…</th><td>…</td></tr><tr><td>…</td></tr>, the
+        /// usual way to use one, was "Table cell spans past the end of its row
+        /// group".
+        var cellsInEffect: [PlacedCell] = []
         /// Case 554591 (item 12, from its third review): for a row group the
         /// table checker starts for a row (see startRow), whether it stands
         /// for the tbody an HTML parser implies, an element in upstream's tree,
@@ -2585,30 +2694,53 @@ struct HTMLTableModelChecker {
         var isImpliedTbody = false
     }
 
+    /// Case 554591 (U11, review item A17): the open row, as upstream's
+    /// RowGroup keeps it while one is: the column its next cell goes in (the
+    /// insertion point); the cells still in effect from earlier rows, by
+    /// column, and how many of them the insertion point has passed; and
+    /// whether a cell has begun on it. It kept the set of columns in use and
+    /// the rightmost one, so a cell spanning down past a gap made a row as
+    /// wide as that cell's right edge, where upstream counts a row's width
+    /// only to its insertion point, past the spanning cells that start there.
     private struct ActiveRow {
-        var globalNumber: Int
-        var numberInGroup: Int
-        var occupiedColumns: Set<Int>
-        var startColumns: Set<Int> = []
-        var sourceCellCount = 0
-        var width: Int
+        var insertionPoint = 0
+        var cellsOnCurrentRow: [PlacedCell]
+        var nextOldCell = 0
+        var hadCells = false
+    }
+
+    /// Case 554591 (U11, review item A17): a cell once placed, as upstream's
+    /// Cell keeps it: its columns, from left up to but not including right;
+    /// the first row of its group that it doesn't span to, or
+    /// rowspanZeroBottom for one that spans to the group's end; and the cell,
+    /// where its messages go.
+    private struct PlacedCell {
+        var left: Int
+        var right: Int
+        var bottom: Int
         var element: HTMLTableElementInfo
     }
 
-    private struct TableRow {
-        var width: Int
-        var startCellCount: Int
-        var numberInGroup: Int
-        var groupName: String?
-        var element: HTMLTableElementInfo
+    /// Case 554591 (U11, review item A43): a run of columns that one element
+    /// established and in which no cell has begun yet (upstream's
+    /// ColumnRange): the element's name and where it is (a colgroup's where
+    /// it ended, as upstream has it), its columns from left up to but not
+    /// including right, and the next range in the table's list.
+    private struct ColumnRange {
+        var element: String
+        var position: HTMLTableElementInfo
+        var left: Int
+        var right: Int
+        var next: Int?
     }
 
-    private struct OpenSpan {
-        var columns: Range<Int>
-        var endRow: Int?
-        var groupName: String?
-        var cell: HTMLTableElementInfo
-    }
+    /// Case 554591 (U11, review item A17): upstream's Cell.MAX_ROWSPAN, the
+    /// most a rowspan counts (a bigger one is an error, and counts this), and
+    /// also, as a cell's bottom, the mark of a cell that spans to the end of
+    /// its group (rowspan="0"). So a rowspan of 65534 or more, and even one
+    /// whose bottom row lands on 65534, spans to the group's end upstream,
+    /// and is never reported as spanning past it.
+    private static let rowspanZeroBottom = 65534
 
     private struct HeaderReference {
         var cellName: String
@@ -2734,7 +2866,7 @@ struct HTMLTableModelChecker {
             // implied for the rows or cells before it; see
             // impliedTablePartEnded.)
             if .html == mode, "caption" == element.name || "colgroup" == element.name || "col" == element.name, "table" == elementStack.last {
-                endImpliedTableParts(closesRowGroup: true)
+                endImpliedTableParts(closesRowGroup: true, at: element)
             }
             // (Case 554591, item 12, from its second review: see
             // TableState.impliedColgroupIsOpen.)
@@ -2816,10 +2948,10 @@ struct HTMLTableModelChecker {
             }
             return false
         case (.inTableBody, "tr"):
-            endImpliedRow(template: index)
+            endImpliedRow(template: index, at: element)
             return false
         case (.inTable, "tr"):
-            endImpliedRow(template: index)
+            endImpliedRow(template: index, at: element)
             if nil == openTemplates[index].impliedRowGroup {
                 startImpliedRowGroup(template: index, at: element)
             }
@@ -2827,11 +2959,11 @@ struct HTMLTableModelChecker {
         case (.inTableBody, "colgroup"), (.inTableBody, "col"):
             // (No row group is open to close, as in "in table body" mode a
             // template has none: dropped.)
-            endImpliedRow(template: index)
+            endImpliedRow(template: index, at: element)
             return true
         case (.inTableBody, _), (.inTable, _):
-            endImpliedRow(template: index)
-            endImpliedRowGroup(template: index)
+            endImpliedRow(template: index, at: element)
+            endImpliedRowGroup(template: index, at: element)
             return false
         case (.inRow, "td"), (.inRow, "th"), (.inColumnGroup, "col"):
             return false
@@ -2853,7 +2985,9 @@ struct HTMLTableModelChecker {
             currentTable.suppressedDepth += 1
         } else {
             openTemplates[index].impliedRowGroup = .taken
-            finishCurrentRow()
+            // (Case 554591, U11: the open row, if any, ends where the tag the
+            // tbody is implied for is; see finishCurrentRow.)
+            finishCurrentRow(at: element)
             finishCurrentRowGroup()
             currentTable.rowGroup = RowGroupState(name: "tbody", isImpliedTbody: true)
         }
@@ -2877,8 +3011,9 @@ struct HTMLTableModelChecker {
 
     /// Case 554591 (item 12, from its third review): a template's implied tr
     /// ending (see noteTemplateTablePart), at the template's next row, row
-    /// group, caption or column markup, or at its end.
-    private mutating func endImpliedRow(template index: Int) {
+    /// group, caption or column markup, or at its end. (Case 554591, U11: the
+    /// row's messages go where it ends, `position`; see finishCurrentRow.)
+    private mutating func endImpliedRow(template index: Int, at position: HTMLTableElementInfo?) {
         guard let part = openTemplates[index].impliedRow else { return }
         openTemplates[index].impliedRow = nil
         guard !tableStack.isEmpty, tableStack.count == openTemplates[index].tableDepth else { return }
@@ -2886,14 +3021,14 @@ struct HTMLTableModelChecker {
         case .suppressed:
             currentTable.suppressedDepth -= 1
         case .taken:
-            finishCurrentRow()
+            finishCurrentRow(at: position)
         }
     }
 
     /// Case 554591 (item 12, from its third review): a template's implied
     /// tbody ending, as its implied tr does (see endImpliedRow), but not at a
     /// row, which is in it.
-    private mutating func endImpliedRowGroup(template index: Int) {
+    private mutating func endImpliedRowGroup(template index: Int, at position: HTMLTableElementInfo?) {
         guard let part = openTemplates[index].impliedRowGroup else { return }
         openTemplates[index].impliedRowGroup = nil
         guard !tableStack.isEmpty, tableStack.count == openTemplates[index].tableDepth else { return }
@@ -2901,7 +3036,7 @@ struct HTMLTableModelChecker {
         case .suppressed:
             currentTable.suppressedDepth -= 1
         case .taken:
-            finishCurrentRow()
+            finishCurrentRow(at: position)
             finishCurrentRowGroup()
         }
     }
@@ -2917,7 +3052,7 @@ struct HTMLTableModelChecker {
             currentTable.suppressedDepth += 1
         } else {
             currentTable.pendingColgroupSpan = Self.upstreamSpan(nil)
-            currentTable.hasColumnMarkup = true
+            noteColumnMarkup()
         }
     }
 
@@ -2929,17 +3064,24 @@ struct HTMLTableModelChecker {
     /// as upstream's parser closes them. The table checker kept them open, so
     /// a row or row group in a template after them was taken to be inside
     /// them, and ignored (see isSuppressedStart).
-    mutating func impliedTablePartEnded(_ name: String) {
-        guard .html == mode, !tableStack.isEmpty, "table" == elementStack.last else { return }
-        endImpliedTableParts(closesRowGroup: "tbody" == name)
+    /// (Case 554591, U11: `position` is the end tag's, where the row's
+    /// messages go; see finishCurrentRow. From U11's review: it can come with
+    /// a cell still open in the tree, one directly in the table or in a row
+    /// group, whose implied tr upstream's parser closes, cell and all; the
+    /// tree builder decides that, and that the table is the innermost one
+    /// open, so this no longer requires the table to be the current node.)
+    mutating func impliedTablePartEnded(_ name: String, at position: HTMLTableElementInfo) {
+        guard .html == mode, !tableStack.isEmpty else { return }
+        endImpliedTableParts(closesRowGroup: "tbody" == name, at: position)
     }
 
     /// Case 554591 (item 12, from its third review): the tr an HTML parser
     /// implied directly in the current table ending, which is the open row
     /// when the table is the innermost open element; and, if
-    /// `closesRowGroup`, the tbody it implied too.
-    private mutating func endImpliedTableParts(closesRowGroup: Bool) {
-        finishCurrentRow()
+    /// `closesRowGroup`, the tbody it implied too. (U11: at the tag that ends
+    /// them, `position`.)
+    private mutating func endImpliedTableParts(closesRowGroup: Bool, at position: HTMLTableElementInfo) {
+        finishCurrentRow(at: position)
         if closesRowGroup, currentTable.rowGroup?.isImpliedTbody ?? false {
             finishCurrentRowGroup()
         }
@@ -2956,11 +3098,20 @@ struct HTMLTableModelChecker {
             currentTable.impliedColgroupIsSuppressed = false
             currentTable.suppressedDepth -= 1
         } else {
-            finishCurrentColgroup()
+            // (Case 554591, U11: with no place, as the col that opened it has
+            // set its span aside, so it establishes no columns of its own; see
+            // finishCurrentColgroup.)
+            finishCurrentColgroup(at: nil)
         }
     }
 
-    mutating func endElement(_ name: String) {
+    /// The end of an element, at `position` (Case 554591, U11): the end tag,
+    /// or the token that closed the element if it was still open then. It's
+    /// where upstream's table checker reports a row's messages and a
+    /// colgroup's columns, so it's needed only at the end of a tr, row group,
+    /// table, template or colgroup (see finishCurrentRow and
+    /// finishCurrentColgroup); nil elsewhere.
+    mutating func endElement(_ name: String, at position: HTMLTableElementInfo?) {
         // Review item A9: </tr>, </tbody>, </thead> and </tfoot> used to
         // finish the current row or row group even with no table open, and
         // currentTable traps on an empty stack. That crashed the XPC service
@@ -2975,14 +3126,14 @@ struct HTMLTableModelChecker {
         if !tableStack.isEmpty, 0 < currentTable.suppressedDepth, Self.tableElementsTableRoutes.contains(name) {
             currentTable.suppressedDepth -= 1
         } else if name == "tr", !tableStack.isEmpty {
-            finishCurrentRow()
+            finishCurrentRow(at: position)
         } else if Self.rowGroupElements.contains(name), !tableStack.isEmpty {
-            finishCurrentRow()
+            finishCurrentRow(at: position)
             finishCurrentRowGroup()
         } else if name == "colgroup", !tableStack.isEmpty {
-            finishCurrentColgroup()
+            finishCurrentColgroup(at: position)
         } else if name == "table", !tableStack.isEmpty {
-            finishCurrentRow()
+            finishCurrentRow(at: position)
             finishCurrentRowGroup()
             finishCurrentTable()
         }
@@ -2994,8 +3145,8 @@ struct HTMLTableModelChecker {
         // elements that have ended with it; a template's implied tbody and tr
         // end with it.)
         while let last = openTemplates.last, last.index >= elementStack.count {
-            endImpliedRow(template: openTemplates.count - 1)
-            endImpliedRowGroup(template: openTemplates.count - 1)
+            endImpliedRow(template: openTemplates.count - 1, at: position)
+            endImpliedRowGroup(template: openTemplates.count - 1, at: position)
             openTemplates.removeLast()
         }
         while let last = tableElementIndices.last, last >= elementStack.count {
@@ -3004,8 +3155,11 @@ struct HTMLTableModelChecker {
     }
 
     mutating func finish() -> [HTMLTableDiagnostic] {
+        // (A table still open here, which only an XHTML document that the XML
+        // parser stopped on can leave, ends with no place of its own; its
+        // row's messages go at the row's table; see finishCurrentRow.)
         while !tableStack.isEmpty {
-            finishCurrentRow()
+            finishCurrentRow(at: nil)
             finishCurrentRowGroup()
             finishCurrentTable()
         }
@@ -3051,7 +3205,9 @@ struct HTMLTableModelChecker {
         case "tbody", "thead", "tfoot":
             // (Case 554591, item 12: rows have started; see sawRowGroup.)
             currentTable.sawRowGroup = true
-            finishCurrentRow()
+            // (Case 554591, U11: a row the parser implied ends at this tag;
+            // see finishCurrentRow.)
+            finishCurrentRow(at: element)
             finishCurrentRowGroup()
             currentTable.rowGroup = RowGroupState(name: element.name)
         case "tr":
@@ -3159,8 +3315,8 @@ struct HTMLTableModelChecker {
         // colgroup counts is now upstream's. (A bad span is reported where the
         // schema checks it, by HTMLValidator and XMLValidator.)
         appendSpanLimitMessage(element.attributes["span"], element: element)
+        noteColumnMarkup()
         currentTable.pendingColgroupSpan = Self.upstreamSpan(element.attributes["span"])
-        currentTable.hasColumnMarkup = true
     }
 
     private mutating func processCol(_ element: HTMLTableElementInfo) {
@@ -3171,21 +3327,50 @@ struct HTMLTableModelChecker {
         // the first such col if the span was a positive number. The cols
         // are then what the colgroup counts, in an XHTML document as well,
         // where they used to be left out when the colgroup had a span.
-        let isInColgroup = nil != currentTable.pendingColgroupSpan
+        // (Case 554591, U11: the span's limit is checked first, as upstream's
+        // TableChecker reads the span, with clampSpan, before its Table
+        // takes the col and gives the warning below.)
+        appendSpanLimitMessage(element.attributes["span"], element: element)
         if let pendingSpan = currentTable.pendingColgroupSpan {
             if pendingSpan > 0 {
                 append("A col element causes a span attribute with value \(pendingSpan) to be ignored on the parent colgroup.", at: element, warning: true)
             }
             currentTable.pendingColgroupSpan = 0
         }
-        if .html == mode || isInColgroup || "table" == elementStack.last {
-            // (Case 554591, item 12: the col counts as many columns as
-            // upstream reads its span as (see upstreamSpan): none for
-            // span="0", one for span="2 " or span="99999999999", which this
-            // counted, by its own reading, as one, two and 1000 columns.)
-            appendSpanLimitMessage(element.attributes["span"], element: element)
-            currentTable.columnMarkupCount += abs(Self.upstreamSpan(element.attributes["span"]))
+        // (Case 554591, item 12: the col counts as many columns as upstream
+        // reads its span as (see upstreamSpan): none for span="0", one for
+        // span="2 " or span="99999999999", which this counted, by its own
+        // reading, as one, two and 1000 columns.)
+        // (Case 554591, U11, review item A43 and the notes' item 29: they are
+        // columns the col establishes, as upstream's Table.startCol records
+        // them, so the ones no cell begins in are reported at the table's end,
+        // at the col. Even none: a span="0" col's empty run is reported
+        // upstream as "Table columns in range 1…0", say, which no cell can
+        // begin in.)
+        // (From U11's review: wherever the col is, as upstream's Table takes
+        // any col its TableChecker hands it in a state that takes one, which
+        // isSuppressedStart has already decided. In an XHTML document this
+        // counted a col only in a colgroup or directly in the table, so one in
+        // a <div>, a caption or a template before the rows added no columns,
+        // no span limit message, and no range, and a table it completed got
+        // a false row-width error.)
+        noteColumnMarkup()
+        let left = currentTable.columnCount
+        let right = left + abs(Self.upstreamSpan(element.attributes["span"]))
+        appendColumnRange("col", at: element, left: left, right: right)
+        currentTable.columnCount = right
+        currentTable.realColumnCount = right
+    }
+
+    /// Case 554591 (U11, review item A17): column markup that upstream's Table
+    /// takes, its first making the table's width hard (see
+    /// TableState.hasColumnMarkup), with the column count starting from 0
+    /// rather than from the first row's width (see TableState.columnCount),
+    /// as upstream's startColGroup and startCol do in IN_TABLE_AT_START.
+    private mutating func noteColumnMarkup() {
+        if !currentTable.hasColumnMarkup {
             currentTable.hasColumnMarkup = true
+            currentTable.columnCount = 0
         }
     }
 
@@ -3194,10 +3379,19 @@ struct HTMLTableModelChecker {
     /// number; one column for a colgroup with no span or a bad one; and
     /// none for span="0", or once a col in it has set the span aside. (From
     /// the second review: an implied colgroup's, too; see
-    /// impliedColgroupEnded.)
-    private mutating func finishCurrentColgroup() {
+    /// impliedColgroupEnded.) (Case 554591, U11, review item A43 and the
+    /// notes' item 29: the columns it counts are ones it establishes, as
+    /// upstream's Table.endColGroup records them, at `position`, where it
+    /// ends, as upstream has it; the table's own place if there's none.)
+    private mutating func finishCurrentColgroup(at position: HTMLTableElementInfo?) {
         guard let pendingSpan = currentTable.pendingColgroupSpan else { return }
-        currentTable.columnMarkupCount += abs(pendingSpan)
+        if 0 != pendingSpan {
+            let left = currentTable.columnCount
+            let right = left + abs(pendingSpan)
+            appendColumnRange("colgroup", at: position ?? currentTable.element, left: left, right: right)
+            currentTable.columnCount = right
+        }
+        currentTable.realColumnCount = currentTable.columnCount
         currentTable.pendingColgroupSpan = nil
     }
 
@@ -3250,34 +3444,34 @@ struct HTMLTableModelChecker {
 
     private mutating func startRow(_ element: HTMLTableElementInfo) {
         if currentTable.row != nil {
-            finishCurrentRow()
+            // (Case 554591, U11: the row the parser implied ends at the tag
+            // that starts the next; see finishCurrentRow.)
+            finishCurrentRow(at: element)
+        }
+        // (Case 554591, U11: in an HTML document, a row or cell directly in
+        // the table after a template's rows is in a tbody the parser implies,
+        // which upstream's Table takes as a row group starting, ending the
+        // implicit one the template's rows were in. This went on numbering
+        // the rows in that one.)
+        if .html == mode, "table" == elementStack.last, let group = currentTable.rowGroup, nil == group.name, !group.isImpliedTbody {
+            finishCurrentRowGroup()
         }
         if currentTable.rowGroup == nil {
             // (Case 554591, item 12, from its third review: see isImpliedTbody.)
             currentTable.rowGroup = RowGroupState(name: nil, isImpliedTbody: .html == mode && "table" == elementStack.last)
         }
 
-        currentTable.globalRowCount += 1
-        let globalNumber = currentTable.globalRowCount
-        var occupied: Set<Int> = []
-        if let group = currentTable.rowGroup {
-            for span in group.openSpans {
-                if span.endRow == nil || globalNumber < span.endRow! {
-                    for column in span.columns {
-                        occupied.insert(column)
-                    }
-                }
-            }
-        }
-        let initialWidth = (occupied.max() ?? -1) + 1
-        let numberInGroup = (currentTable.rowGroup?.rows.count ?? 0) + 1
-        currentTable.row = ActiveRow(
-            globalNumber: globalNumber,
-            numberInGroup: numberInGroup,
-            occupiedColumns: occupied,
-            width: max(0, initialWidth),
-            element: element
-        )
+        // Case 554591 (U11, review items A17 and A43): the row starts as it
+        // does in upstream's Table.startRow and RowGroup.startRow: the next
+        // row of its group, whose cells are looked for in the column ranges
+        // from the first on (see noteCellColumns), and placed among the cells
+        // still in effect from earlier rows, taken in column order (see
+        // findInsertionPoint).
+        currentTable.currentColumnRange = currentTable.firstColumnRange
+        currentTable.previousColumnRange = nil
+        currentTable.rowGroup?.currentRow += 1
+        let cellsOnCurrentRow = (currentTable.rowGroup?.cellsInEffect ?? []).sorted { $0.left < $1.left }
+        currentTable.row = ActiveRow(cellsOnCurrentRow: cellsOnCurrentRow)
     }
 
     private mutating func startCell(_ element: HTMLTableElementInfo) {
@@ -3305,86 +3499,229 @@ struct HTMLTableModelChecker {
             append("The \u{201c}role\u{201d} attribute must not be used on a \u{201c}td\u{201d} element which has a \u{201c}table\u{201d} ancestor with no \u{201c}role\u{201d} attribute, or with a \u{201c}role\u{201d} attribute whose value is \u{201c}table\u{201d}, \u{201c}grid\u{201d}, or \u{201c}treegrid\u{201d}.", at: element)
         }
 
-        let colspan = cellColspan(for: element)
-        let rowspan = cellRowspan(for: element)
-        guard colspan > 0 else { return }
-
-        var row = currentTable.row!
-        var startColumn = 0
-        while row.occupiedColumns.contains(startColumn) {
-            startColumn += 1
+        // Case 554591 (U11, review item A17): the cell's spans as upstream's
+        // Table reads them (Math.abs of AttributeUtil's parsePositiveInteger
+        // for colspan, and of parseNonNegativeInteger for rowspan; see
+        // upstreamCellSpan), with Cell's limits, the rowspan's checked first.
+        // The checker's own reading took a span with a trailing space or a
+        // no-break space, or one too big for a Java int (99999999999), for a
+        // number, which upstream reads as 1 (with no limit message for the
+        // big one); and a rowspan over the limit spanned 65534 rows, where
+        // upstream's spans to the end of its group (see rowspanZeroBottom).
+        // (Whether a span is a bad value is the schema's to say, with its own
+        // datatypes, where it checks the cell; HTMLValidator and XMLValidator
+        // say it now. This said it, by its own reading, wherever it took the
+        // cell.)
+        var rowspan = Self.upstreamCellSpan(element.attributes["rowspan"], isPositive: false)
+        var colspan = Self.upstreamCellSpan(element.attributes["colspan"], isPositive: true)
+        if rowspan > Self.rowspanZeroBottom {
+            append("The value of the \u{201c}rowspan\u{201d} attribute must be less than or equal to 65534.", at: element)
+            rowspan = Self.rowspanZeroBottom
         }
-        let columns = startColumn..<(startColumn + colspan)
-        if columns.contains(where: { row.occupiedColumns.contains($0) }) {
-            append("Table cell is overlapped by later table cell.", at: element)
-        }
-
-        for column in columns {
-            row.occupiedColumns.insert(column)
-            currentTable.cellEstablishedColumns.insert(column)
-        }
-        row.startColumns.insert(startColumn)
-        row.sourceCellCount += 1
-        row.width = max(row.width, columns.upperBound)
-        currentTable.cellStartColumns.insert(startColumn)
-
-        if rowspan > 1 || rowspan == 0 {
-            let groupName = currentTable.rowGroup?.name
-            currentTable.rowGroup?.openSpans.append(OpenSpan(
-                columns: columns,
-                endRow: rowspan == 0 ? nil : row.globalNumber + rowspan,
-                groupName: groupName,
-                cell: element
-            ))
+        if colspan > 1000 {
+            append("The value of the \u{201c}colspan\u{201d} attribute must be less than or equal to 1000.", at: element)
+            colspan = 1000
         }
 
+        // Case 554591 (U11, review items A17 and A43): the cell is placed as
+        // upstream's RowGroup.cell places it: at the insertion point, past the
+        // cells from earlier rows that start at or before it; and its bottom
+        // is the row after its last, in its group, unless it spans to the
+        // group's end. It's still in effect after this row if it spans
+        // further. It overlaps any later cell from an earlier row it reaches,
+        // which upstream reports at both: the earlier one is "overlapped by
+        // later table cell", this one "overlaps an earlier table cell". This
+        // reported only the first, at this cell. (The column ranges are
+        // updated first, as upstream's Table.cell is; see noteCellColumns.)
+        guard var row = currentTable.row else { return }
+        let top = currentTable.rowGroup?.currentRow ?? 0
+        row.hadCells = true
+        Self.findInsertionPoint(&row)
+        let bottom = (0 == rowspan || Self.rowspanZeroBottom == rowspan) ? Self.rowspanZeroBottom : top + rowspan
+        let cell = PlacedCell(left: row.insertionPoint, right: row.insertionPoint + colspan, bottom: bottom, element: element)
+        noteCellColumns(cell)
+        if cell.bottom > top + 1 {
+            currentTable.rowGroup?.cellsInEffect.append(cell)
+        }
+        row.insertionPoint = cell.right
+        for earlier in row.cellsOnCurrentRow[row.nextOldCell...] where !(cell.right <= earlier.left || earlier.right <= cell.left) {
+            append("Table cell is overlapped by later table cell.", at: earlier.element)
+            append("Table cell overlaps an earlier table cell.", at: element)
+        }
         currentTable.row = row
     }
 
-    private mutating func finishCurrentRow() {
+    /// Case 554591 (U11, review item A17): upstream's RowGroup.findInsertionPoint:
+    /// the insertion point moves past each cell from an earlier row, in column
+    /// order, that starts at or before it, to that cell's right edge.
+    private static func findInsertionPoint(_ row: inout ActiveRow) {
+        while row.nextOldCell < row.cellsOnCurrentRow.count {
+            let earlier = row.cellsOnCurrentRow[row.nextOldCell]
+            if row.insertionPoint < earlier.left {
+                break
+            }
+            row.insertionPoint = max(row.insertionPoint, earlier.right)
+            row.nextOldCell += 1
+        }
+    }
+
+    /// Case 554591 (U11, review item A17): a cell's colspan or rowspan as
+    /// upstream's Table reads it: the absolute value of
+    /// AttributeUtil.parsePositiveInteger (`isPositive`) or
+    /// parseNonNegativeInteger, so 1 when there's none, or when it isn't a
+    /// number a Java int can hold once leading spaces, tabs, LFs and CRs are
+    /// skipped (see upstreamNonNegativeInteger), or when it's negative, or a
+    /// colspan of 0; otherwise the number ("-0" is a rowspan of 0).
+    private static func upstreamCellSpan(_ value: String?, isPositive: Bool) -> Int {
+        guard let value, let number = upstreamNonNegativeInteger(value), !isPositive || 0 < number else { return 1 }
+        return number
+    }
+
+    /// Case 554591 (U11, review item A43 and the notes' item 29): upstream's
+    /// Table.cell, for a cell just placed: the columns it reaches past the
+    /// table's columns so far are columns it establishes, all but the one it
+    /// begins in if it begins right at the edge; otherwise the column it
+    /// begins in is looked for in the column ranges, from the one the row
+    /// has reached, and taken out of the range it's in (splitting it, if it's
+    /// in the middle), as a cell has now begun in it.
+    private mutating func noteCellColumns(_ cell: PlacedCell) {
+        let left = cell.left
+        let right = cell.right
+        if right > currentTable.realColumnCount {
+            if left == currentTable.realColumnCount {
+                if left + 1 != right {
+                    appendColumnRange(cell.element.name, at: cell.element, left: left + 1, right: right)
+                }
+                currentTable.realColumnCount = right
+                return
+            }
+            appendColumnRange(cell.element.name, at: cell.element, left: currentTable.realColumnCount, right: right)
+            currentTable.realColumnCount = right
+        }
+        while let current = currentTable.currentColumnRange {
+            let range = currentTable.columnRanges[current]
+            if left < range.left {
+                return
+            }
+            if left >= range.right {
+                currentTable.previousColumnRange = current
+                currentTable.currentColumnRange = range.next
+                continue
+            }
+            // (Upstream's ColumnRange.removeColumn, and what Table.cell does
+            // with what it returns. A one-column range goes, the one before
+            // it, if any, linking to the one after it; when it's the list's
+            // last, the one before it becomes the last, even if there's none,
+            // as upstream has it. Taking a column from the middle splits the
+            // range, the new right half coming next, which the row then
+            // reaches, with the range before the left half still taken for
+            // the one before it, as upstream leaves it.)
+            if range.left + 1 == range.right {
+                if let previous = currentTable.previousColumnRange {
+                    currentTable.columnRanges[previous].next = range.next
+                }
+                if current == currentTable.firstColumnRange {
+                    currentTable.firstColumnRange = range.next
+                }
+                if current == currentTable.lastColumnRange {
+                    currentTable.lastColumnRange = currentTable.previousColumnRange
+                }
+                currentTable.currentColumnRange = range.next
+            } else if left == range.left {
+                currentTable.columnRanges[current].left += 1
+            } else if left + 1 == range.right {
+                currentTable.columnRanges[current].right -= 1
+            } else {
+                let created = currentTable.columnRanges.count
+                currentTable.columnRanges.append(ColumnRange(element: range.element, position: range.position, left: left + 1, right: range.right, next: range.next))
+                currentTable.columnRanges[current].right = left
+                currentTable.columnRanges[current].next = created
+                if current == currentTable.lastColumnRange {
+                    currentTable.lastColumnRange = created
+                }
+                currentTable.currentColumnRange = created
+            }
+            return
+        }
+    }
+
+    /// Case 554591 (U11, review item A43 and the notes' item 29): upstream's
+    /// Table.appendColumnRange: a range `element` established, where it is,
+    /// goes at the end of the table's list.
+    private mutating func appendColumnRange(_ element: String, at position: HTMLTableElementInfo, left: Int, right: Int) {
+        let index = currentTable.columnRanges.count
+        currentTable.columnRanges.append(ColumnRange(element: element, position: position, left: left, right: right, next: nil))
+        if let last = currentTable.lastColumnRange {
+            currentTable.columnRanges[last].next = index
+        } else {
+            currentTable.firstColumnRange = index
+        }
+        currentTable.lastColumnRange = index
+    }
+
+    /// The open row's end (Case 554591, U11, review item A17), as upstream's
+    /// RowGroup.endRow handles it, at `position`, the row's end tag, or the
+    /// tag that ended the row the parser implied (the row's table if there's
+    /// none): "has no cells beginning on it" if no cell began on it; then its
+    /// width, its insertion point once moved past the spanning cells that
+    /// start there, is held to the column markup's count (an error) or the
+    /// first row's (a warning), or, for the first row, sets that; and the
+    /// cells that span no further than this row are no longer in effect.
+    /// This kept the rows until the table's end and checked only the ones
+    /// with cells (the notes' item 38), so an empty <tr></tr>, such as the
+    /// stray <tr> left where a </tr> was meant, got no "A table row was 0
+    /// columns wide…"; took the first row with any width for the first row;
+    /// counted a row as wide as its rightmost spanning cell, even past a gap;
+    /// and put the messages at the row's start tag, before the table's
+    /// others, where upstream puts them at its end, as each row ends.
+    private mutating func finishCurrentRow(at position: HTMLTableElementInfo?) {
         // Every caller checks for an open table first; this guard is a second
         // line of defense, because currentTable traps on an empty stack and a
         // trap in the checker is a crashed XPC service (A9).
         guard !tableStack.isEmpty, var row = currentTable.row else { return }
-        if let group = currentTable.rowGroup {
-            let activeSpans = group.openSpans.filter { span in
-                span.endRow == nil || row.globalNumber < span.endRow!
-            }
-            for span in activeSpans {
-                row.width = max(row.width, span.columns.upperBound)
-            }
+        let place = position ?? currentTable.element
+        let group = currentTable.rowGroup
+        let rowNumber = (group?.currentRow ?? 0) + 1
+        if !row.hadCells {
+            append(rowNoCellsMessage(rowNumber, group: group), at: place)
         }
 
-        if row.sourceCellCount == 0 {
-            append(
-                rowNoCellsMessage(row.numberInGroup, groupName: currentTable.rowGroup?.name),
-                at: row.element
-            )
+        Self.findInsertionPoint(&row)
+        let width = row.insertionPoint
+        let columnCount = currentTable.columnCount
+        if currentTable.hasColumnMarkup {
+            // (Case 554591, item 12: column markup that adds up to no
+            // columns, a lone <colgroup span=0>, still sets the count rows
+            // are held to, as in upstream: "… exceeded the column count
+            // established using column markup (0).")
+            if width > columnCount {
+                append("A table row was \(width) columns wide and exceeded the column count established using column markup (\(columnCount)).", at: place)
+            } else if width < columnCount {
+                append("A table row was \(width) columns wide, which is less than the column count established using column markup (\(columnCount)).", at: place)
+            }
+        } else if -1 == columnCount {
+            currentTable.columnCount = width
+        } else if width > columnCount {
+            append("A table row was \(width) columns wide and exceeded the column count established by the first row (\(columnCount)).", at: place, warning: true)
+        } else if width < columnCount {
+            append("A table row was \(width) columns wide, which is less than the column count established by the first row (\(columnCount)).", at: place, warning: true)
         }
 
-        let tableRow = TableRow(
-            width: row.width,
-            startCellCount: row.sourceCellCount,
-            numberInGroup: row.numberInGroup,
-            groupName: currentTable.rowGroup?.name,
-            element: row.element
-        )
-        currentTable.rows.append(tableRow)
-        currentTable.rowGroup?.rows.append(tableRow)
+        currentTable.rowGroup?.cellsInEffect.removeAll { $0.bottom <= rowNumber }
         currentTable.row = nil
     }
 
+    /// The open row group's end (Case 554591, U11, review item A17), as
+    /// upstream's RowGroup.end handles it: a cell still in effect spans past
+    /// the group's last row, and is reported, in upstream's order (by its
+    /// bottom row, then its column), unless it spans to the group's end
+    /// (rowspan="0"; see rowspanZeroBottom). Its row has ended, as every
+    /// caller ends the open row first.
     private mutating func finishCurrentRowGroup() {
         // See finishCurrentRow.
         guard !tableStack.isEmpty, let group = currentTable.rowGroup else { return }
-        let rowCount = currentTable.globalRowCount
-        for span in group.openSpans {
-            if let endRow = span.endRow, endRow > rowCount {
-                append(
-                    "Table cell spans past the end of its row group established by \(rowGroupDescription(span.groupName)); clipped to the end of the row group.",
-                    at: span.cell
-                )
-            }
+        for cell in group.cellsInEffect.sorted(by: { ($0.bottom, $0.left) < ($1.bottom, $1.left) }) where Self.rowspanZeroBottom != cell.bottom {
+            append(spansPastMessage(group), at: cell.element)
         }
         currentTable.rowGroup = nil
     }
@@ -3395,8 +3732,8 @@ struct HTMLTableModelChecker {
         // the tree builder or the XML parser has finished, as it does in
         // upstream, whose Table counts it only there; this is in case it
         // doesn't, so that its span isn't lost.
-        finishCurrentColgroup()
-        var table = tableStack.removeLast()
+        finishCurrentColgroup(at: nil)
+        let table = tableStack.removeLast()
 
         for reference in table.pendingHeaderReferences where !table.thIDs.contains(reference.id) {
             append(
@@ -3405,110 +3742,20 @@ struct HTMLTableModelChecker {
             )
         }
 
-        appendRowWidthMessages(for: table)
-        appendColumnStartMessages(for: table)
-        table.rows.removeAll()
-    }
-
-    private mutating func appendRowWidthMessages(for table: TableState) {
-        // (Case 554591, item 12: column markup that adds up to no columns,
-        // a lone <colgroup span=0>, still sets the count rows are held to,
-        // as in upstream: "… exceeded the column count established using
-        // column markup (0).")
-        if table.hasColumnMarkup {
-            for row in table.rows where row.startCellCount > 0 {
-                if row.width > table.columnMarkupCount {
-                    append(
-                        "A table row was \(row.width) columns wide and exceeded the column count established using column markup (\(table.columnMarkupCount)).",
-                        at: row.element
-                    )
-                } else if row.width < table.columnMarkupCount {
-                    append(
-                        "A table row was \(row.width) columns wide, which is less than the column count established using column markup (\(table.columnMarkupCount)).",
-                        at: row.element
-                    )
-                }
-            }
-            return
-        }
-
-        guard let firstWidth = table.rows.first(where: { $0.width > 0 })?.width else { return }
-        for row in table.rows.dropFirst() where row.startCellCount > 0 {
-            if row.width > firstWidth {
-                append(
-                    "A table row was \(row.width) columns wide and exceeded the column count established by the first row (\(firstWidth)).",
-                    at: row.element,
-                    warning: true
-                )
-            } else if row.width < firstWidth {
-                append(
-                    "A table row was \(row.width) columns wide, which is less than the column count established by the first row (\(firstWidth)).",
-                    at: row.element,
-                    warning: true
-                )
-            }
-        }
-    }
-
-    private mutating func appendColumnStartMessages(for table: TableState) {
-        let missing = table.cellEstablishedColumns
-            .filter { !table.cellStartColumns.contains($0) }
-            .sorted()
-        guard !missing.isEmpty else { return }
-
-        for range in consecutiveRanges(missing) {
-            if range.count == 1, let column = range.first {
-                append(
-                    "Table column \(column + 1) established by element \u{201c}td\u{201d} has no cells beginning in it.",
-                    at: table.element
-                )
-            } else if let first = range.first, let last = range.last {
-                append(
-                    "Table columns in range \(first + 1)\u{2026}\(last + 1) established by element \u{201c}td\u{201d} have no cells beginning in them.",
-                    at: table.element
-                )
-            }
-        }
-    }
-
-    private func consecutiveRanges(_ values: [Int]) -> [[Int]] {
-        var ranges: [[Int]] = []
-        for value in values {
-            if let last = ranges.indices.last, ranges[last].last == value - 1 {
-                ranges[last].append(value)
+        // Case 554591 (U11, review item A43 and the notes' item 29): as
+        // upstream's Table.end, last, each column range left, in its list's
+        // order, at the element that established it (see
+        // TableState.columnRanges).
+        var next = table.firstColumnRange
+        while let index = next {
+            let range = table.columnRanges[index]
+            if range.left + 1 == range.right {
+                append("Table column \(range.right) established by element \u{201c}\(range.element)\u{201d} has no cells beginning in it.", at: range.position)
             } else {
-                ranges.append([value])
+                append("Table columns in range \(range.left + 1)\u{2026}\(range.right) established by element \u{201c}\(range.element)\u{201d} have no cells beginning in them.", at: range.position)
             }
+            next = range.next
         }
-        return ranges
-    }
-
-    private mutating func cellColspan(for element: HTMLTableElementInfo) -> Int {
-        guard let value = element.attributes["colspan"] else { return 1 }
-        guard let colspan = validInteger(value) else {
-            appendBadValue(value, attribute: "colspan", element: element)
-            return 1
-        }
-        if colspan == 0 {
-            appendBadValue(value, attribute: "colspan", element: element)
-            return 1
-        }
-        if colspan > 1000 {
-            append("The value of the \u{201c}colspan\u{201d} attribute must be less than or equal to 1000.", at: element)
-        }
-        return max(1, min(colspan, 1000))
-    }
-
-    private mutating func cellRowspan(for element: HTMLTableElementInfo) -> Int {
-        guard let value = element.attributes["rowspan"] else { return 1 }
-        guard let rowspan = validInteger(value) else {
-            appendBadValue(value, attribute: "rowspan", element: element)
-            return 1
-        }
-        if rowspan > 65534 {
-            append("The value of the \u{201c}rowspan\u{201d} attribute must be less than or equal to 65534.", at: element)
-        }
-        return max(0, min(rowspan, 65534))
     }
 
     /// "The value of the “span” attribute must be less than or equal to 1000."
@@ -3526,30 +3773,37 @@ struct HTMLTableModelChecker {
         append("The value of the \u{201c}span\u{201d} attribute must be less than or equal to 1000.", at: element)
     }
 
-    private func validInteger(_ value: String) -> Int? {
-        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, trimmed.allSatisfy({ $0 >= "0" && $0 <= "9" }) else {
-            return nil
+    /// Case 554591 (U11): the element that established a row group, as
+    /// upstream's messages name it, or nil for an implicit row group: in an
+    /// HTML document, a row group the checker started for a row or cell
+    /// directly in the table stands for the tbody the parser implies (see
+    /// RowGroupState.isImpliedTbody), an element in upstream's tree, but one
+    /// for the rows of a template is implicit there, as it is for the rows
+    /// directly in an XHTML table. A row group with no name was always a
+    /// tbody in an HTML document.
+    private func rowGroupElement(_ group: RowGroupState?) -> String? {
+        if let name = group?.name {
+            return name
         }
-        return Int(trimmed)
+        return .html == mode && (group?.isImpliedTbody ?? false) ? "tbody" : nil
     }
 
-    private func rowGroupDescription(_ name: String?) -> String {
-        if let name {
-            return "a \u{201c}\(name)\u{201d} element"
+    /// Case 554591 (U11, review item A17): upstream's Cell.errIfNotRowspanZero
+    /// message, which for an implicit row group is "… past the end of its
+    /// implicit row group; …"; this said "… of its row group established by
+    /// an implicit row group; …" in an XHTML document.
+    private func spansPastMessage(_ group: RowGroupState?) -> String {
+        if let element = rowGroupElement(group) {
+            return "Table cell spans past the end of its row group established by a \u{201c}\(element)\u{201d} element; clipped to the end of the row group."
         }
-        return mode == .html ? "a \u{201c}tbody\u{201d} element" : "an implicit row group"
+        return "Table cell spans past the end of its implicit row group; clipped to the end of the row group."
     }
 
-    private func rowNoCellsMessage(_ rowNumber: Int, groupName: String?) -> String {
-        if mode == .xhtml, groupName == nil {
-            return "Row \(rowNumber) of an implicit row group has no cells beginning on it."
+    private func rowNoCellsMessage(_ rowNumber: Int, group: RowGroupState?) -> String {
+        if let element = rowGroupElement(group) {
+            return "Row \(rowNumber) of a row group established by a \u{201c}\(element)\u{201d} element has no cells beginning on it."
         }
-        return "Row \(rowNumber) of a row group established by \(rowGroupDescription(groupName)) has no cells beginning on it."
-    }
-
-    private mutating func appendBadValue(_ value: String, attribute: String, element: HTMLTableElementInfo) {
-        append("Bad value \u{201c}\(value)\u{201d} for attribute \u{201c}\(attribute)\u{201d} on element \u{201c}\(element.name)\u{201d}.", at: element)
+        return "Row \(rowNumber) of an implicit row group has no cells beginning on it."
     }
 
     private mutating func append(_ message: String, at element: HTMLTableElementInfo, warning: Bool = false) {
@@ -3561,9 +3815,18 @@ struct HTMLTableModelChecker {
         ))
     }
 
+    // Case 554591 (U11; the notes' P1 item 2): the innermost open table,
+    // changed in place. With a getter and a setter, every change through
+    // this, such as appending to one of the table's arrays, copied the
+    // table, and then the array, as the copy shared it with tableStack's. A
+    // table's rows were kept in one until U11, so a table took time in the
+    // square of its rows (50,000 rows, 38 s), and so did its th IDs and
+    // headers references in the square of their numbers; U11's cells in
+    // effect and column ranges would have done the same. (_modify is what
+    // Array's own subscript uses for this.)
     private var currentTable: TableState {
         get { tableStack[tableStack.index(before: tableStack.endIndex)] }
-        set { tableStack[tableStack.index(before: tableStack.endIndex)] = newValue }
+        _modify { yield &tableStack[tableStack.index(before: tableStack.endIndex)] }
     }
 
     private static let rowGroupElements: Set<String> = ["tbody", "thead", "tfoot"]

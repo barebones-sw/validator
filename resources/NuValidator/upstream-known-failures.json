@@ -612,14 +612,6 @@
       "category" : "valid",
       "failure" : "Expected no errors or warnings but encountered error “No space between the doctype public and system identifiers.”."
     },
-    "html/elements/table/cell-overlaps-earlier-cell-novalid.html" : {
-      "category" : "invalid",
-      "failure" : "Expected “Table column 3 established by element “td” has no cells beginning in it.” but instead encountered “Table cell spans past the end of its row group established by a “tbody” element; clipped to the end of the row group.”."
-    },
-    "html/elements/table/cell-overlaps-novalid.html" : {
-      "category" : "invalid",
-      "failure" : "Expected “Table column 3 established by element “td” has no cells beginning in it.” but instead encountered “Table cell spans past the end of its row group established by a “tbody” element; clipped to the end of the row group.”."
-    },
     "html/elements/table/integrity/Alexis_of_Russia-novalid.html" : {
       "category" : "invalid",
       "failure" : "Expected “Bad value “chu” for attribute “lang” on element “span”.” but instead encountered “The “center” element is obsolete. Use CSS instead.”."
@@ -699,14 +691,6 @@
     "xhtml/elements/menu/p-contextmenu-novalid.xhtml" : {
       "category" : "invalid",
       "failure" : "Expected an error but did not encounter any."
-    },
-    "xhtml/elements/table/203-isvalid.xhtml" : {
-      "category" : "valid",
-      "failure" : "Expected no errors or warnings but encountered error “Table cell spans past the end of its row group established by an implicit row group; clipped to the end of the row group.”."
-    },
-    "xhtml/elements/table/204-isvalid.xhtml" : {
-      "category" : "valid",
-      "failure" : "Expected no errors or warnings but encountered error “Table cell spans past the end of its row group established by a “tbody” element; clipped to the end of the row group.”."
     }
   },
   "fixtureCounts" : {
@@ -718,8 +702,8 @@
   "passCounts" : {
     "hasinfo" : 5,
     "haswarn" : 138,
-    "invalid" : 3585,
-    "valid" : 1715
+    "invalid" : 3587,
+    "valid" : 1717
   },
   "version" : 2
 }

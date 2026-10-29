@@ -191,7 +191,7 @@ final class HTMLTokenizer {
     /// because the namespace of each start tag's element, and whether
     /// "<![CDATA[" starts a CDATA section, depend on its current node (see
     /// HTMLTreeEventBuilder).
-    func tokenizeAndBuildTree() -> (tokens: [HTMLToken], events: [HTMLDocumentEvent], impliedColgroupEnds: [Int], impliedTablePartEnds: [HTMLImpliedTablePartEnd]) {
+    func tokenizeAndBuildTree() -> (tokens: [HTMLToken], events: [HTMLDocumentEvent], impliedColgroupEnds: [Int], impliedTablePartEnds: [HTMLImpliedTablePartEnd], implicitEndCauses: [HTMLImplicitEndCause]) {
         // Case 554591: the whole-source diagnostics (character references and
         // forbidden code points) are now computed after the main loop, which
         // collects the ranges where the HTML tokenizer never parses character
@@ -468,6 +468,13 @@ final class HTMLTokenizer {
             if !tagClosed {
                 let message = attributes.isEmpty ? "Saw end of file without the previous tag ending with \u{201c}>\u{201d}. Ignoring tag." : "End of file occurred in an attribute name. Ignoring tag."
                 appendError(message, at: start, length: max(1, locations.offset(of: source.endIndex) - locations.offset(of: start)), to: &tokens)
+                // (Case 554591, from U11's review: and the tag is ignored, as
+                // the message says and as upstream's tokenizer does, emitting
+                // nothing at the end of the file. It went on to be an element,
+                // so a "<tr" the file ended in was a row, a "<td colspan=3"
+                // a cell, for the tree and every checker. This is the end of
+                // the file, so the loop ends here.)
+                continue
             }
             let offset = locations.offset(of: start)
             // Review item A2: the element's namespace goes on the token, from
@@ -506,11 +513,12 @@ final class HTMLTokenizer {
         // array, a copy of every token, while the tokens and the finished
         // events were all alive raised the peak memory for a large document
         // by 30–60%.)
-        let events = treeBuilder.finish()
+        let events = treeBuilder.finish(endOffset: locations.offset(of: source.endIndex))
         tokens.insert(contentsOf: sourceDiagnostics(skippingCharacterReferencesIn: noCharacterReferenceRanges), at: 0)
         // (Case 554591, item 12, from its second and third reviews: see
-        // HTMLParsedDocument.impliedColgroupEnds and impliedTablePartEnds.)
-        return (tokens, events, treeBuilder.impliedColgroupEnds, treeBuilder.impliedTablePartEnds)
+        // HTMLParsedDocument.impliedColgroupEnds and impliedTablePartEnds; and
+        // U11's implicitEndCauses.)
+        return (tokens, events, treeBuilder.impliedColgroupEnds, treeBuilder.impliedTablePartEnds, treeBuilder.implicitEndCauses)
     }
 
     /// Which tokenizer state an element's contents are read in.
