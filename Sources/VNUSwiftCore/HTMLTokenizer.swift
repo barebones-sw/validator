@@ -63,8 +63,11 @@ enum HTMLCharacterReferences {
     }
 
     /// The reference starting at `start` (an "&"): its character, and the
-    /// index just past it. nil if it isn't one this decodes.
-    private static func reference(in scalars: [Unicode.Scalar], at start: Int) -> (scalar: Unicode.Scalar, next: Int)? {
+    /// index just past it. nil if it isn't one this decodes. (Case 554591,
+    /// A20: not private, for the <time> text check, which has to know whether
+    /// text starts with a reference to a line feed; see
+    /// HTMLGeneralAttributeChecker.droppingLeadingLineFeed.)
+    static func reference(in scalars: [Unicode.Scalar], at start: Int) -> (scalar: Unicode.Scalar, next: Int)? {
         var cursor = start + 1
         guard cursor < scalars.count else {
             return nil

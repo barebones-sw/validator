@@ -570,6 +570,21 @@ struct HTMLGeneralAttributeChecker {
         // skipped level.
         var headingOffsetStack: [Int32] = []
         var headings: [HeadingInfo] = []
+        // Case 554591 (A20): upstream's TextContentChecker, which checks the
+        // text of a <time> without a datetime attribute against TimeDatetime
+        // (see HTMLDatetimeDatatype), inside templates too, as it doesn't
+        // skip them: the open ones, each with its depth and where its text
+        // starts in timeText; and timeText, the text since the outermost of
+        // them started, as upstream's checker sees it. (One buffer for all of
+        // them, where upstream gives each its own, so nested ones don't each
+        // keep a copy of the text inside them.) The port never checked it, so
+        // <time>January 15, 2024</time> went unreported.
+        var openTimeTexts: [(element: HTMLStartElement, depth: Int, textStart: Int)] = []
+        var timeText: [Unicode.Scalar] = []
+        // Case 554591 (A20): the next of the tokens that closed an element
+        // implicitly (see HTMLParsedDocument.implicitEndCauses), for where a
+        // <time>'s text message goes when its end is implied.
+        var nextImplicitEndCause = 0
         var rubyStack: [RubyState] = []
         var optgroupStack: [OptgroupState] = []
         var mathArityStack: [MathArityState] = []
@@ -595,7 +610,7 @@ struct HTMLGeneralAttributeChecker {
         let mapNames = mapNames(in: document)
         var cspState = CSPState()
 
-        for event in document.events {
+        for (eventIndex, event) in document.events.enumerated() {
             switch event {
             case let .startElement(element):
                 let parent = stack.last
@@ -656,6 +671,11 @@ struct HTMLGeneralAttributeChecker {
                 let headingOffset = Self.cumulativeHeadingOffset(for: element, parentOffset: headingOffsetStack.last ?? 0)
                 if isHTML, let level = Self.headingLevel(for: element.name) {
                     headings.append(HeadingInfo(element: element, level: Self.computedHeadingLevel(level, offset: headingOffset)))
+                }
+                // Case 554591 (A20): see openTimeTexts. (Only without the
+                // attribute: an empty datetime is the attribute's problem.)
+                if isHTML, "time" == element.name, !element.hasAttribute("datetime") {
+                    openTimeTexts.append((element, stack.count, timeText.count))
                 }
                 if let rubyIndex = rubyStack.indices.last, parentIsHTML, parent == "ruby" {
                     rubyStack[rubyIndex].directChildNames.append(element.name)
@@ -723,8 +743,20 @@ struct HTMLGeneralAttributeChecker {
                 }
                 if isHTML {
                     appendLanguageAttributeMessages(for: element, locations: locations, messages: &messages)
-                    appendDateTimeAttributeMessages(for: element, locations: locations, messages: &messages)
-                    appendInputAttributeMessages(for: element, idElementNames: idElementNames, locations: locations, messages: &messages)
+                    // (Case 554591, A20: the date and time values are the
+                    // schema's to check, so they're checked only where it
+                    // checks this element: not in template contents, which it
+                    // never sees, nor in an SVG desc's or a MathML
+                    // annotation-xml's any-element content, nor inside an
+                    // element it rejected in foreign content. That's
+                    // foreignSchemaChecksApply, which for all its name holds
+                    // for HTML elements too; with only the template gate,
+                    // <svg><desc><time datetime="bad"> got a Bad value that
+                    // vnu.jar doesn't give.)
+                    if foreignSchemaChecksApply {
+                        appendDateTimeAttributeMessages(for: element, locations: locations, messages: &messages)
+                    }
+                    appendInputAttributeMessages(for: element, idElementNames: idElementNames, schemaChecksApply: foreignSchemaChecksApply, locations: locations, messages: &messages)
                     appendImageMessages(for: element, stack: stack, anchorHrefStack: anchorHrefStack, mapNames: mapNames, locations: locations, messages: &messages)
                     appendEmbeddedContentMessages(for: element, locations: locations, messages: &messages)
                     appendMeterMessages(for: element, locations: locations, messages: &messages)
@@ -960,7 +992,7 @@ struct HTMLGeneralAttributeChecker {
                 rejectedForeignStack.append(isRejectedForeign)
                 roleStack.append(role)
                 anchorHrefStack.append(isHTML && "a" == element.name && element.hasAttribute("href"))
-            case let .endElement(name, endRange, _):
+            case let .endElement(name, endRange, implicit):
                 // Review item A2: whether the element ending is HTML, for the
                 // name-keyed state below, which only HTML elements start.
                 let endedIsHTML = stack.lastIndex(of: name).map { .html == namespaceStack[$0] } ?? true
@@ -1003,6 +1035,34 @@ struct HTMLGeneralAttributeChecker {
                    !headingRecords[heading].textNodeFound, !headingRecords[heading].imgFound,
                    !headingRecords[heading].element.hasAttribute("popover") {
                     appendWarningMessage("Empty heading.", for: headingRecords[heading].element, locations: locations, messages: &messages)
+                }
+                // Case 554591 (A20): a <time>'s text, checked as it ends (see
+                // openTimeTexts), with upstream's messages, which give the
+                // reason, and at upstream's place: the end tag, or the token
+                // that closed the <time> implicitly (whose end event carries
+                // the start tag's range).
+                if endedIsHTML, "time" == name, let index = stack.lastIndex(of: name), let open = openTimeTexts.last, index == open.depth {
+                    openTimeTexts.removeLast()
+                    var place = endRange
+                    if implicit {
+                        while nextImplicitEndCause < document.implicitEndCauses.count, document.implicitEndCauses[nextImplicitEndCause].index < eventIndex {
+                            nextImplicitEndCause += 1
+                        }
+                        if nextImplicitEndCause < document.implicitEndCauses.count, eventIndex == document.implicitEndCauses[nextImplicitEndCause].index {
+                            place = document.implicitEndCauses[nextImplicitEndCause].range
+                        }
+                    }
+                    switch HTMLDatetimeDatatype.checkTimeDatetime(timeText[open.textStart...]) {
+                    case .valid:
+                        break
+                    case let .error(reason):
+                        appendMessage("The text content of element \u{201c}time\u{201d} was not in the required format: \(reason)", range: place, locations: locations, messages: &messages)
+                    case let .warning(reason):
+                        appendWarningMessage("Double-check the text content of element \u{201c}time\u{201d}: \(reason)", range: place, locations: locations, messages: &messages)
+                    }
+                    if openTimeTexts.isEmpty {
+                        timeText.removeAll(keepingCapacity: true)
+                    }
                 }
                 if endedIsHTML, name == "ruby", let state = rubyStack.popLast() {
                     appendRubyMessages(state, locations: locations, messages: &messages)
@@ -1058,6 +1118,15 @@ struct HTMLGeneralAttributeChecker {
                     }
                     figureAltContextStack.removeSubrange(index...)
                     headingOffsetStack.removeSubrange(index...)
+                    // (Case 554591, A20: a <time> closed with no end event of
+                    // its own, which the tree builder never does, isn't
+                    // checked; see openTimeTexts.)
+                    while let open = openTimeTexts.last, open.depth >= index {
+                        openTimeTexts.removeLast()
+                    }
+                    if openTimeTexts.isEmpty {
+                        timeText.removeAll(keepingCapacity: true)
+                    }
                     stack.removeSubrange(index...)
                     namespaceStack.removeSubrange(index...)
                     anyElementContentStack.removeSubrange(index...)
@@ -1156,6 +1225,39 @@ struct HTMLGeneralAttributeChecker {
                    let depth = currentHeadingDepth, depth < headingSlots.count, let heading = headingSlots[depth], !headingRecords[heading].textNodeFound,
                    Self.containsFigureText(content, decodingReferences: context.textDecodesReferences && !Self.isCDATASection(range, locations: locations), droppingNUL: context.textDropsNUL) {
                     headingRecords[heading].textNodeFound = true
+                }
+                // Case 554591 (A20): text for the open <time>s' checks (see
+                // openTimeTexts), as upstream's checker sees it (see
+                // FigureAltContext): references decoded where its tokenizer
+                // decodes them (a form feed's as a space, as in an attribute
+                // value), and without the NULs its tree builder drops.
+                if !openTimeTexts.isEmpty, let context = figureAltContextStack.last {
+                    // (From A20's review: upstream's tree builder drops a line
+                    // feed that comes first in a <pre>, <listing> or
+                    // <textarea> (TreeBuilder.needToDropLF). No other check
+                    // could tell, as the line feed is white space, but in a
+                    // <time>'s text it splits the value, so the text of
+                    // <time>2024-<pre>\n01</pre>-15</time> read "2024-\n01-15",
+                    // a bad value that vnu.jar doesn't report. Upstream drops
+                    // it only from the text right after the start tag: any
+                    // other token clears its flag first, a stray end tag, an
+                    // ignored start tag or a comment too, which leave no event
+                    // here. So it's dropped here only when the event before
+                    // this text is that start tag and the text begins where
+                    // the tag ends, with nothing between them but "</>"s,
+                    // which upstream's tokenizer reports and drops without
+                    // handing its tree builder anything.)
+                    var written = content
+                    if eventIndex > 0, case let .startElement(previous) = document.events[eventIndex - 1], .html == previous.namespace,
+                       Self.lineFeedDroppingElements.contains(previous.name) {
+                        let tagEnd = previous.range.offset + previous.range.length
+                        if tagEnd == range.offset || (tagEnd < range.offset && 0 == (range.offset - tagEnd) % 3
+                            && Self.isOnlyEmptyEndTags(locations.extract(offset: tagEnd, length: range.offset - tagEnd, context: 0).text)) {
+                            written = Self.droppingLeadingLineFeed(content)
+                        }
+                    }
+                    let seen = context.textDecodesReferences && !Self.isCDATASection(range, locations: locations) ? HTMLCharacterReferences.decodeAttributeValue(written) : written
+                    timeText.append(contentsOf: seen.unicodeScalars.lazy.filter { !(context.textDropsNUL && "\u{0}" == $0) })
                 }
                 let currentIsHTML = .html == (namespaceStack.last ?? .html)
                 if currentIsHTML, stack.last == "ruby", !content.unicodeScalars.allSatisfy(isASCIIWhitespace), let rubyIndex = rubyStack.indices.last {
@@ -3301,6 +3403,56 @@ struct HTMLGeneralAttributeChecker {
     /// as raw text (or script data), with no character references.
     static let rawTextElements: Set<String> = ["iframe", "noembed", "noframes", "plaintext", "script", "style", "xmp"]
 
+    /// Case 554591 (A20, from its review): the HTML elements whose start tag
+    /// makes upstream's tree builder drop a line feed at the start of the
+    /// text that follows it (see the <time> text check in the .characters
+    /// case).
+    private static let lineFeedDroppingElements: Set<String> = ["listing", "pre", "textarea"]
+
+    /// Case 554591 (A20, from its review): whether `text` is nothing but
+    /// "</>"s, which upstream's tokenizer reports ("End tag had no name.")
+    /// and drops, so that its tree builder never sees them (see the <time>
+    /// text check's line feed in the .characters case).
+    private static func isOnlyEmptyEndTags(_ text: String) -> Bool {
+        var rest = Substring(text)
+        while rest.hasPrefix("</>") {
+            rest = rest.dropFirst(3)
+        }
+        return rest.isEmpty
+    }
+
+    /// Case 554591 (A20, from its review): text, as written, that starts a
+    /// <pre>, <listing> or <textarea>, without the line feed upstream's tree
+    /// builder drops there: an LF, a CRLF or a CR (which upstream's input
+    /// stream reads as an LF), or a character reference to U+000A (though
+    /// not one to U+000D, which upstream keeps). It may come after NULs,
+    /// which reach upstream's tree builder another way and so don't stop the
+    /// drop; they stay, for the caller to drop or keep as it does any NUL.
+    private static func droppingLeadingLineFeed(_ text: String) -> String {
+        let scalars = Array(text.unicodeScalars)
+        var start = 0
+        while start < scalars.count, "\u{0}" == scalars[start] {
+            start += 1
+        }
+        guard start < scalars.count else {
+            return text
+        }
+        let end: Int
+        if "\r" == scalars[start] {
+            end = start + 1 < scalars.count && "\n" == scalars[start + 1] ? start + 2 : start + 1
+        } else if "\n" == scalars[start] {
+            end = start + 1
+        } else if "&" == scalars[start], let reference = HTMLCharacterReferences.reference(in: scalars, at: start), "\n" == reference.scalar {
+            end = reference.next
+        } else {
+            return text
+        }
+        var kept = String.UnicodeScalarView()
+        kept.append(contentsOf: scalars[..<start])
+        kept.append(contentsOf: scalars[end...])
+        return String(kept)
+    }
+
     /// Review item 3: the embedded content that keeps a figure's caption from
     /// standing in for an <img>'s alt (upstream's list also names math and
     /// svg, which are never HTML elements).
@@ -3588,21 +3740,51 @@ struct HTMLGeneralAttributeChecker {
         locations: SourceLocationMap,
         messages: inout [ValidationMessage]
     ) {
-        guard let value = element.attributeValue("datetime") else { return }
+        // (Case 554591, A20: an attribute written with no value is an empty
+        // one, which is a bad value; this let it through.)
+        guard element.hasAttribute("datetime") else { return }
+        let rawValue = element.attributeValue("datetime") ?? ""
 
-        let valid: Bool
+        // Case 554591 (A20): upstream's datatypes (see HTMLDatetimeDatatype):
+        // a <time>'s is TimeDatetime, an ins's or del's DatetimeTz or Date.
+        // The value as upstream sees it, its references decoded: the port
+        // judged the written value, so datetime="&#50;024" was a bad value.
+        let value = HTMLCharacterReferences.decodeAttributeValue(rawValue)
+        let outcome: HTMLDatetimeDatatype.Outcome
         switch element.name {
         case "del", "ins":
-            valid = isValidDateString(value) || isValidGlobalDateAndTimeString(value, strictTimeZone: true)
+            outcome = HTMLDatetimeDatatype.checkDatetimeTzOrDate(value)
         case "time":
-            valid = isValidTimeDateTimeString(value)
+            outcome = HTMLDatetimeDatatype.checkTimeDatetime(value)
         default:
             return
         }
+        appendDatetimeAttributeMessage(outcome, value: value, attribute: "datetime", for: element, locations: locations, messages: &messages)
+    }
 
-        if !valid {
-            appendMessage(
-                "Bad value \u{201c}\(value)\u{201d} for attribute \u{201c}datetime\u{201d} on element \u{201c}\(element.name)\u{201d}.",
+    /// Case 554591 (A20): a date or time attribute's message, for what
+    /// HTMLDatetimeDatatype found: "Bad value …" for an error, and the same
+    /// words as a warning for a warning. The words are TestRunner's, which
+    /// the upstream fixtures and the ratchet expect, and which the port uses
+    /// for its other datatype warnings (a deprecated language subtag); vnu.jar
+    /// shows a warning as "Potentially bad value …", and both with the reason
+    /// after a colon. (The port gave every warning as an error.)
+    private func appendDatetimeAttributeMessage(
+        _ outcome: HTMLDatetimeDatatype.Outcome,
+        value: String,
+        attribute: String,
+        for element: HTMLStartElement,
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) {
+        switch outcome {
+        case .valid:
+            return
+        case .error:
+            appendBadAttributeValue(value, attribute: attribute, for: element, locations: locations, messages: &messages)
+        case .warning:
+            appendWarningMessage(
+                "Bad value \u{201c}\(value)\u{201d} for attribute \u{201c}\(attribute)\u{201d} on element \u{201c}\(element.displayName)\u{201d}.",
                 for: element,
                 locations: locations,
                 messages: &messages
@@ -3613,6 +3795,7 @@ struct HTMLGeneralAttributeChecker {
     private func appendInputAttributeMessages(
         for element: HTMLStartElement,
         idElementNames: [String: String],
+        schemaChecksApply: Bool,
         locations: SourceLocationMap,
         messages: inout [ValidationMessage]
     ) {
@@ -3625,7 +3808,7 @@ struct HTMLGeneralAttributeChecker {
         let type = inputType(for: element)
         appendInputAutocompleteMessages(for: element, type: type, locations: locations, messages: &messages)
         appendInputTypeAttributeMessages(for: element, type: type, locations: locations, messages: &messages)
-        appendInputValueMessages(for: element, type: type, locations: locations, messages: &messages)
+        appendInputValueMessages(for: element, type: type, schemaChecksApply: schemaChecksApply, locations: locations, messages: &messages)
         appendInputReferenceMessages(for: element, type: type, idElementNames: idElementNames, locations: locations, messages: &messages)
 
         if let name = element.attributeValue("name"), name.isEmpty {
@@ -3786,6 +3969,7 @@ struct HTMLGeneralAttributeChecker {
     private func appendInputValueMessages(
         for element: HTMLStartElement,
         type: String,
+        schemaChecksApply: Bool,
         locations: SourceLocationMap,
         messages: inout [ValidationMessage]
     ) {
@@ -3809,7 +3993,12 @@ struct HTMLGeneralAttributeChecker {
                 }
             }
         }
-        appendInputDateTimeValueMessages(for: element, type: type, locations: locations, messages: &messages)
+        // (Case 554591, A20: only where the schema checks the element, as
+        // for a <time>'s datetime; see foreignSchemaChecksApply. The other
+        // value checks here still run everywhere.)
+        if schemaChecksApply {
+            appendInputDateTimeValueMessages(for: element, type: type, locations: locations, messages: &messages)
+        }
         if Self.inputStepTypes.contains(type), let step = element.attributeValue("step"), !isValidStepValue(step) {
             appendBadAttributeValue(step, attribute: "step", for: element, locations: locations, messages: &messages)
         }
@@ -3828,28 +4017,39 @@ struct HTMLGeneralAttributeChecker {
         locations: SourceLocationMap,
         messages: inout [ValidationMessage]
     ) {
-        let validator: (String) -> Bool
+        // Case 554591 (A20): upstream's datatypes for these input types
+        // (form-datatypes.rnc; see HTMLDatetimeDatatype), with their warnings,
+        // on the values as upstream sees them, their references decoded. The
+        // port took only a four-digit year from 1000 on, so a date of
+        // 0999-12-31 was an error where vnu.jar only warns; and it took week
+        // 53 of any year, where upstream's Week takes it only in a year that
+        // has one.
+        let check: (String) -> HTMLDatetimeDatatype.Outcome
         switch type {
         case "date":
-            validator = isValidDateString
+            check = HTMLDatetimeDatatype.checkDate
         case "datetime-local":
-            validator = isValidLocalDateAndTimeString
+            check = HTMLDatetimeDatatype.checkDatetimeLocal
         case "month":
-            validator = isValidMonthString
+            check = HTMLDatetimeDatatype.checkMonth
         case "time":
-            validator = isValidTimeString
+            check = HTMLDatetimeDatatype.checkTime
         case "week":
-            validator = isValidWeekString
+            check = HTMLDatetimeDatatype.checkWeek
         default:
             return
         }
 
-        for attribute in ["min", "max"] {
-            guard let value = element.attributeValue(attribute), !validator(value) else { continue }
-            appendBadAttributeValue(value, attribute: attribute, for: element, locations: locations, messages: &messages)
+        // (min and max may not be empty, so one written with no value is a
+        // bad value; this let it through.)
+        for attribute in ["min", "max"] where element.hasAttribute(attribute) {
+            let value = HTMLCharacterReferences.decodeAttributeValue(element.attributeValue(attribute) ?? "")
+            appendDatetimeAttributeMessage(check(value), value: value, attribute: attribute, for: element, locations: locations, messages: &messages)
         }
-        if let value = element.attributeValue("value"), !value.isEmpty, !validator(value) {
-            appendBadAttributeValue(value, attribute: "value", for: element, locations: locations, messages: &messages)
+        // (An empty value is allowed: the schema's w:string "" alternative.)
+        if let rawValue = element.attributeValue("value"), !rawValue.isEmpty {
+            let value = HTMLCharacterReferences.decodeAttributeValue(rawValue)
+            appendDatetimeAttributeMessage(check(value), value: value, attribute: "value", for: element, locations: locations, messages: &messages)
         }
     }
 
@@ -5887,188 +6087,8 @@ struct HTMLGeneralAttributeChecker {
         analyzeSrcset(srcset, requiresWidthDescriptors: false).hasWidthDescriptor
     }
 
-    private func isValidTimeDateTimeString(_ value: String) -> Bool {
-        isValidDateString(value)
-            || isValidTimeString(value)
-            || isValidLocalDateAndTimeString(value)
-            || isValidGlobalDateAndTimeString(value, strictTimeZone: false)
-    }
-
-    private func isValidDateString(_ value: String) -> Bool {
-        let bytes = Array(value.utf8)
-        guard bytes.count == 10,
-              bytes[4] == Self.hyphen,
-              bytes[7] == Self.hyphen,
-              let year = parseASCIIInteger(bytes, in: 0..<4),
-              let month = parseASCIIInteger(bytes, in: 5..<7),
-              let day = parseASCIIInteger(bytes, in: 8..<10),
-              year >= 1000,
-              month >= 1,
-              month <= 12 else {
-            return false
-        }
-
-        return day >= 1 && day <= daysInMonth(month, year: year)
-    }
-
-    private func isValidLocalDateAndTimeString(_ value: String) -> Bool {
-        splitDateAndTime(value).contains { datePart, timePart in
-            isValidDateString(datePart) && isValidTimeString(timePart)
-        }
-    }
-
-    private func isValidMonthString(_ value: String) -> Bool {
-        let bytes = Array(value.utf8)
-        guard bytes.count == 7,
-              bytes[4] == Self.hyphen,
-              let year = parseASCIIInteger(bytes, in: 0..<4),
-              let month = parseASCIIInteger(bytes, in: 5..<7),
-              year >= 1000 else {
-            return false
-        }
-        return month >= 1 && month <= 12
-    }
-
-    private func isValidWeekString(_ value: String) -> Bool {
-        let bytes = Array(value.utf8)
-        guard bytes.count == 8,
-              bytes[4] == Self.hyphen,
-              bytes[5] == UInt8(ascii: "W"),
-              let year = parseASCIIInteger(bytes, in: 0..<4),
-              let week = parseASCIIInteger(bytes, in: 6..<8),
-              year >= 1000 else {
-            return false
-        }
-        return week >= 1 && week <= 53
-    }
-
-    private func isValidGlobalDateAndTimeString(_ value: String, strictTimeZone: Bool) -> Bool {
-        splitDateAndTime(value).contains { datePart, timeAndZone in
-            guard isValidDateString(datePart),
-                  let split = splitTimeAndTimeZone(timeAndZone) else {
-                return false
-            }
-            return isValidTimeString(split.time)
-                && isValidTimeZoneOffset(split.timeZone, strict: strictTimeZone)
-        }
-    }
-
-    private func splitDateAndTime(_ value: String) -> [(date: String, time: String)] {
-        ["T", " "].compactMap { separator in
-            guard let range = value.range(of: separator) else { return nil }
-            return (
-                date: String(value[..<range.lowerBound]),
-                time: String(value[range.upperBound...])
-            )
-        }
-    }
-
-    private func splitTimeAndTimeZone(_ value: String) -> (time: String, timeZone: String)? {
-        if value.hasSuffix("Z") {
-            return (String(value.dropLast()), "Z")
-        }
-
-        guard let offsetStart = value.firstIndex(where: { $0 == "+" || $0 == "-" }),
-              offsetStart != value.startIndex else {
-            return nil
-        }
-        return (String(value[..<offsetStart]), String(value[offsetStart...]))
-    }
-
-    private func isValidTimeString(_ value: String) -> Bool {
-        let pieces = value.split(separator: ":", omittingEmptySubsequences: false)
-        guard pieces.count == 2 || pieces.count == 3,
-              let hour = twoDigitInteger(String(pieces[0])),
-              let minute = twoDigitInteger(String(pieces[1])),
-              hour <= 23,
-              minute <= 59 else {
-            return false
-        }
-
-        guard pieces.count == 3 else { return true }
-        let secondsAndFraction = pieces[2].split(separator: ".", omittingEmptySubsequences: false)
-        guard secondsAndFraction.count == 1 || secondsAndFraction.count == 2,
-              let seconds = twoDigitInteger(String(secondsAndFraction[0])),
-              seconds <= 59 else {
-            return false
-        }
-
-        if secondsAndFraction.count == 2 {
-            let fraction = secondsAndFraction[1]
-            guard (1...3).contains(fraction.count),
-                  fraction.utf8.allSatisfy(isASCIIDigit) else {
-                return false
-            }
-        }
-        return true
-    }
-
-    private func isValidTimeZoneOffset(_ value: String, strict: Bool) -> Bool {
-        if value == "Z" {
-            return true
-        }
-
-        let bytes = Array(value.utf8)
-        guard bytes.count == 5 || bytes.count == 6,
-              bytes[0] == Self.plus || bytes[0] == Self.hyphen else {
-            return false
-        }
-
-        let hourRange = 1..<3
-        let minuteRange: Range<Int>
-        if bytes.count == 6 {
-            guard bytes[3] == Self.colon else { return false }
-            minuteRange = 4..<6
-        } else {
-            minuteRange = 3..<5
-        }
-
-        guard let hour = parseASCIIInteger(bytes, in: hourRange),
-              let minute = parseASCIIInteger(bytes, in: minuteRange),
-              minute <= 59 else {
-            return false
-        }
-
-        if strict {
-            return hour <= 12 && [0, 30, 45].contains(minute)
-        }
-        return hour <= 23
-    }
-
-    private func twoDigitInteger(_ value: String) -> Int? {
-        let bytes = Array(value.utf8)
-        guard bytes.count == 2 else { return nil }
-        return parseASCIIInteger(bytes, in: 0..<2)
-    }
-
-    private func parseASCIIInteger(_ bytes: [UInt8], in range: Range<Int>) -> Int? {
-        var value = 0
-        for index in range {
-            guard isASCIIDigit(bytes[index]) else { return nil }
-            value = value * 10 + Int(bytes[index] - Self.zero)
-        }
-        return value
-    }
-
     private func isASCIIDigit(_ byte: UInt8) -> Bool {
         byte >= Self.zero && byte <= UInt8(ascii: "9")
-    }
-
-    private func daysInMonth(_ month: Int, year: Int) -> Int {
-        switch month {
-        case 1, 3, 5, 7, 8, 10, 12:
-            return 31
-        case 4, 6, 9, 11:
-            return 30
-        case 2:
-            return isLeapYear(year) ? 29 : 28
-        default:
-            return 0
-        }
-    }
-
-    private func isLeapYear(_ year: Int) -> Bool {
-        year.isMultiple(of: 4) && (!year.isMultiple(of: 100) || year.isMultiple(of: 400))
     }
 
     private static let bodyLinkRelTokens: Set<String> = [
@@ -6460,9 +6480,6 @@ struct HTMLGeneralAttributeChecker {
     }
 
     private static let zero = UInt8(ascii: "0")
-    private static let plus = UInt8(ascii: "+")
-    private static let colon = UInt8(ascii: ":")
-    private static let hyphen = UInt8(ascii: "-")
 
     private func appendMessage(
         _ message: String,
@@ -6697,6 +6714,678 @@ enum SVGPathData {
                 }
             }
             return true
+        }
+    }
+}
+
+/// Case 554591 (A20): upstream's date and time datatypes, as vnu.jar runs
+/// them (nu.validator.datatype). TimeDatetime is for a <time>'s datetime
+/// attribute, and for the text of a <time> without one; DatetimeTz or Date is
+/// what an ins or del datetime may be; and Date, DatetimeLocal, Month, Week
+/// and Time are for those input types' min, max and value. TimeDatetime,
+/// Date, DatetimeTz and DatetimeLocal share AbstractDatetime's checks, with
+/// the warnings vnu.jar's command line turns on (nu.validator.datatype.warn,
+/// which TestRunner sets too); Time, Month and Week have their own checks,
+/// and give no warnings.
+///
+/// The port's checks were a subset. A <time datetime> took only a date, a
+/// time, or a local or global date and time, with a four-digit year from 1000
+/// on. So durations (PT15M, schema.org's Recipe example, P2D and 1h 30m),
+/// years (2024), months (2024-05), weeks (2024-W18), yearless dates (05-17)
+/// and time-zone offsets (+05:30) were bad values: 13 of the real pages'
+/// false errors. And what upstream only warns about was an error: a year
+/// before 1000 or from 3000 on, and, for ins and del, an offset outside
+/// UTC−12 to UTC+12 or with minutes other than 00, 30 or 45. Values are
+/// decoded first, as upstream's tokenizer hands them on (see
+/// HTMLCharacterReferences.decodeAttributeValue).
+///
+/// Each pattern here is ASCII, and in each a run of digits is followed by
+/// something that isn't a digit, so taking a whole run, as the scanner does,
+/// is what the regular expressions' backtracking ends up with; and their
+/// alternatives are anchored at both ends and never overlap, so trying each
+/// in turn on the whole value finds the one upstream's would.
+enum HTMLDatetimeDatatype {
+    /// What a value is: valid, or one of upstream's errors or warnings, with
+    /// its reason (in vnu.jar, the text after "Bad value “…” for attribute
+    /// “…” on element “…”:"). The port's attribute messages leave the reason
+    /// out, as TestRunner's and the upstream fixtures' do; a <time>'s text
+    /// content messages give it, as both of upstream's do.
+    enum Outcome: Equatable {
+        case valid
+        case error(String)
+        case warning(String)
+
+        /// This, or if it's valid, `next`: upstream throws at the first
+        /// problem, a warning too, so nothing after one is checked.
+        func then(_ next: () -> Outcome) -> Outcome {
+            .valid == self ? next() : self
+        }
+    }
+
+    // MARK: The datatypes
+
+    /// TimeDatetime ("time-datetime"): THE_PATTERN, in its order, inside
+    /// optional space, tab, CR, LF or form feed at either end; and
+    /// AbstractDatetime.checkValid's checks for whichever alternative
+    /// matched.
+    static func checkTimeDatetime(_ value: String) -> Outcome {
+        checkTimeDatetime(Array(value.unicodeScalars)[...])
+    }
+
+    /// The same, for a <time>'s text, which HTMLGeneralAttributeChecker keeps
+    /// as scalars (see its openTimeTexts).
+    static func checkTimeDatetime(_ value: ArraySlice<Unicode.Scalar>) -> Outcome {
+        var scalars = value
+        while let first = scalars.first, isSpace(first) {
+            scalars.removeFirst()
+        }
+        while let last = scalars.last, isSpace(last) {
+            scalars.removeLast()
+        }
+        let alternatives: [(inout Reader) -> Outcome?] = [
+            monthAlternative, dateAlternative, yearlessDateAlternative, timeAlternative,
+            localDateAndTimeAlternative, zoneAlternative, globalDateAndTimeAlternative,
+            weekAlternative, yearAlternative, isoDurationAlternative, durationComponentsAlternative
+        ]
+        for alternative in alternatives {
+            var reader = Reader(scalars)
+            if let outcome = alternative(&reader) {
+                return outcome
+            }
+        }
+        return .error("The literal did not satisfy the time-datetime format.")
+    }
+
+    /// Date ("date"): [0-9]{4,}-[0-9]{2}-[0-9]{2}, AbstractDatetime's checks.
+    static func checkDate(_ value: String) -> Outcome {
+        var reader = Reader(Array(value.unicodeScalars)[...])
+        guard let date = scanDate(&reader), reader.atEnd else {
+            return .error("The literal did not satisfy the date format.")
+        }
+        return check(date, reader)
+    }
+
+    /// DatetimeTz ("datetime with timezone"): a date, T or a space, a time
+    /// with any number of fraction digits (AbstractDatetime then allows
+    /// three), and Z or an offset.
+    static func checkDatetimeTz(_ value: String) -> Outcome {
+        var reader = Reader(Array(value.unicodeScalars)[...])
+        guard let date = scanDate(&reader), reader.take("T") || reader.take(" "),
+              let time = scanTime(&reader, fractionLimit: nil), let zone = scanZone(&reader), reader.atEnd else {
+            return .error("The literal did not satisfy the datetime with timezone format.")
+        }
+        return check(date, reader).then { check(time, reader) }.then { check(zone, reader) }
+    }
+
+    /// DatetimeLocal ("local datetime"): a date, T or a space, and a time
+    /// with at most three fraction digits (by the pattern, so more are a
+    /// mismatch, not AbstractDatetime's error).
+    static func checkDatetimeLocal(_ value: String) -> Outcome {
+        var reader = Reader(Array(value.unicodeScalars)[...])
+        guard let date = scanDate(&reader), reader.take("T") || reader.take(" "),
+              let time = scanTime(&reader, fractionLimit: 3), reader.atEnd else {
+            return .error("The literal did not satisfy the local datetime format.")
+        }
+        return check(date, reader).then { check(time, reader) }
+    }
+
+    /// ins and del (revision.rnc: common.data.datetime | common.data.date):
+    /// valid if either datatype accepts the value. Otherwise upstream's
+    /// message is a warning if either gave a warning (MessageEmitterAdapter
+    /// makes it "Potentially bad value", and TestRunner a warning), and an
+    /// error if both gave errors. Its reason joins both datatypes' reasons,
+    /// in Java's HashMap order; only one is kept here, as the port's
+    /// attribute messages don't give them.
+    static func checkDatetimeTzOrDate(_ value: String) -> Outcome {
+        let datetimeTz = checkDatetimeTz(value)
+        let date = checkDate(value)
+        if .valid == datetimeTz || .valid == date {
+            return .valid
+        }
+        if case .warning = date {
+            return date
+        }
+        return datetimeTz
+    }
+
+    /// Time ("time", for input type=time): its own pattern, with at most
+    /// three fraction digits, and its own checks of the hour, minute and
+    /// second (none of the fraction).
+    static func checkTime(_ value: String) -> Outcome {
+        var reader = Reader(Array(value.unicodeScalars)[...])
+        guard let time = scanTime(&reader, fractionLimit: 3), reader.atEnd else {
+            return .error("The literal did not satisfy the format for time.")
+        }
+        return checkHour(time.hour, reader).then { checkMinute(time.minute, reader) }.then {
+            time.second.map { checkSecond($0, reader) } ?? .valid
+        }
+    }
+
+    /// Month ("month", for input type=month): its own checks, the year
+    /// first, and no warnings. (Upstream's parseInt has no catch here, so a
+    /// year past a Java int's range throws out of vnu.jar, which then fails
+    /// on the document; this calls it an error.)
+    static func checkMonth(_ value: String) -> Outcome {
+        var reader = Reader(Array(value.unicodeScalars)[...])
+        guard let year = reader.digits(atLeast: 4), reader.take("-"), let month = reader.digits(exactly: 2), reader.atEnd else {
+            return .error("The literal did not satisfy the format for month.")
+        }
+        guard let yearValue = reader.javaInt(year) else {
+            return .error("Year or month out of range.")
+        }
+        let monthValue = reader.javaInt(month) ?? 0
+        if yearValue < 1 {
+            return .error("Year cannot be less than 1.")
+        }
+        if monthValue < 1 {
+            return .error("Month cannot be less than 1.")
+        }
+        if monthValue > 12 {
+            return .error("Month cannot be greater than 12.")
+        }
+        return .valid
+    }
+
+    /// Week ("week", for input type=week): its own checks, and no warnings.
+    /// Week 53 is valid only in the years that have one, which repeat every
+    /// 400 years (Week.SPECIAL_YEARS). (A year past a Java int's range: see
+    /// checkMonth.)
+    static func checkWeek(_ value: String) -> Outcome {
+        var reader = Reader(Array(value.unicodeScalars)[...])
+        guard let year = reader.digits(atLeast: 4), reader.take("-"), reader.take("W"), let week = reader.digits(exactly: 2), reader.atEnd else {
+            return .error("The literal did not satisfy the format for week.")
+        }
+        guard let yearValue = reader.javaInt(year) else {
+            return .error("Year or week out of range.")
+        }
+        let weekValue = reader.javaInt(week) ?? 0
+        if yearValue < 1 {
+            return .error("Year cannot be less than 1.")
+        }
+        if weekValue < 1 {
+            return .error("Week cannot be less than 1.")
+        }
+        if 53 == weekValue ? !weekFiftyThreeYears.contains(yearValue % 400) : weekValue > 53 {
+            return .error("Week out of range.")
+        }
+        return .valid
+    }
+
+    /// Week.SPECIAL_YEARS: the years, counted within a 400-year cycle, that
+    /// have an ISO week 53.
+    private static let weekFiftyThreeYears: Set<Int> = [
+        4, 9, 15, 20, 26, 32, 37, 43, 48, 54, 60, 65, 71, 76, 82, 88, 93, 99, 105, 111, 116, 122, 128,
+        133, 139, 144, 150, 156, 161, 167, 172, 178, 184, 189, 195, 201, 207, 212, 218, 224, 229, 235,
+        240, 246, 252, 257, 263, 268, 274, 280, 285, 291, 296, 303, 308, 314, 320, 325, 331, 336, 342,
+        348, 353, 359, 364, 370, 376, 381, 387, 392, 398
+    ]
+
+    // MARK: TimeDatetime's alternatives (each nil when it doesn't match)
+
+    /// [0-9]{4,}-[0-9]{2}: a month (groups 1 and 2).
+    private static func monthAlternative(_ reader: inout Reader) -> Outcome? {
+        guard let year = reader.digits(atLeast: 4), reader.take("-"), let month = reader.digits(exactly: 2), reader.atEnd else {
+            return nil
+        }
+        return checkMonth(year: year, month: month, reader)
+    }
+
+    /// A date (groups 3 to 5).
+    private static func dateAlternative(_ reader: inout Reader) -> Outcome? {
+        guard let date = scanDate(&reader), reader.atEnd else {
+            return nil
+        }
+        return check(date, reader)
+    }
+
+    /// [0-9]{2}-[0-9]{2}: a yearless date (groups 6 and 7). Upstream checks
+    /// its day only against 1, so 02-30 is fine.
+    private static func yearlessDateAlternative(_ reader: inout Reader) -> Outcome? {
+        guard let month = reader.digits(exactly: 2), reader.take("-"), let day = reader.digits(exactly: 2), reader.atEnd else {
+            return nil
+        }
+        let monthValue = reader.javaInt(month) ?? 0
+        if monthValue < 1 {
+            return .error("Month cannot be less than 1.")
+        }
+        if monthValue > 12 {
+            return .error("Month cannot be greater than 12.")
+        }
+        if (reader.javaInt(day) ?? 0) < 1 {
+            return .error("Day cannot be less than 1.")
+        }
+        return .valid
+    }
+
+    /// A time, with any number of fraction digits (groups 8 to 11).
+    private static func timeAlternative(_ reader: inout Reader) -> Outcome? {
+        guard let time = scanTime(&reader, fractionLimit: nil), reader.atEnd else {
+            return nil
+        }
+        return check(time, reader)
+    }
+
+    /// A date, T or a space, and a time (groups 12 to 18).
+    private static func localDateAndTimeAlternative(_ reader: inout Reader) -> Outcome? {
+        guard let date = scanDate(&reader), reader.take("T") || reader.take(" "),
+              let time = scanTime(&reader, fractionLimit: nil), reader.atEnd else {
+            return nil
+        }
+        return check(date, reader).then { check(time, reader) }
+    }
+
+    /// Z or an offset (groups 19 and 20).
+    private static func zoneAlternative(_ reader: inout Reader) -> Outcome? {
+        guard let zone = scanZone(&reader), reader.atEnd else {
+            return nil
+        }
+        return check(zone, reader)
+    }
+
+    /// A date, T or a space, a time, and Z or an offset (groups 21 to 29).
+    private static func globalDateAndTimeAlternative(_ reader: inout Reader) -> Outcome? {
+        guard let date = scanDate(&reader), reader.take("T") || reader.take(" "),
+              let time = scanTime(&reader, fractionLimit: nil), let zone = scanZone(&reader), reader.atEnd else {
+            return nil
+        }
+        return check(date, reader).then { check(time, reader) }.then { check(zone, reader) }
+    }
+
+    /// [0-9]{4,}-W[0-9]{2}: a week (groups 30 and 31), with
+    /// AbstractDatetime's checks, not Week's: any week up to 53.
+    private static func weekAlternative(_ reader: inout Reader) -> Outcome? {
+        guard let year = reader.digits(atLeast: 4), reader.take("-"), reader.take("W"), let week = reader.digits(exactly: 2), reader.atEnd else {
+            return nil
+        }
+        guard let yearValue = reader.javaInt(year) else {
+            return .error("Year or week out of range.")
+        }
+        let weekValue = reader.javaInt(week) ?? 0
+        if weekValue < 1 {
+            return .error("Week cannot be less than 1.")
+        }
+        if weekValue > 53 {
+            return .error("Week cannot be greater than 53.")
+        }
+        return checkYear(yearValue)
+    }
+
+    /// [0-9]{4,}: a year (group 32).
+    private static func yearAlternative(_ reader: inout Reader) -> Outcome? {
+        guard let year = reader.digits(atLeast: 4), reader.atEnd else {
+            return nil
+        }
+        guard let yearValue = reader.javaInt(year) else {
+            return .error("Year out of range.")
+        }
+        return checkYear(yearValue)
+    }
+
+    /// P, then either days alone or days (optional) and T with hours,
+    /// minutes and seconds, each optional but at least one, in that order:
+    /// ISO 8601's duration as HTML takes it (no years, months or weeks). The
+    /// seconds' fraction (group 33) is checked.
+    private static func isoDurationAlternative(_ reader: inout Reader) -> Outcome? {
+        guard reader.take("P") else {
+            return nil
+        }
+        let hasDays = reader.component("D")
+        if reader.atEnd {
+            return hasDays ? .valid : nil
+        }
+        guard reader.take("T") else {
+            return nil
+        }
+        var fraction: Range<Int>?
+        let hasHours = reader.component("H")
+        let hasMinutes = reader.component("M")
+        let hasSeconds = reader.seconds(fraction: &fraction)
+        guard hasHours || hasMinutes || hasSeconds, reader.atEnd else {
+            return nil
+        }
+        return fraction.map { checkFraction($0) } ?? .valid
+    }
+
+    /// One or more components, each optional whitespace, digits, then
+    /// optional whitespace and a unit (w, d, h or m, either case), or an
+    /// optional fraction, optional whitespace and s: "1h 30m", "4h 18m 3s",
+    /// "1.5s". As in Java, the fraction group (34) keeps the last fraction
+    /// any component had, and only that one is checked, so "1.1234s 1.5s"
+    /// is fine and "1.5s 1.1234s" isn't.
+    private static func durationComponentsAlternative(_ reader: inout Reader) -> Outcome? {
+        var components = 0
+        var lastFraction: Range<Int>?
+        while true {
+            let start = reader.index
+            reader.skipSpaces()
+            guard nil != reader.digits(atLeast: 1) else {
+                reader.index = start
+                break
+            }
+            let afterDigits = reader.index
+            reader.skipSpaces()
+            if let unit = reader.current, "wWdDhHmM".unicodeScalars.contains(unit) {
+                reader.index += 1
+                components += 1
+                continue
+            }
+            reader.index = afterDigits
+            var fraction: Range<Int>?
+            let beforeFraction = reader.index
+            if reader.take(".") {
+                if let digits = reader.digits(atLeast: 1) {
+                    fraction = digits
+                } else {
+                    reader.index = beforeFraction
+                }
+            }
+            reader.skipSpaces()
+            guard reader.take("s") || reader.take("S") else {
+                reader.index = start
+                break
+            }
+            if let fraction {
+                lastFraction = fraction
+            }
+            components += 1
+        }
+        guard components > 0, reader.atEnd else {
+            return nil
+        }
+        return lastFraction.map { checkFraction($0) } ?? .valid
+    }
+
+    // MARK: Pieces of the patterns
+
+    private struct DateParts {
+        var year: Range<Int>
+        var month: Range<Int>
+        var day: Range<Int>
+    }
+
+    private struct TimeParts {
+        var hour: Range<Int>
+        var minute: Range<Int>
+        var second: Range<Int>?
+        var fraction: Range<Int>?
+    }
+
+    private enum Zone {
+        case utc
+        /// The hours with their sign, and the minutes.
+        case offset(negative: Bool, hours: Range<Int>, minutes: Range<Int>)
+    }
+
+    /// [0-9]{4,}-[0-9]{2}-[0-9]{2}
+    private static func scanDate(_ reader: inout Reader) -> DateParts? {
+        guard let year = reader.digits(atLeast: 4), reader.take("-"), let month = reader.digits(exactly: 2),
+              reader.take("-"), let day = reader.digits(exactly: 2) else {
+            return nil
+        }
+        return DateParts(year: year, month: month, day: day)
+    }
+
+    /// [0-9]{2}:[0-9]{2}(:[0-9]{2}(\.[0-9]+)?)?, with at most `fractionLimit`
+    /// fraction digits where the pattern says so ({1,3}). (A colon or point
+    /// that its part doesn't follow is left over, and none of these patterns
+    /// can take it, so the time can fail at once.)
+    private static func scanTime(_ reader: inout Reader, fractionLimit: Int?) -> TimeParts? {
+        guard let hour = reader.digits(exactly: 2), reader.take(":"), let minute = reader.digits(exactly: 2) else {
+            return nil
+        }
+        var time = TimeParts(hour: hour, minute: minute, second: nil, fraction: nil)
+        guard reader.take(":") else {
+            return time
+        }
+        guard let second = reader.digits(exactly: 2) else {
+            return nil
+        }
+        time.second = second
+        guard reader.take(".") else {
+            return time
+        }
+        guard let fraction = reader.digits(atLeast: 1), fractionLimit.map({ fraction.count <= $0 }) ?? true else {
+            return nil
+        }
+        time.fraction = fraction
+        return time
+    }
+
+    /// Z|[+-][0-9]{2}:?[0-9]{2}
+    private static func scanZone(_ reader: inout Reader) -> Zone? {
+        if reader.take("Z") {
+            return .utc
+        }
+        let negative = reader.take("-")
+        guard negative || reader.take("+"), let hours = reader.digits(exactly: 2) else {
+            return nil
+        }
+        _ = reader.take(":")
+        guard let minutes = reader.digits(exactly: 2) else {
+            return nil
+        }
+        return .offset(negative: negative, hours: hours, minutes: minutes)
+    }
+
+    // MARK: AbstractDatetime's checks
+
+    /// Days in each month of a year that isn't a leap year.
+    private static let daysInMonths = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+
+    /// checkYear, with WARN on.
+    private static func checkYear(_ year: Int) -> Outcome {
+        if year < 1 {
+            return .error("Year cannot be less than 1.")
+        }
+        if year < 1000 || year >= 3000 {
+            return .warning("Year may be mistyped.")
+        }
+        return .valid
+    }
+
+    /// checkMonth: the month, then the year.
+    private static func checkMonth(year: Range<Int>, month: Range<Int>, _ reader: Reader) -> Outcome {
+        guard let yearValue = reader.javaInt(year) else {
+            return .error("Year or month out of range.")
+        }
+        let monthValue = reader.javaInt(month) ?? 0
+        if monthValue < 1 {
+            return .error("Month cannot be less than 1.")
+        }
+        if monthValue > 12 {
+            return .error("Month cannot be greater than 12.")
+        }
+        return checkYear(yearValue)
+    }
+
+    /// checkDate: the month, the day (29 February only in a leap year), then
+    /// the year.
+    private static func check(_ date: DateParts, _ reader: Reader) -> Outcome {
+        guard let year = reader.javaInt(date.year) else {
+            return .error("Year, month, or day out of range.")
+        }
+        let month = reader.javaInt(date.month) ?? 0
+        let day = reader.javaInt(date.day) ?? 0
+        if month < 1 {
+            return .error("Month cannot be less than 1.")
+        }
+        if month > 12 {
+            return .error("Month cannot be greater than 12.")
+        }
+        if day < 1 {
+            return .error("Day cannot be less than 1.")
+        }
+        if day > daysInMonths[month - 1], !(29 == day && 2 == month && (year.isMultiple(of: 400) || (year.isMultiple(of: 4) && !year.isMultiple(of: 100)))) {
+            return .error("Day out of range.")
+        }
+        return checkYear(year)
+    }
+
+    /// checkHour, checkMinute, checkSecond and checkMilliSecond, in that
+    /// order.
+    private static func check(_ time: TimeParts, _ reader: Reader) -> Outcome {
+        checkHour(time.hour, reader).then { checkMinute(time.minute, reader) }.then {
+            time.second.map { checkSecond($0, reader) } ?? .valid
+        }.then {
+            time.fraction.map { checkFraction($0) } ?? .valid
+        }
+    }
+
+    private static func checkHour(_ hour: Range<Int>, _ reader: Reader) -> Outcome {
+        (reader.javaInt(hour) ?? 0) > 23 ? .error("Hour cannot be greater than 23.") : .valid
+    }
+
+    private static func checkMinute(_ minute: Range<Int>, _ reader: Reader) -> Outcome {
+        (reader.javaInt(minute) ?? 0) > 59 ? .error("Minute cannot be greater than 59.") : .valid
+    }
+
+    private static func checkSecond(_ second: Range<Int>, _ reader: Reader) -> Outcome {
+        (reader.javaInt(second) ?? 0) > 59 ? .error("Second cannot be greater than 59.") : .valid
+    }
+
+    /// checkMilliSecond: one to three digits.
+    private static func checkFraction(_ fraction: Range<Int>) -> Outcome {
+        fraction.count > 3 ? .error("A fraction of a second must be one, two, or three digits.") : .valid
+    }
+
+    /// checkTzd, with WARN on: a minus sign on a zero offset, and hours and
+    /// minutes out of range, are errors; hours outside −12 to +14, and
+    /// minutes other than 00, 30 or 45, are warnings, in that order. (The
+    /// odd quotes and missing period are upstream's.)
+    private static func check(_ zone: Zone, _ reader: Reader) -> Outcome {
+        guard case let .offset(negative, hoursRange, minutesRange) = zone else {
+            return .valid
+        }
+        let magnitude = reader.javaInt(hoursRange) ?? 0
+        let hours = negative ? -magnitude : magnitude
+        let minutes = reader.javaInt(minutesRange) ?? 0
+        if negative, 0 == hours, 0 == minutes {
+            return .error("Minus sign not allowed in time zone designator when offset is zero. Use plus sign instead.")
+        }
+        if hours < -23 || hours > 23 {
+            return .error("Hours out of range in time zone designator.")
+        }
+        if minutes > 59 {
+            return .error("Minutes out of range in time zone designator.")
+        }
+        if hours < -12 || hours > 14 {
+            return .warning("Hours in time zone designator should be from \u{201c}-12:00\u{201d} to \u{201d}+14:00\u{201d}")
+        }
+        if 0 != minutes, 30 != minutes, 45 != minutes {
+            return .warning("Minutes in time zone designator should be either \u{201c}00\u{201d}, \u{201c}30\u{201d}, or \u{201c}45\u{201d}.")
+        }
+        return .valid
+    }
+
+    // MARK: The reader
+
+    /// The space, tab, CR, LF and form feed of THE_PATTERN's [ \t\r\n\f].
+    private static func isSpace(_ scalar: Unicode.Scalar) -> Bool {
+        " " == scalar || "\t" == scalar || "\r" == scalar || "\n" == scalar || "\u{0C}" == scalar
+    }
+
+    private struct Reader {
+        let scalars: ArraySlice<Unicode.Scalar>
+        var index: Int
+
+        init(_ scalars: ArraySlice<Unicode.Scalar>) {
+            self.scalars = scalars
+            self.index = scalars.startIndex
+        }
+
+        var atEnd: Bool {
+            scalars.endIndex == index
+        }
+
+        var current: Unicode.Scalar? {
+            index < scalars.endIndex ? scalars[index] : nil
+        }
+
+        /// Takes `scalar` if it's next.
+        mutating func take(_ scalar: Unicode.Scalar) -> Bool {
+            guard scalar == current else {
+                return false
+            }
+            index += 1
+            return true
+        }
+
+        /// All the ASCII digits from here, if there are at least `minimum`.
+        mutating func digits(atLeast minimum: Int) -> Range<Int>? {
+            let start = index
+            while let scalar = current, ("0"..."9").contains(scalar) {
+                index += 1
+            }
+            guard index - start >= minimum else {
+                index = start
+                return nil
+            }
+            return start..<index
+        }
+
+        /// Exactly `count` ASCII digits from here.
+        mutating func digits(exactly count: Int) -> Range<Int>? {
+            let start = index
+            for _ in 0..<count {
+                guard let scalar = current, ("0"..."9").contains(scalar) else {
+                    index = start
+                    return nil
+                }
+                index += 1
+            }
+            return start..<index
+        }
+
+        mutating func skipSpaces() {
+            while let scalar = current, HTMLDatetimeDatatype.isSpace(scalar) {
+                index += 1
+            }
+        }
+
+        /// A duration component, [0-9]+ and `unit`, taken if it's next.
+        mutating func component(_ unit: Unicode.Scalar) -> Bool {
+            let start = index
+            guard nil != digits(atLeast: 1), take(unit) else {
+                index = start
+                return false
+            }
+            return true
+        }
+
+        /// The seconds of an ISO duration, [0-9]+(\.([0-9]+))?S, taken if
+        /// they're next, with their fraction.
+        mutating func seconds(fraction: inout Range<Int>?) -> Bool {
+            let start = index
+            guard nil != digits(atLeast: 1) else {
+                return false
+            }
+            var digitsAfterPoint: Range<Int>?
+            if take(".") {
+                guard let digits = digits(atLeast: 1) else {
+                    index = start
+                    return false
+                }
+                digitsAfterPoint = digits
+            }
+            guard take("S") else {
+                index = start
+                return false
+            }
+            fraction = digitsAfterPoint
+            return true
+        }
+
+        /// Integer.parseInt of a run of ASCII digits: nil past a Java int's
+        /// range, where upstream catches a NumberFormatException.
+        func javaInt(_ range: Range<Int>) -> Int? {
+            var value = 0
+            for index in range {
+                value = value * 10 + Int(scalars[index].value - 0x30)
+                if value > Int(Int32.max) {
+                    return nil
+                }
+            }
+            return value
         }
     }
 }

@@ -136,14 +136,6 @@
       "category" : "valid",
       "failure" : "Expected no errors or warnings but encountered error “Attribute “aria-selected” not allowed on element “div” at this point.”."
     },
-    "html-rdfa/0281-isvalid.html" : {
-      "category" : "valid",
-      "failure" : "Expected no errors or warnings but encountered error “Bad value “2012” for attribute “datetime” on element “time”.”."
-    },
-    "html-rdfa/0282-isvalid.html" : {
-      "category" : "valid",
-      "failure" : "Expected no errors or warnings but encountered error “Bad value “2012-03” for attribute “datetime” on element “time”.”."
-    },
     "html-rdfa/0321-isvalid.html" : {
       "category" : "valid",
       "failure" : "Expected no errors or warnings but encountered error “A “link” element must have an “href” or “imagesrcset” attribute, or both.”."
@@ -171,14 +163,6 @@
     "html-rdfa/0327-isvalid.html" : {
       "category" : "valid",
       "failure" : "Expected no errors or warnings but encountered error “A “link” element must have an “href” or “imagesrcset” attribute, or both.”."
-    },
-    "html-rdfalite/0281-isvalid.html" : {
-      "category" : "valid",
-      "failure" : "Expected no errors or warnings but encountered error “Bad value “2012” for attribute “datetime” on element “time”.”."
-    },
-    "html-rdfalite/0282-isvalid.html" : {
-      "category" : "valid",
-      "failure" : "Expected no errors or warnings but encountered error “Bad value “2012-03” for attribute “datetime” on element “time”.”."
     },
     "html-rdfalite/0321-isvalid.html" : {
       "category" : "valid",
@@ -227,10 +211,6 @@
     "html/attributes/popover-isvalid.html" : {
       "category" : "valid",
       "failure" : "Expected no errors or warnings but encountered error “Bad value “hint” for attribute “popover” on element “div”.”."
-    },
-    "html/datatypes/datetime-time-valid-isvalid.html" : {
-      "category" : "valid",
-      "failure" : "Expected no errors or warnings but encountered error “Bad value “P1D” for attribute “datetime” on element “time”.”."
     },
     "html/datatypes/hashname-empty-novalid.html" : {
       "category" : "invalid",
@@ -328,34 +308,6 @@
       "category" : "haswarn",
       "failure" : "Expected a warning only but encountered error “Bad value “data:text/html,test#test” for attribute “cite” on element “del”.”."
     },
-    "html/elements/del/date-0004-02-29-haswarn.html" : {
-      "category" : "haswarn",
-      "failure" : "Expected a warning only but encountered error “Bad value “0004-02-29” for attribute “datetime” on element “del”.”."
-    },
-    "html/elements/del/date-0214-09-29-haswarn.html" : {
-      "category" : "haswarn",
-      "failure" : "Expected a warning only but encountered error “Bad value “0214-09-29” for attribute “datetime” on element “del”.”."
-    },
-    "html/elements/del/date-20014-09-29-haswarn.html" : {
-      "category" : "haswarn",
-      "failure" : "Expected a warning only but encountered error “Bad value “20014-09-29” for attribute “datetime” on element “del”.”."
-    },
-    "html/elements/del/date-year-five-digits-haswarn.html" : {
-      "category" : "haswarn",
-      "failure" : "Expected a warning only but encountered error “Bad value “12014-09-29” for attribute “datetime” on element “del”.”."
-    },
-    "html/elements/del/global-date-and-time-timezone-minus-1300-haswarn.html" : {
-      "category" : "haswarn",
-      "failure" : "Expected a warning only but encountered error “Bad value “2011-11-12T00:00:00-1300” for attribute “datetime” on element “del”.”."
-    },
-    "html/elements/del/global-date-and-time-timezone-minutes-15-haswarn.html" : {
-      "category" : "haswarn",
-      "failure" : "Expected a warning only but encountered error “Bad value “2011-11-12T00:00:00+08:15” for attribute “datetime” on element “del”.”."
-    },
-    "html/elements/del/global-date-and-time-timezone-plus-1500-haswarn.html" : {
-      "category" : "haswarn",
-      "failure" : "Expected a warning only but encountered error “Bad value “2011-11-12T00:00:00+1500” for attribute “datetime” on element “del”.”."
-    },
     "html/elements/dl/div-contains-dl-novalid.html" : {
       "category" : "invalid",
       "failure" : "Expected “Element “dl” not allowed as child of “div” in this context.” but instead encountered “Stray end tag “div”.”."
@@ -431,34 +383,6 @@
     "html/elements/ins/cite/scheme-data-contains-fragment-haswarn.html" : {
       "category" : "haswarn",
       "failure" : "Expected a warning only but encountered error “Bad value “data:text/html,test#test” for attribute “cite” on element “ins”.”."
-    },
-    "html/elements/ins/date-0004-02-29-haswarn.html" : {
-      "category" : "haswarn",
-      "failure" : "Expected a warning only but encountered error “Bad value “0004-02-29” for attribute “datetime” on element “ins”.”."
-    },
-    "html/elements/ins/date-0214-09-29-haswarn.html" : {
-      "category" : "haswarn",
-      "failure" : "Expected a warning only but encountered error “Bad value “0214-09-29” for attribute “datetime” on element “ins”.”."
-    },
-    "html/elements/ins/date-20014-09-29-haswarn.html" : {
-      "category" : "haswarn",
-      "failure" : "Expected a warning only but encountered error “Bad value “20014-09-29” for attribute “datetime” on element “ins”.”."
-    },
-    "html/elements/ins/date-year-five-digits-haswarn.html" : {
-      "category" : "haswarn",
-      "failure" : "Expected a warning only but encountered error “Bad value “12014-09-29” for attribute “datetime” on element “ins”.”."
-    },
-    "html/elements/ins/global-date-and-time-timezone-minus-1300-haswarn.html" : {
-      "category" : "haswarn",
-      "failure" : "Expected a warning only but encountered error “Bad value “2011-11-12T00:00:00-1300” for attribute “datetime” on element “ins”.”."
-    },
-    "html/elements/ins/global-date-and-time-timezone-minutes-15-haswarn.html" : {
-      "category" : "haswarn",
-      "failure" : "Expected a warning only but encountered error “Bad value “2011-11-12T00:00:00+08:15” for attribute “datetime” on element “ins”.”."
-    },
-    "html/elements/ins/global-date-and-time-timezone-plus-1500-haswarn.html" : {
-      "category" : "haswarn",
-      "failure" : "Expected a warning only but encountered error “Bad value “2011-11-12T00:00:00+1500” for attribute “datetime” on element “ins”.”."
     },
     "html/elements/label/for-with-non-matching-descendant-novalid.html" : {
       "category" : "invalid",
@@ -701,9 +625,9 @@
   },
   "passCounts" : {
     "hasinfo" : 5,
-    "haswarn" : 138,
+    "haswarn" : 152,
     "invalid" : 3587,
-    "valid" : 1717
+    "valid" : 1722
   },
   "version" : 2
 }
