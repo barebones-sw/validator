@@ -69,6 +69,22 @@ public final class HTMLValidator: Sendable {
         /// HTMLImplicitClosures.TemplateContentMode); unused otherwise.
         var templateMode: HTMLImplicitClosures.TemplateContentMode
         var flags: Flags
+        /// Case 554591 (item 3, from its review): what the element is to an
+        /// h1–h6 end tag's search (see HTMLImplicitClosures.HeadingScopeRole),
+        /// worked out when it's pushed (see init).
+        var headingScopeRole: HTMLImplicitClosures.HeadingScopeRole
+
+        /// (Case 554591, item 3: with headingScopeRole worked out from the
+        /// rest, which is why this isn't the memberwise initializer.)
+        init(name: String, offset: Int, length: Int, namespace: HTMLNamespace, templateMode: HTMLImplicitClosures.TemplateContentMode, flags: Flags) {
+            self.name = name
+            self.offset = offset
+            self.length = length
+            self.namespace = namespace
+            self.templateMode = templateMode
+            self.flags = flags
+            self.headingScopeRole = HTMLImplicitClosures.headingScopeRole(name: name, namespace: namespace, childrenAreHTML: flags.contains(.childrenAreHTML))
+        }
 
         var childrenAreHTML: Bool { flags.contains(.childrenAreHTML) }
         var isInRejectedSubtree: Bool { flags.contains(.inRejectedSubtree) }
@@ -689,6 +705,11 @@ public final class HTMLValidator: Sendable {
                 // Review item A2: after "End tag “p” implied, but there were
                 // open elements." and the like, upstream lists the elements
                 // above the one closed (see appendUnclosedElements).
+                // (Case 554591, item 3: when a heading is closed too, after a
+                // p in it, keepCount is the heading's index rather than the
+                // p's, so the list takes in the p as well; but a p, its end
+                // tag being optional, is never listed, so the elements listed
+                // are still the ones above it.)
                 if closure.errors.contains(where: { $0.hasSuffix(", but there were open elements.") }) {
                     appendUnclosedElements(above: closure.keepCount, stack: &stack, locations: locations, messages: &messages)
                 }
@@ -857,6 +878,35 @@ public final class HTMLValidator: Sendable {
                     if let headIndex = stack.lastIndex(where: { .html == $0.namespace && "head" == $0.name }) {
                         stack.removeSubrange(headIndex...)
                     }
+                    continue
+                }
+                // Case 554591 (item 3): an h1–h6 end tag closes the innermost
+                // heading in scope, whichever of the six it is (see
+                // HTMLImplicitClosures.lastHeadingInScope); with none, it's a
+                // stray end tag. After the implied end tags, a current node
+                // other than a heading of the end tag's name is an error,
+                // followed by the elements still open above the heading, as
+                // for other end tags; so <h2>a</h1> is "End tag “h1” seen, but
+                // there were open elements." and closes the <h2>. This looked
+                // for an element of the end tag's own name, as other end tags
+                // do, past the scope's boundaries: <h2>a</h1> was a stray end
+                // tag that left the <h2> open (and a later one went inside
+                // it), and <h1><table><td></h1> closed the table.
+                // (HTMLTreeEventBuilder does the same.) (From item 3's review:
+                // ahead of scopeStart, a walk down the stack this doesn't use;
+                // and the quiet test reads only the names from the heading up,
+                // not a copy of the whole stack's: both cost a deep document
+                // time for every heading end tag.)
+                if HTMLVocabulary.headingElements.contains(name) {
+                    guard let match = HTMLImplicitClosures.lastHeadingInScope(count: stack.count, role: { stack[$0].headingScopeRole }) else {
+                        appendError("Stray end tag \u{201c}\(name)\u{201d}.", offset: offset, length: length, locations: locations, messages: &messages)
+                        continue
+                    }
+                    if name != stack[match].name || !HTMLImplicitClosures.endTagClosesQuietly(name, matchIndex: 0, openElements: stack[match...].map(\.name)) {
+                        appendError("End tag \u{201c}\(name)\u{201d} seen, but there were open elements.", offset: offset, length: length, locations: locations, messages: &messages)
+                        appendUnclosedElements(above: match, stack: &stack, locations: locations, messages: &messages)
+                    }
+                    stack.removeSubrange(match...)
                     continue
                 }
                 // Review item A2: an HTML end tag closes an HTML element, and
@@ -1247,17 +1297,14 @@ public final class HTMLValidator: Sendable {
             appendWarning("The \u{201c}profile\u{201d} attribute on the \u{201c}head\u{201d} element is obsolete. To declare which \u{201c}meta\u{201d} terms are used in the document, instead register the names as meta extensions. To trigger specific UA behaviors, use a \u{201c}link\u{201d} element instead.", offset: offset, length: length, locations: locations, messages: &messages)
         }
 
-        // Review item A2: these two look at the HTML elements above the
-        // innermost foreign one only (see "Foreign content" in HTMLImplicitClosures):
-        // a heading inside an SVG's <foreignObject> inside another heading, or
-        // a <div> there inside a table, isn't nested in them as HTML.
+        // Review item A2: this looks at the HTML elements above the innermost
+        // foreign one only (see "Foreign content" in HTMLImplicitClosures): a
+        // <div> inside an SVG's <foreignObject> inside a table isn't nested
+        // in it as HTML. (Case 554591, item 3: "Heading cannot be a child of
+        // another heading.", which this used to report too, is now one of
+        // the implied end tags' errors, as upstream's parser pops the old
+        // heading; see HTMLImplicitClosures.beforeStartTag.)
         let htmlStack = stack[((stack.lastIndex { .html != $0.namespace }).map { $0 + 1 } ?? 0)...]
-        // (And, as upstream's tree builder does, only when the current node,
-        // after any implied </p>, is a heading: "<h1><span><h2>" isn't this
-        // error, though the <h2> is still not allowed in the <span>.)
-        if HTMLVocabulary.headingElements.contains(name), let current = contentStack.last, .html == current.namespace, HTMLVocabulary.headingElements.contains(current.name) {
-            appendError("Heading cannot be a child of another heading.", offset: offset, length: length, locations: locations, messages: &messages)
-        }
 
         // Case 554591: these parse errors belong to the table insertion modes,
         // i.e. while directly inside a table, row group or row, not inside a

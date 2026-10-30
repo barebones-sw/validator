@@ -148,6 +148,22 @@ struct HTMLTreeEventBuilder {
         /// whether the colgroup upstream's parser implies for a col directly
         /// in it is open (see endImpliedColgroup); unused otherwise.
         var impliedColgroupIsOpen = false
+        /// Case 554591 (item 3, from its review): what the element is to an
+        /// h1–h6 end tag's search (see HTMLImplicitClosures.HeadingScopeRole),
+        /// worked out when it's pushed (see init).
+        var headingScopeRole: HTMLImplicitClosures.HeadingScopeRole
+
+        /// (Case 554591, item 3: with headingScopeRole worked out from the
+        /// rest, which is why this isn't the memberwise initializer.)
+        init(name: String, range: HTMLSourceRange, namespace: HTMLNamespace, childrenAreHTML: Bool, templateMode: HTMLImplicitClosures.TemplateContentMode, isInTemplateContents: Bool) {
+            self.name = name
+            self.range = range
+            self.namespace = namespace
+            self.childrenAreHTML = childrenAreHTML
+            self.templateMode = templateMode
+            self.isInTemplateContents = isInTemplateContents
+            self.headingScopeRole = HTMLImplicitClosures.headingScopeRole(name: name, namespace: namespace, childrenAreHTML: childrenAreHTML)
+        }
     }
 
     private var events: [HTMLDocumentEvent] = [.startDocument]
@@ -526,6 +542,26 @@ struct HTMLTreeEventBuilder {
         // frameset" mode, where every start tag but <noframes> is ignored.
         if "frameset" == name, let index = stack.lastIndex(where: { .html == $0.namespace && "frameset" == $0.name }), !stack[..<index].contains(where: { .html == $0.namespace && "frameset" == $0.name }) {
             sections.noteFramesetEnded()
+        }
+        // Case 554591 (item 3): an h1–h6 end tag closes the innermost heading
+        // in scope, whichever of the six it is (see
+        // HTMLImplicitClosures.lastHeadingInScope), and with none, upstream's
+        // parser ignores it; HTMLValidator does the same. Its end event is
+        // the heading's, by that heading's name: the checkers match an end
+        // event to the open element of its name. (This used to close an
+        // element of the end tag's own name above the innermost integration
+        // point, past the default scope's HTML boundaries, as for other end
+        // tags: so <h1><table><td></h1> closed the table.)
+        if HTMLVocabulary.headingElements.contains(name) {
+            guard let match = HTMLImplicitClosures.lastHeadingInScope(count: stack.count, role: { stack[$0].headingScopeRole }) else {
+                return
+            }
+            while stack.count - 1 > match {
+                closeTop()
+            }
+            let heading = stack.removeLast()
+            events.append(.endElement(name: heading.name, range: range, implicit: false))
+            return
         }
         // ... and otherwise it's an HTML end tag, which closes an HTML element
         // above the innermost integration point (foreignObject, mi, ...). For
@@ -956,12 +992,6 @@ enum HTMLImplicitClosures {
         count: Int,
         element: (Int) -> (name: String, namespace: HTMLNamespace, childrenAreHTML: Bool)
     ) -> (index: Int, hasFurthestBlock: Bool, inScope: Bool)? {
-        // (The default scope's boundaries, upstream's SCOPING elements: the
-        // HTML ones in defaultScopeBoundaries, and the foreign integration
-        // points and annotation-xml.)
-        let isScopeBoundary: ((name: String, namespace: HTMLNamespace, childrenAreHTML: Bool)) -> Bool = { node in
-            (.html == node.namespace && defaultScopeBoundaries.contains(node.name)) || (.html != node.namespace && (node.childrenAreHTML || "annotation-xml" == node.name))
-        }
         var index = count - 1
         var found: Int?
         var inScope = true
@@ -975,10 +1005,10 @@ enum HTMLImplicitClosures {
                 if .html == node.namespace, activeFormattingMarkers.contains(node.name) {
                     return nil
                 }
-                if isScopeBoundary(node) {
+                if isDefaultScopeBoundary(node) {
                     inScope = false
                 }
-            } else if isScopeBoundary(node) {
+            } else if isDefaultScopeBoundary(node) {
                 return nil
             }
             index -= 1
@@ -1170,6 +1200,27 @@ enum HTMLImplicitClosures {
         default:
             if paragraphClosingStartTags.contains(name) {
                 closeParagraphInButtonScope(names: &names, errors: &errors)
+            }
+            // Case 554591 (item 3): "a start tag whose tag name is one of h1,
+            // h2, h3, h4, h5, h6": once a p is closed, a heading that is the
+            // current node is an error, and upstream's parser pops it, so the
+            // new heading is its sibling. HTMLValidator used to report the
+            // error and keep the old heading open, and the tree builder kept
+            // it open too, so a heading after an unclosed one went inside it
+            // ("Element “h2” not allowed as child of “h1”", review item 7,
+            // and "Unclosed element “h1”" at the end of the file), and each
+            // one after that went one deeper: 20,000 lines of
+            // <h2>x <span>y</span> took 38 seconds and 1.2 GB to check, as
+            // every open heading collected the text of all those inside it
+            // (P1 item 3; see HTMLGeneralAttributeChecker's heading
+            // bookkeeping). (After the p is closed, as upstream has it, so
+            // that <h1><p>a<h2> closes both, the p's errors first. And only
+            // an HTML current node: `names` blanks out foreign elements and
+            // starts above the innermost one, so a heading in an SVG
+            // <foreignObject> inside another heading closes nothing.)
+            if HTMLVocabulary.headingElements.contains(name), let current = names.last, HTMLVocabulary.headingElements.contains(current) {
+                errors.append("Heading cannot be a child of another heading.")
+                names.removeLast()
             }
         }
 
@@ -1380,7 +1431,73 @@ enum HTMLImplicitClosures {
         return names[(matchIndex + 1)...].allSatisfy { quiet.contains($0) }
     }
 
+    /// Case 554591 (item 3): the open element an h1–h6 end tag closes: "an
+    /// element in scope that is an HTML element and whose tag name is one of
+    /// h1, h2, h3, h4, h5, or h6" (upstream's findLastInScopeHn), whichever
+    /// of the six the end tag names, so </h1> closes an open <h2>. Both
+    /// stacks used to look for an element of the end tag's own name, and
+    /// past the scope's boundaries, as they do for other end tags: so
+    /// <h2>a</h1> was a stray end tag that left the <h2> open (vnu.jar: "End
+    /// tag “h1” seen, but there were open elements.", and the <h2> closed),
+    /// and <h1><table><td></h1> closed the table, where upstream's parser
+    /// ignores the stray end tag. `role(index)` gives the HeadingScopeRole of
+    /// the open element at an index of a stack of `count`. (Upstream's loop
+    /// stops above its stack's first entry, the <html> element, which is a
+    /// boundary anyway; this one goes to the bottom, since the port's stacks
+    /// start with whatever the document opened first.)
+    static func lastHeadingInScope(count: Int, role: (Int) -> HeadingScopeRole) -> Int? {
+        var index = count - 1
+        while index >= 0 {
+            switch role(index) {
+            case .heading:
+                return index
+            case .scopeBoundary:
+                return nil
+            case .other:
+                index -= 1
+            }
+        }
+        return nil
+    }
+
+    /// Case 554591 (item 3, from its review): what an open element is to an
+    /// h1–h6 end tag's search for a heading (see lastHeadingInScope): an HTML
+    /// h1–h6, a boundary of the default scope (see isDefaultScopeBoundary),
+    /// or neither. Both stacks work it out once, when they push the element,
+    /// as upstream's ElementName and StackNode flags are: a stray heading end
+    /// tag searches a deep stack all the way down, and testing each element's
+    /// name there instead (two set lookups and a copy of the name, for every
+    /// element passed) made that three times slower than the search it
+    /// replaced. (One byte: it fits in the padding of both stacks' records,
+    /// whose size matters for deeply nested documents.)
+    enum HeadingScopeRole: UInt8 {
+        case other
+        case heading
+        case scopeBoundary
+    }
+
+    /// Case 554591 (item 3): see HeadingScopeRole.
+    static func headingScopeRole(name: String, namespace: HTMLNamespace, childrenAreHTML: Bool) -> HeadingScopeRole {
+        if .html == namespace, HTMLVocabulary.headingElements.contains(name) {
+            return .heading
+        }
+        return isDefaultScopeBoundary((name, namespace, childrenAreHTML)) ? .scopeBoundary : .other
+    }
+
     // MARK: Helpers
+
+    /// The default scope's boundaries, upstream's SCOPING elements: the HTML
+    /// ones in defaultScopeBoundaries, and the foreign integration points and
+    /// MathML's annotation-xml. (Case 554591, item 3: shared by
+    /// reopenedFormattingElement and lastHeadingInScope; it was the former's
+    /// own. From item 3's review: only MathML's annotation-xml, as upstream's
+    /// SCOPING_AS_MATHML flag has it. This counted an SVG annotation-xml too,
+    /// which kept an h1–h6 end tag from closing the heading around it, where
+    /// vnu.jar closes it. That never mattered for reopenedFormattingElement:
+    /// an HTML start tag there has an integration point above it first.)
+    private static func isDefaultScopeBoundary(_ node: (name: String, namespace: HTMLNamespace, childrenAreHTML: Bool)) -> Bool {
+        (.html == node.namespace && defaultScopeBoundaries.contains(node.name)) || (.html != node.namespace && node.childrenAreHTML) || (.mathML == node.namespace && "annotation-xml" == node.name)
+    }
 
     /// Whether every element above `index` would be popped by "generate
     /// implied end tags" (i.e. they all have optional end tags).

@@ -527,9 +527,49 @@ struct HTMLGeneralAttributeChecker {
         var figureAltContextStack: [FigureAltContext] = []
         var detailsStack: [DetailsState] = []
         var sectioningStack: [SectioningState] = []
-        var headingStack: [HeadingState] = []
-        var headingLevels: [Int] = []
-        var firstHeadingElement: HTMLStartElement?
+        // Case 554591 (item 3): upstream's bookkeeping for "Empty heading."
+        // (Assertions.java), which, like its figure bookkeeping above, works
+        // on its stack array's slots: every heading's record, in the order
+        // the headings start, with whether text or an <img> has been noted
+        // on it (see HeadingContentRecord); for each depth of the stack, the
+        // record of the heading last opened at that depth (nil once another
+        // element has been opened there), beside figureAltSlots; and the
+        // depth of the heading most recently opened (upstream's
+        // currentHeadingPtr, which a heading's end doesn't reset), whose
+        // slot the text and images in any heading are noted on. Upstream
+        // notes them on whatever node is in that slot, and its figure
+        // bookkeeping notes an <img> the same way through currentFigurePtr,
+        // so a heading that has taken a figure's slot gets the figure's
+        // <img> (see the figure bookkeeping). (Upstream also notes a
+        // heading's text and images on a figure that has taken the heading's
+        // slot, which this leaves out, as it never shows: such a figure is
+        // open only when they're in it, and then, being in a heading, its
+        // caption's text never counts as a caption's, so it reports its
+        // images without an alt anyway.) Nothing inside a
+        // <template> is noted, or checked, as upstream's checker skips
+        // template contents. So in <h1><span><h2>b</h2></span>c</h1>,
+        // both the b and the c are noted on the <h2>, and the <h1> is "Empty
+        // heading.", as vnu.jar reports it. The port used to give every open
+        // heading all the text inside it, which counted text in a nested
+        // heading or a template and no image, and made a document of nested
+        // headings quadratic in time and memory (P1 item 3: every open heading
+        // kept a copy of the text). So <h1><img src=logo.png alt=Company></h1>
+        // was "Empty heading.", where vnu.jar reports nothing.
+        var headingRecords: [HeadingContentRecord] = []
+        var headingSlots: [Int?] = []
+        var currentHeadingDepth: Int?
+        // Case 554591 (item 3): upstream's HeadingHierarchyChecker, which
+        // sees every element (in templates too): for each open element, its
+        // heading offset as that checker computes it (see
+        // cumulativeHeadingOffset), kept beside `stack`; and every heading,
+        // in the order the headings start, with its computed level. The port
+        // used to note a heading's level when it ended, in that order, and
+        // only if it wasn't empty, and took no account of headingoffset, so
+        // <h1></h1><h2>Title</h2> had "none of them has a computed heading
+        // level of 1", and <div headingoffset=1><h1>…</h1></div><h3>…</h3> a
+        // skipped level.
+        var headingOffsetStack: [Int32] = []
+        var headings: [HeadingInfo] = []
         var rubyStack: [RubyState] = []
         var optgroupStack: [OptgroupState] = []
         var mathArityStack: [MathArityState] = []
@@ -611,8 +651,11 @@ struct HTMLGeneralAttributeChecker {
                         sectioningStack[index].hasHeading = true
                     }
                 }
+                // Case 554591 (item 3): see headingOffsetStack. (Pushed with
+                // the element, below.)
+                let headingOffset = Self.cumulativeHeadingOffset(for: element, parentOffset: headingOffsetStack.last ?? 0)
                 if isHTML, let level = Self.headingLevel(for: element.name) {
-                    headingStack.append(HeadingState(element: element, level: level))
+                    headings.append(HeadingInfo(element: element, level: Self.computedHeadingLevel(level, offset: headingOffset)))
                 }
                 if let rubyIndex = rubyStack.indices.last, parentIsHTML, parent == "ruby" {
                     rubyStack[rubyIndex].directChildNames.append(element.name)
@@ -823,6 +866,16 @@ struct HTMLGeneralAttributeChecker {
                         } else if Self.figureEmbeddedContentElements.contains(element.name) {
                             figureAltRecords[currentFigure].embeddedContentFound = true
                         }
+                    } else if parentFigureContext.isInFigure, "img" == element.name, let depth = currentFigureAltDepth,
+                              depth < headingSlots.count, let heading = headingSlots[depth] {
+                        // Case 554591 (item 3): where a heading has taken the
+                        // place of the figure upstream's currentFigurePtr
+                        // names, the <img> is noted on the heading's node, as
+                        // upstream's flags are the node's, whatever it is: the
+                        // heading has an image now (see headingSlots), so it
+                        // isn't "Empty heading.", as in
+                        // <figure><figure></figure><h2><img src=b></h2></figure>.
+                        headingRecords[heading].imgFound = true
                     }
                     // (Outside a figure, HTMLValidator reports the missing
                     // alt itself, as it reads the tag, which keeps the message
@@ -858,6 +911,34 @@ struct HTMLGeneralAttributeChecker {
                     }
                 }
                 updateBaseState(afterStarting: element, sawBodyContentBeforeBase: &sawBodyContentBeforeBase, sawBaseBlockingElement: &sawBaseBlockingElement)
+                // Case 554591 (item 3): "Empty heading." (see headingSlots).
+                // An HTML <img> in a heading with an alt attribute that isn't
+                // empty (a space will do) is noted on the heading in the
+                // current heading's slot, before the <img> takes a slot of
+                // its own; a heading becomes the current heading, at the
+                // depth it's about to take, with a new record. Nothing in a
+                // template. (Its raw value will do for the alt: a reference
+                // never decodes to nothing.)
+                var headingRecord: Int?
+                if !inTemplateContents {
+                    if isHTML, "img" == element.name, parentFigureContext.isInHeading, let depth = currentHeadingDepth, depth < headingSlots.count,
+                       let heading = headingSlots[depth], let alt = element.attributeValue("alt"), !alt.isEmpty {
+                        headingRecords[heading].imgFound = true
+                    }
+                    if isHTML, Self.headingElements.contains(element.name) {
+                        headingRecords.append(HeadingContentRecord(element: element))
+                        headingRecord = headingRecords.count - 1
+                        currentHeadingDepth = stack.count
+                    }
+                    while headingSlots.count < stack.count {
+                        headingSlots.append(nil)
+                    }
+                    if headingSlots.count == stack.count {
+                        headingSlots.append(headingRecord)
+                    } else {
+                        headingSlots[stack.count] = headingRecord
+                    }
+                }
                 // (Elements in a template aren't in upstream's stack at all, so
                 // they take no slot; see figureAltSlots.)
                 if !inTemplateContents {
@@ -871,6 +952,7 @@ struct HTMLGeneralAttributeChecker {
                     }
                 }
                 figureAltContextStack.append(figureContext)
+                headingOffsetStack.append(headingOffset)
                 stack.append(element.name)
                 namespaceStack.append(element.namespace)
                 anyElementContentStack.append(inAnyElementContent)
@@ -908,8 +990,19 @@ struct HTMLGeneralAttributeChecker {
                 if endedIsHTML, (name == "article" || name == "section"), let state = sectioningStack.popLast(), !state.hasHeading {
                     appendSectioningHeadingWarning(for: state.element, locations: locations, messages: &messages)
                 }
-                if endedIsHTML, Self.headingElements.contains(name), let state = headingStack.popLast() {
-                    appendHeadingMessages(state, headingLevels: &headingLevels, firstHeadingElement: &firstHeadingElement, locations: locations, messages: &messages)
+                // Case 554591 (item 3): a heading with no text or image noted
+                // on it is "Empty heading." (see headingSlots). Its slot holds
+                // its record while it's open; one in a template has none.
+                // (Its level was noted when it started; see `headings`.) From
+                // item 3's review: not a heading with a popover attribute,
+                // which upstream's checker treats first as an autofocus
+                // scoping root, a branch of the same chain of tests at an
+                // element's end, which then skips the heading's.
+                if endedIsHTML, Self.headingElements.contains(name), let index = stack.lastIndex(of: name), !templateContentsStack[index],
+                   index < headingSlots.count, let heading = headingSlots[index],
+                   !headingRecords[heading].textNodeFound, !headingRecords[heading].imgFound,
+                   !headingRecords[heading].element.hasAttribute("popover") {
+                    appendWarningMessage("Empty heading.", for: headingRecords[heading].element, locations: locations, messages: &messages)
                 }
                 if endedIsHTML, name == "ruby", let state = rubyStack.popLast() {
                     appendRubyMessages(state, locations: locations, messages: &messages)
@@ -964,6 +1057,7 @@ struct HTMLGeneralAttributeChecker {
                         }
                     }
                     figureAltContextStack.removeSubrange(index...)
+                    headingOffsetStack.removeSubrange(index...)
                     stack.removeSubrange(index...)
                     namespaceStack.removeSubrange(index...)
                     anyElementContentStack.removeSubrange(index...)
@@ -1047,8 +1141,21 @@ struct HTMLGeneralAttributeChecker {
                         appendMessage("Text not allowed in \u{201c}annotation-xml\u{201d} in this context.", range: HTMLSourceRange(offset: range.offset + piece.lowerBound, length: piece.count), locations: locations, messages: &messages)
                     }
                 }
-                for index in headingStack.indices {
-                    headingStack[index].text += content
+                // Case 554591 (item 3): text in a heading, or in an element
+                // inside one, is noted on the heading in the current heading's
+                // slot (see headingSlots), if it's text by the rules of the
+                // figure bookkeeping above, which are upstream's for both:
+                // anything but space, tab, CR and LF, as its checker sees the
+                // text. Not in a template. (This replaces a copy of the text
+                // for every open heading; see P1 item 3. The figure
+                // bookkeeping's text never reaches a heading this way: its
+                // current figure's slot can hold a heading that's still open
+                // only when the text is in that heading, which makes it a
+                // heading's text, here.)
+                if !textIsInTemplateContents, let context = figureAltContextStack.last, context.isInHeading,
+                   let depth = currentHeadingDepth, depth < headingSlots.count, let heading = headingSlots[depth], !headingRecords[heading].textNodeFound,
+                   Self.containsFigureText(content, decodingReferences: context.textDecodesReferences && !Self.isCDATASection(range, locations: locations), droppingNUL: context.textDropsNUL) {
+                    headingRecords[heading].textNodeFound = true
                 }
                 let currentIsHTML = .html == (namespaceStack.last ?? .html)
                 if currentIsHTML, stack.last == "ruby", !content.unicodeScalars.allSatisfy(isASCIIWhitespace), let rubyIndex = rubyStack.indices.last {
@@ -1084,9 +1191,7 @@ struct HTMLGeneralAttributeChecker {
         if let activeRoleTabElement, !sawRoleTabpanel {
             appendMessage("Every active \u{201c}role=tab\u{201d} element must have a corresponding \u{201c}role=tabpanel\u{201d} element.", for: activeRoleTabElement, locations: locations, messages: &messages)
         }
-        if !headingLevels.isEmpty, !headingLevels.contains(1), let firstHeadingElement {
-            appendWarningMessage("This document has heading elements but none of them has a computed heading level of 1.", for: firstHeadingElement, locations: locations, messages: &messages)
-        }
+        appendHeadingHierarchyMessages(headings, locations: locations, messages: &messages)
         languageCounts.add(pendingLanguageText)
         appendLanguageDetectionWarning(htmlElement: htmlElement, counts: languageCounts, locations: locations, messages: &messages)
         return messages
@@ -1709,10 +1814,26 @@ struct HTMLGeneralAttributeChecker {
         var hasHeading = false
     }
 
-    private struct HeadingState {
+    /// Case 554591 (item 3): a heading, for upstream's "Empty heading." (see
+    /// headingSlots): its start tag, where the warning goes, and the two flags
+    /// of upstream's node that decide it: text found, and an <img> found
+    /// (which its figure bookkeeping can set too).
+    private struct HeadingContentRecord {
         var element: HTMLStartElement
-        var level: Int
-        var text = ""
+        var textNodeFound = false
+        var imgFound = false
+
+        init(element: HTMLStartElement) {
+            self.element = element
+        }
+    }
+
+    /// Case 554591 (item 3): a heading, for upstream's HeadingHierarchyChecker
+    /// (see `headings`): its start tag, where its messages go, and its
+    /// computed level (see computedHeadingLevel).
+    private struct HeadingInfo {
+        var element: HTMLStartElement
+        var level: Int32
     }
 
     private struct RubyState {
@@ -2198,26 +2319,120 @@ struct HTMLGeneralAttributeChecker {
         }
     }
 
-    private func appendHeadingMessages(
-        _ state: HeadingState,
-        headingLevels: inout [Int],
-        firstHeadingElement: inout HTMLStartElement?,
+    /// Case 554591 (item 3): upstream's HeadingHierarchyChecker, at the end
+    /// of the document: each heading that's more than one level below the
+    /// heading before it, in the order they start, is an error (with
+    /// "levels" for more than one), and then, if no heading has a computed
+    /// level of 1, the first one gets a warning. Every heading counts, an
+    /// empty one too. (The port checked each heading as it ended, in that
+    /// order, leaving out empty ones, and always said "level"; vnu.jar's
+    /// "skipping 2 heading levels." was a mismatch on 12 pages of the
+    /// website. It also named the previous heading by its level, as
+    /// "h\(level)", rather than by its name.) Upstream's arithmetic is a Java
+    /// int's, which these Int32 operations keep.
+    private func appendHeadingHierarchyMessages(
+        _ headings: [HeadingInfo],
         locations: SourceLocationMap,
         messages: inout [ValidationMessage]
     ) {
-        let trimmedText = state.text.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmedText.isEmpty {
-            appendWarningMessage("Empty heading.", for: state.element, locations: locations, messages: &messages)
-            return
+        guard let first = headings.first else { return }
+        var previous: HeadingInfo?
+        var hasTopLevelHeading = false
+        for heading in headings {
+            if 1 == heading.level {
+                hasTopLevelHeading = true
+            }
+            if let previous, heading.level > previous.level &+ 1 {
+                let skipped = heading.level &- previous.level &- 1
+                appendMessage("The heading \u{201c}\(heading.element.name)\u{201d} (with computed level \(heading.level)) follows the heading \u{201c}\(previous.element.name)\u{201d} (with computed level \(previous.level)), skipping \(skipped) heading level\(skipped > 1 ? "s" : "").", for: heading.element, locations: locations, messages: &messages)
+            }
+            previous = heading
         }
+        if !hasTopLevelHeading {
+            appendWarningMessage("This document has heading elements but none of them has a computed heading level of 1.", for: first.element, locations: locations, messages: &messages)
+        }
+    }
 
-        if firstHeadingElement == nil {
-            firstHeadingElement = state.element
+    /// Case 554591 (item 3): an element's heading offset as upstream's
+    /// HeadingHierarchyChecker computes it for a heading (its
+    /// computeHeadingOffset): the headingoffset values (see
+    /// headingOffsetValue) of the element and its ancestors, added up from the
+    /// element outward until one with a headingreset attribute, whose value
+    /// is the last added. Kept for each open element, this is the element's
+    /// own value, plus, unless it has headingreset, its parent's offset. (A
+    /// foreign element has neither attribute, as far as that checker is
+    /// concerned.) Upstream walks every ancestor for each heading, which for
+    /// deeply nested headings would be quadratic. (The value is decoded
+    /// first, as upstream's tokenizer hands it on: see
+    /// HTMLCharacterReferences.decodeAttributeValue.)
+    private static func cumulativeHeadingOffset(for element: HTMLStartElement, parentOffset: Int32) -> Int32 {
+        guard .html == element.namespace else {
+            return parentOffset
         }
-        if let previousLevel = headingLevels.last, state.level > previousLevel + 1 {
-            appendMessage("The heading \u{201c}\(state.element.name)\u{201d} (with computed level \(state.level)) follows the heading \u{201c}h\(previousLevel)\u{201d} (with computed level \(previousLevel)), skipping \(state.level - previousLevel - 1) heading level.", for: state.element, locations: locations, messages: &messages)
+        let own = element.attributeValue("headingoffset").map { headingOffsetValue(HTMLCharacterReferences.decodeAttributeValue($0)) } ?? 0
+        return element.hasAttribute("headingreset") ? own : own &+ parentOffset
+    }
+
+    /// Case 554591 (item 3): a heading's computed level, as upstream's
+    /// HeadingHierarchyChecker has it: the number in its name plus its
+    /// heading offset, at most 9.
+    private static func computedHeadingLevel(_ level: Int, offset: Int32) -> Int32 {
+        min(Int32(level) &+ offset, 9)
+    }
+
+    /// Case 554591 (item 3): a headingoffset attribute's value as upstream's
+    /// HeadingHierarchyChecker reads it (parseNonNegativeInteger): Java's
+    /// String.trim, which strips the UTF-16 units up to U+0020 from both ends,
+    /// then Integer.parseInt, which takes an optional sign and decimal digits
+    /// of any script (Character.digit, which knows no surrogate pairs) into
+    /// a 32-bit int; 0 for a negative value or for anything parseInt rejects,
+    /// including an overflow. (The attribute's own error, for a value other
+    /// than 0 to 8, is isValidHeadingOffset's; vnu.jar takes "1 " and
+    /// "１", a fullwidth 1, as 1 here.) From item 3's review: a NUL makes it
+    /// 0 wherever it is, as upstream's tokenizer turns it into U+FFFD, which
+    /// is neither trimmed nor a digit (this took "2<NUL>" as 2); and ASCII
+    /// digits are read directly, before any look-up of Unicode's properties,
+    /// from the UTF-16 view itself, not a copy (a long value cost a quarter
+    /// as much again as the rest of checking the page).
+    private static func headingOffsetValue(_ value: String) -> Int32 {
+        var units = value.utf16[...]
+        if units.contains(0) {
+            return 0
         }
-        headingLevels.append(state.level)
+        while let first = units.first, first <= 0x20 {
+            units.removeFirst()
+        }
+        while let last = units.last, last <= 0x20 {
+            units.removeLast()
+        }
+        // (A minus sign gives either a negative number or an error, and both
+        // are 0.)
+        guard let first = units.first, 0x2D != first else {
+            return 0
+        }
+        if 0x2B == first {
+            units.removeFirst()
+        }
+        guard !units.isEmpty else {
+            return 0
+        }
+        var result: Int64 = 0
+        for unit in units {
+            let digit: Int64
+            if 0x30 <= unit, 0x39 >= unit {
+                digit = Int64(unit - 0x30)
+            } else if let scalar = Unicode.Scalar(unit), .decimalNumber == scalar.properties.generalCategory,
+                      let numeric = scalar.properties.numericValue {
+                digit = Int64(numeric)
+            } else {
+                return 0
+            }
+            result = result * 10 + digit
+            if result > Int64(Int32.max) {
+                return 0
+            }
+        }
+        return Int32(result)
     }
 
     private func appendRubyMessages(
@@ -2329,7 +2544,11 @@ struct HTMLGeneralAttributeChecker {
            !Self.enterKeyHintValues.contains(enterkeyhint.lowercased()) {
             appendBadAttributeValue(enterkeyhint, attribute: "enterkeyhint", for: element, locations: locations, messages: &messages)
         }
-        if let headingOffset = element.attributeValue("headingoffset"), !isValidHeadingOffset(headingOffset) {
+        // (Case 554591, item 3: the value as upstream's checker sees it, its
+        // character references decoded, as the heading levels now read it
+        // too; see cumulativeHeadingOffset. So headingoffset="&#50;" is 2,
+        // and fine, where the port reported it as no number from 0 to 8.)
+        if let headingOffset = element.attributeValue("headingoffset"), !isValidHeadingOffset(HTMLCharacterReferences.decodeAttributeValue(headingOffset)) {
             appendMessage(
                 "The value of the \u{201c}headingoffset\u{201d} attribute must be a number between \u{201c}0\u{201d} and \u{201c}8\u{201d}.",
                 for: element,
@@ -6227,14 +6446,17 @@ struct HTMLGeneralAttributeChecker {
         "marquee", "math", "note", "status", "tabpanel", "timer", "toolbar"
     ]
 
+    /// The number in a heading's name, for an HTML h1–h6 only. (Case 554591,
+    /// item 3, from its review: upstream's HeadingHierarchyChecker knows only
+    /// those six names. This took "h" and any one character Unicode gives
+    /// a value of 1 to 6, so unknown elements such as <h١> (an Arabic-Indic
+    /// 1), <h¹> and <h１> counted as headings once item 3 began noting every
+    /// heading's level as it starts.)
     private static func headingLevel(for name: String) -> Int? {
-        guard name.count == 2,
-              name.first == "h",
-              let digit = name.last?.wholeNumberValue,
-              (1...6).contains(digit) else {
+        guard headingElements.contains(name), let digit = name.utf8.last else {
             return nil
         }
-        return digit
+        return Int(digit - UInt8(ascii: "0"))
     }
 
     private static let zero = UInt8(ascii: "0")

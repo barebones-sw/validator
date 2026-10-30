@@ -35,8 +35,9 @@ enum HTMLCharacterReferences {
     /// text (see item 4's figure text rules), while a literal form feed stays
     /// one. So vnu.jar reads span="&#12;2" as " 2", a span of 2, and splits
     /// headers="a&#12;b" into two IDs, but not headers="a<FF>b". Only the
-    /// table checker uses this so far; the other checks that decode a value
-    /// still see the form feed.
+    /// table checker and headingoffset (case 554591, item 3: its check and
+    /// the heading levels) use this so far; the other checks that decode a
+    /// value still see the form feed.
     static func decodeAttributeValue(_ value: String) -> String {
         decode(value, formFeedReferenceIsSpace: true)
     }
