@@ -5252,6 +5252,135 @@ private func isARIAMessage(_ message: String) -> Bool {
     message.contains("aria-") || message.contains("role") || message.contains("\u{201c}main\u{201d} element")
 }
 
+// Case 554591 (A28): "Element “option” without attribute “label” must not be
+// empty." as upstream's TextContentChecker gives it (see inEmptyTitleOrOption
+// in HTMLGeneralAttributeChecker): one flag for the whole document, set by an
+// option without a label attribute, in any namespace, and cleared by text
+// other than space, tab, CR and LF, as upstream's checkers see the text, or
+// by the end of an HTML title; and no message for an HTML option that ends
+// while the element that started last is a child of an HTML datalist, which
+// leaves the flag set for the next option. So an empty option in a datalist,
+// as in MDN's example, isn't reported, nor is one holding only white space;
+// a no-break space counts as text, and &#32; or &#12; doesn't; an option in
+// an optgroup, a div, a select or a template in a datalist is reported, as
+// is one with nothing but elements in it, and one whose last element is in
+// an SVG or MathML datalist, since only an HTML one exempts; and so is an
+// option with a label attribute that ends after an empty datalist option, or
+// after an SVG option, with no text between them. Some of the documents are
+// template contents, which upstream's schema doesn't check but its
+// TextContentChecker does, so that schema messages the port doesn't give yet
+// (for an optgroup or a div in a datalist, or a datalist in a select), and
+// those for an unknown SVG or MathML element, stay out of them. The expected
+// messages are vnu.jar's, all its errors and warnings, with its "Bad value"
+// message's reason left off, as the port words it.
+@Test(arguments: [
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<label>Choose a flavor: <input list=\"ice-cream-flavors\" id=\"ice-cream-choice\" name=\"ice-cream-choice\"></label>\n<datalist id=\"ice-cream-flavors\"><option value=\"Chocolate\"></option><option value=\"Coconut\"></option></datalist>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<datalist id=f><option></option></datalist>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<input list=f>\n<datalist id=f>\n<option value=\"Chocolate\">\n<option value=\"Coconut\">Coco</option>\n<option value=\"Mint\">\n</datalist>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<datalist id=f><option value=a> \n\t </option></datalist>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<datalist id=f><option value=a>&#32;</option></datalist>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<datalist id=f><option value=a><b></b></option></datalist>\n", [("error", "Element \u{201c}option\u{201d} without attribute \u{201c}label\u{201d} must not be empty.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<datalist id=f><option value=a><img src=x alt=y></option></datalist>\n", [("error", "Element \u{201c}option\u{201d} without attribute \u{201c}label\u{201d} must not be empty.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<datalist id=f><select><option></select></datalist>\n", [("error", "Element \u{201c}option\u{201d} without attribute \u{201c}label\u{201d} must not be empty.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<template><datalist id=f><optgroup label=g><option value=a></option></optgroup></datalist></template>\n", [("error", "Element \u{201c}option\u{201d} without attribute \u{201c}label\u{201d} must not be empty.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<template><datalist id=f><div><option value=a></option></div></datalist></template>\n", [("error", "Element \u{201c}option\u{201d} without attribute \u{201c}label\u{201d} must not be empty.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<datalist id=f><template><option value=a></option></template></datalist>\n", [("error", "Element \u{201c}option\u{201d} without attribute \u{201c}label\u{201d} must not be empty.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<select><option></option></select>\n", [("error", "Element \u{201c}option\u{201d} without attribute \u{201c}label\u{201d} must not be empty.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<select><optgroup label=g><option></option></optgroup></select>\n", [("error", "Element \u{201c}option\u{201d} without attribute \u{201c}label\u{201d} must not be empty.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<select><option> \n </option></select>\n", [("error", "Element \u{201c}option\u{201d} without attribute \u{201c}label\u{201d} must not be empty.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<select><option>&#32;</option></select>\n", [("error", "Element \u{201c}option\u{201d} without attribute \u{201c}label\u{201d} must not be empty.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<select><option>&#12;</option></select>\n", [("error", "Element \u{201c}option\u{201d} without attribute \u{201c}label\u{201d} must not be empty.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<select><option>\u{a0}</option></select>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<select>\n<option value=1>\n<option value=2>x\n</select>\n", [("error", "Element \u{201c}option\u{201d} without attribute \u{201c}label\u{201d} must not be empty.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<datalist id=f><option label=\"\"></option></datalist>\n", [("error", "Bad value \u{201c}\u{201d} for attribute \u{201c}label\u{201d} on element \u{201c}option\u{201d}.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<datalist id=f><option label=\"x\"></option></datalist>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<select><option label=x value=1></option></select>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<template><select><datalist id=f><option value=a></option></datalist></select></template>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<datalist id=f><option value=a><datalist><b></b></datalist></option></datalist>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<template><div><option><b><option>x</option></b></option></div></template>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<template><datalist id=f><option value=a></option></datalist></template>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<select><template><option></option></template></select>\n", [("error", "Element \u{201c}option\u{201d} without attribute \u{201c}label\u{201d} must not be empty.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<svg><foreignObject><datalist id=f><option value=a></option></datalist></foreignObject></svg>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<svg><desc><option></option></desc></svg>\n", [("error", "Element \u{201c}option\u{201d} without attribute \u{201c}label\u{201d} must not be empty.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<math><mi><datalist id=f><option value=a></option></datalist></mi></math>\n", [("error", "Element \u{201c}datalist\u{201d} not allowed as child of \u{201c}mi\u{201d} in this context.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<svg><option></option></svg>\n<select><option label=x value=1></option></select>\n", [("error", "Element \u{201c}option\u{201d} not allowed as child of \u{201c}svg\u{201d} in this context."), ("error", "Element \u{201c}option\u{201d} without attribute \u{201c}label\u{201d} must not be empty."), ("error", "The \u{201c}option\u{201d} element is a completely-unknown element that is not allowed anywhere in any SVG content.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<math><semantics><mi>x</mi><annotation-xml encoding=\"text/html\"><datalist id=f><option value=a></option></datalist></annotation-xml></semantics></math>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<template><datalist id=f><option value=a><svg><datalist><g/></datalist></svg></option></datalist></template>\n", [("error", "Element \u{201c}option\u{201d} without attribute \u{201c}label\u{201d} must not be empty.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<template><datalist id=f><option value=a><math><datalist><mi/></datalist></math></option></datalist></template>\n", [("error", "Element \u{201c}option\u{201d} without attribute \u{201c}label\u{201d} must not be empty.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<datalist id=f><option value=a></option></datalist>\n<select><option label=x value=1></option></select>\n", [("error", "Element \u{201c}option\u{201d} without attribute \u{201c}label\u{201d} must not be empty.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<datalist id=f><option value=a></option></datalist>x<select><option label=x value=1></option></select>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<datalist id=f><option value=a></option></datalist><script>var x;</script><select><option label=x value=1></option></select>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<datalist id=f><option value=a></option></datalist><select><option label=x value=1></option><option label=y value=2></option></select>\n", [("error", "Element \u{201c}option\u{201d} without attribute \u{201c}label\u{201d} must not be empty.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<template><datalist id=f><option value=a></option></datalist><title></title><select><option label=x value=1></option></select></template>\n", [("error", "Element \u{201c}title\u{201d} must not be empty.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<template><datalist id=f><option value=a><title></title></option></datalist></template>\n", [("error", "Element \u{201c}title\u{201d} must not be empty.")]),
+] as [(String, [(String, String)])])
+func emptyOptionsMatchUpstream(document: String, expected: [(String, String)]) {
+    let actual = checkHTML(document).messages
+        .filter { "info" != $0.type || "warning" == $0.subType }
+        .map { "\("info" == $0.type ? "warning" : "error"): \($0.message)" }
+        .sorted()
+    #expect(actual == expected.map { "\($0.0): \($0.1)" }.sorted(), "\(document)")
+}
+
+// Case 554591 (A28, from its review): where "Element “option” without
+// attribute “label” must not be empty." goes, as upstream's
+// TextContentChecker gives it from its endElement: at the option's end tag,
+// or at the token that closed it implicitly (the next <option>, a
+// </select>), so with the flag carried over from an exempt datalist option,
+// at the end of the option that ends next. The port gave it at the option's
+// start tag. The expected places are vnu.jar's (line and column of the
+// message's first character).
+@Test(arguments: [
+    // The end tag, on a line of its own
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<select>\n<option value=1>\n</option>\n</select>\n", [("Element \u{201c}option\u{201d} without attribute \u{201c}label\u{201d} must not be empty.", 4, 1)]),
+    // The next <option>, which closes it implicitly
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<select><option value=1><option value=2>b</option></select>\n", [("Element \u{201c}option\u{201d} without attribute \u{201c}label\u{201d} must not be empty.", 2, 25)]),
+    // The </select>, which closes it implicitly
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<select><option value=1></select>\n", [("Element \u{201c}option\u{201d} without attribute \u{201c}label\u{201d} must not be empty.", 2, 25)]),
+    // The flag an exempt datalist option leaves: at the end of the next option, one with a label attribute
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<datalist id=f><option value=a></option></datalist>\n<select><option label=x value=1></option></select>\n", [("Element \u{201c}option\u{201d} without attribute \u{201c}label\u{201d} must not be empty.", 3, 33)]),
+    // Two indented options, each at its own end tag
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<select>\n  <option value=1></option>\n  <option value=2></option>\n</select>\n", [("Element \u{201c}option\u{201d} without attribute \u{201c}label\u{201d} must not be empty.", 3, 19), ("Element \u{201c}option\u{201d} without attribute \u{201c}label\u{201d} must not be empty.", 4, 19)]),
+    // A datalist option holding only an element is reported, at its end tag
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<datalist id=f><option value=a><b></b></option></datalist>\n", [("Element \u{201c}option\u{201d} without attribute \u{201c}label\u{201d} must not be empty.", 2, 39)]),
+] as [(String, [(String, Int, Int)])])
+func emptyOptionsComeInUpstreamsPlaces(document: String, expected: [(String, Int, Int)]) {
+    let actual = checkHTML(document).messages
+        .filter { "Element \u{201c}option\u{201d} without attribute \u{201c}label\u{201d} must not be empty." == $0.message }
+        .map { "\($0.message) @ \($0.firstLine ?? $0.lastLine ?? 0):\($0.firstColumn ?? $0.lastColumn ?? 0)" }
+        .sorted()
+    #expect(actual == expected.map { "\($0.0) @ \($0.1):\($0.2)" }.sorted(), "\(document)")
+}
+
+// Case 554591 (A28, from its mutation run): empty options where vnu.jar also
+// reports something the port doesn't yet ("Saw U+0000 in stream.", or the
+// XML 1.0 warning for a form feed), so only the empty-option message is
+// compared, with vnu.jar's answers. Upstream's tree builder drops a NUL in an
+// HTML element, so one in an option, alone or before or after a reference to
+// a space, in template contents too, isn't text, and the option is reported;
+// it turns one in SVG text into U+FFFD, which is text, so that clears the
+// flag an exempt datalist option leaves, and the option with a label
+// attribute after it isn't reported. A literal form feed is text too, in an
+// option or between two of them (a reference to one isn't; see
+// emptyOptionsMatchUpstream).
+@Test(arguments: [
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<select><option>\u{0}</option></select>\n", [("error", "Element \u{201c}option\u{201d} without attribute \u{201c}label\u{201d} must not be empty.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<select><option>&#32;\u{0}</option></select>\n", [("error", "Element \u{201c}option\u{201d} without attribute \u{201c}label\u{201d} must not be empty.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<select><option>\u{0}&#32;</option></select>\n", [("error", "Element \u{201c}option\u{201d} without attribute \u{201c}label\u{201d} must not be empty.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<template><select><option>\u{0}</option></select></template>\n", [("error", "Element \u{201c}option\u{201d} without attribute \u{201c}label\u{201d} must not be empty.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<datalist id=f><option value=a></option></datalist><svg width=1 height=1><text>\u{0}</text></svg><select><option label=x value=1></option></select>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<datalist id=f><option value=a></option></datalist><svg width=1 height=1><text>&#32;\u{0}</text></svg><select><option label=x value=1></option></select>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<select><option>\u{0C}</option></select>\n", []),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<datalist id=f><option value=a></option></datalist>\u{0C}<select><option label=x value=1></option></select>\n", []),
+] as [(String, [(String, String)])])
+func emptyOptionsMatchUpstreamWhereItSaysMore(document: String, expected: [(String, String)]) {
+    let actual = checkHTML(document).messages
+        .filter { "Element \u{201c}option\u{201d} without attribute \u{201c}label\u{201d} must not be empty." == $0.message }
+        .map { "\("info" == $0.type ? "warning" : "error"): \($0.message)" }
+        .sorted()
+    #expect(actual == expected.map { "\($0.0): \($0.1)" }.sorted(), "\(document)")
+}
+
 // Case 554591 (item 12, from its review): in an XHTML document, the schema
 // checks nothing inside a colgroup it rejects (here, one in a <div>), so the
 // figure rules don't either: vnu.jar reports the colgroup alone, which the XML

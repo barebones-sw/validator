@@ -533,6 +533,42 @@ struct HTMLGeneralAttributeChecker {
         var mediaStack: [MediaState] = []
         var selectStack: [SelectState] = []
         var optionStack: [OptionState] = []
+        // Case 554591 (A28): upstream's TextContentChecker, which gives
+        // "Element “option” without attribute “label” must not be empty.",
+        // keeps one flag for the whole document, its inEmptyTitleOrOption,
+        // rather than one for each option. An option without a label
+        // attribute sets it as it starts, in any namespace (see the
+        // .startElement case); text with anything but space, tab, CR and LF
+        // in it, as that checker sees the text, clears it, wherever the text
+        // is (see the .characters case); and so does the end of an HTML
+        // <title> (see the .endElement case). When an HTML option ends with
+        // the flag set, it's reported, and the report clears the flag,
+        // unless the parent of the element that started last (the option
+        // itself, if nothing has started in it) is an HTML <datalist>: that
+        // parent is upstream's `parent`, which it sets at every start tag and
+        // never at an end tag (lastStartedParentIsDatalist, here). That's
+        // upstream's reading of the spec's content model for option, which
+        // lets one without a label attribute be empty only when it's a child
+        // of a datalist. So an option in a datalist with no text isn't
+        // reported, as in MDN's <datalist id="f"><option
+        // value="Chocolate"></option></datalist>; but one in an optgroup, a
+        // div or a template in a datalist is, and so is one with nothing but
+        // elements in it, such as <option><b></b></option>, as the element
+        // that started last is then inside the option. And as an option that
+        // isn't reported leaves the flag set, the next HTML option to end is
+        // reported, even with a label attribute, unless text comes first: in
+        // <datalist id=f><option value=a></option></datalist><select><option
+        // label=x value=1></option></select>, it's the select's option. All
+        // of these are as vnu.jar reports them. The port used to keep each
+        // option's own text and report every HTML option without a label
+        // attribute whose text trimmed to nothing, whatever its parent, so
+        // every option in MDN's example was an error; and its notion of
+        // empty wasn't upstream's: a no-break space or a form feed counted
+        // as white space, a reference such as &#32; as text, and the text of
+        // an option nested in another (in a <b> in it) as only the inner
+        // one's.
+        var inEmptyTitleOrOption = false
+        var lastStartedParentIsDatalist = false
         // Review item 3: upstream's bookkeeping for <img> elements without a
         // text alternative inside a <figure> (see FigureAltRecord): every
         // figure's record, in the order the figures start; for each depth of
@@ -912,8 +948,24 @@ struct HTMLGeneralAttributeChecker {
                     }
                 }
                 if isHTML, element.name == "option" {
-                    optionStack.append(OptionState(element: element, hasLabel: element.hasAttribute("label")))
+                    optionStack.append(OptionState(element: element))
                 }
+                // Case 554591 (A28): see inEmptyTitleOrOption. Any option
+                // without a label attribute sets it, an SVG or MathML one too:
+                // upstream's test, XHTML_URL.equals(uri) &&
+                // ("title".equals(localName)) || ("option".equals(localName)
+                // && atts.getIndex("", "label") < 0), applies the namespace to
+                // the title only. (Only an HTML option is reported, at its
+                // end, so a foreign one with nothing after it passes the flag
+                // on: <svg><option></option></svg><select><option label=x
+                // value=1></option></select> has the select's option
+                // reported, as vnu.jar does.) And every start tag notes
+                // whether its parent is an HTML datalist, as upstream's
+                // `parent = openElements.peek()` does at every start tag.
+                if "option" == element.name, !element.hasAttribute("label") {
+                    inEmptyTitleOrOption = true
+                }
+                lastStartedParentIsDatalist = .html == parentNamespace && "datalist" == parent
                 if parentIsHTML, parent == "details", let detailsIndex = detailsStack.indices.last {
                     if element.name == "summary" {
                         if detailsStack[detailsIndex].sawSummary {
@@ -1126,7 +1178,35 @@ struct HTMLGeneralAttributeChecker {
                     appendSelectMessages(state, locations: locations, messages: &messages)
                 }
                 if endedIsHTML, name == "option", let state = optionStack.popLast() {
-                    appendOptionMessages(state, locations: locations, messages: &messages)
+                    // Case 554591 (A28): an HTML option that ends with
+                    // inEmptyTitleOrOption set is reported, which clears the
+                    // flag, unless the element that started last is a child
+                    // of an HTML datalist, which leaves the flag as it is (see
+                    // inEmptyTitleOrOption). The port used to decide it from
+                    // the option's own text, whatever its parent.
+                    let isReportedEmpty = inEmptyTitleOrOption && !lastStartedParentIsDatalist
+                    if isReportedEmpty {
+                        inEmptyTitleOrOption = false
+                    }
+                    // (Case 554591, A28's review: and where upstream reports
+                    // it, as TextContentChecker's endElement runs: at the end
+                    // tag, or at the token that closed the option implicitly,
+                    // the next <option>, say, or a </select>, found as the
+                    // A20 <time> text check finds it (whose end event carries
+                    // the start tag's range). The port reported it at the
+                    // option's start tag, so with the flag carried over from
+                    // an exempt option, BBEdit highlighted an option with a
+                    // label attribute where vnu.jar points past it.)
+                    var emptyPlace = endRange
+                    if implicit {
+                        while nextImplicitEndCause < document.implicitEndCauses.count, document.implicitEndCauses[nextImplicitEndCause].index < eventIndex {
+                            nextImplicitEndCause += 1
+                        }
+                        if nextImplicitEndCause < document.implicitEndCauses.count, eventIndex == document.implicitEndCauses[nextImplicitEndCause].index {
+                            emptyPlace = document.implicitEndCauses[nextImplicitEndCause].range
+                        }
+                    }
+                    appendOptionMessages(state, isReportedEmpty: isReportedEmpty, emptyPlace: emptyPlace, locations: locations, messages: &messages)
                 }
                 if endedIsHTML, name == "picture", let state = pictureStack.popLast() {
                     appendPictureMessages(state, locations: locations, messages: &messages)
@@ -1198,6 +1278,19 @@ struct HTMLGeneralAttributeChecker {
                 if endedIsHTML, name == "title", let capture = titleCapture {
                     appendTitleMessages(capture, locations: locations, messages: &messages)
                     titleCapture = nil
+                }
+                // Case 554591 (A28): upstream's TextContentChecker reports an
+                // HTML title that ends with inEmptyTitleOrOption set, which
+                // clears it, so no option's flag outlasts a title (the port's
+                // title check, just above, gives the title's message): in
+                // <datalist id=f><option value=a></option></datalist>
+                // <title></title><select><option label=x
+                // value=1></option></select>, vnu.jar reports the title, not
+                // the select's option. (A title's start sets the flag too,
+                // which changes nothing here, as only text can come before
+                // its end.)
+                if endedIsHTML, "title" == name {
+                    inEmptyTitleOrOption = false
                 }
                 if endedIsHTML, name == "label", !labelStack.isEmpty {
                     _ = labelStack.popLast()
@@ -1322,8 +1415,20 @@ struct HTMLGeneralAttributeChecker {
                    stack.contains("option") {
                     selectStack[selectIndex].firstOptionText += content
                 }
-                if let optionIndex = optionStack.indices.last {
-                    optionStack[optionIndex].text += content
+                // Case 554591 (A28): text with anything but space, tab, CR and
+                // LF in it, as upstream's checkers see it (by the figure
+                // bookkeeping's rules above, containsFigureText: references
+                // decoded, without the NULs upstream's tree builder drops),
+                // clears inEmptyTitleOrOption, wherever it is: in or out of
+                // an option, and in template contents too, which upstream's
+                // TextContentChecker sees. (It's looked at only while the
+                // flag is set.) This replaces each option's own copy of its
+                // text (see inEmptyTitleOrOption).
+                if inEmptyTitleOrOption {
+                    let context = figureAltContextStack.last ?? FigureAltContext()
+                    if Self.containsOptionText(content, decodingReferences: context.textDecodesReferences && !Self.isCDATASection(range, locations: locations), droppingNUL: context.textDropsNUL) {
+                        inEmptyTitleOrOption = false
+                    }
                 }
                 // Review item A2: one message for each piece of the text that
                 // upstream's schema validator sees (see nonSpaceTextPieces).
@@ -1992,10 +2097,13 @@ struct HTMLGeneralAttributeChecker {
         var firstOptionText = ""
     }
 
+    /// Case 554591 (A28): an open HTML option, for the messages at its end
+    /// (see appendOptionMessages). It no longer keeps its text, or whether it
+    /// has a label attribute: whether it's empty is decided as upstream's
+    /// TextContentChecker decides it, with one flag for the whole document
+    /// (see inEmptyTitleOrOption in validate).
     private struct OptionState {
         var element: HTMLStartElement
-        var hasLabel: Bool
-        var text = ""
     }
 
     /// Review item 3: one <figure>, as upstream's bookkeeping for <img>
@@ -3611,6 +3719,31 @@ struct HTMLGeneralAttributeChecker {
         return seen.unicodeScalars.contains { !(" " == $0 || "\t" == $0 || "\r" == $0 || "\n" == $0 || "\u{0C}" == $0 || (droppingNUL && "\u{0}" == $0)) }
     }
 
+    /// Case 554591 (A28's review): containsFigureText's answer, for the empty
+    /// option flag's text test, without decoding or copying the text in the
+    /// usual case: the first scalar that isn't a space, tab, CR or LF (or a
+    /// NUL upstream's tree builder drops) decides, as anything there is text
+    /// (a form feed too, as containsFigureText has it), but for an "&" that
+    /// starts a reference, which might decode to white space, where the full
+    /// test is asked. A28 had asked containsFigureText for every text event
+    /// while the flag was set, which decodes the whole text first: 10% slower
+    /// on a page of long option texts with "&amp;"s in them.
+    private static func containsOptionText(_ text: String, decodingReferences: Bool, droppingNUL: Bool) -> Bool {
+        for scalar in text.unicodeScalars {
+            switch scalar.value {
+            case 0x20, 0x09, 0x0A, 0x0D:
+                continue
+            case 0x00 where droppingNUL:
+                continue
+            case 0x26 where decodingReferences:
+                return containsFigureText(text, decodingReferences: decodingReferences, droppingNUL: droppingNUL)
+            default:
+                return true
+            }
+        }
+        return false
+    }
+
     /// Review item 3: whether text is a CDATA section's (in SVG or MathML),
     /// which the tokenizer hands on as text starting right after the
     /// "<![CDATA[" (see HTMLTokenizer.tokenizeAndBuildTree); upstream reads
@@ -5221,16 +5354,27 @@ struct HTMLGeneralAttributeChecker {
         }
     }
 
+    /// Case 554591 (A28): an HTML option's end, where an empty label
+    /// attribute is a bad value, as before, and the option is reported as
+    /// empty if isReportedEmpty says so. The caller decides that as upstream's
+    /// TextContentChecker does (see inEmptyTitleOrOption in validate), rather
+    /// than from the option's own text, as this used to: so an option in a
+    /// datalist with no text isn't reported, and one with a label attribute
+    /// can be. (A28's review: the empty message goes at `emptyPlace`, where
+    /// the option ends, as upstream's does; the label's Bad value stays at the
+    /// start tag, where the schema gives it.)
     private func appendOptionMessages(
         _ state: OptionState,
+        isReportedEmpty: Bool,
+        emptyPlace: HTMLSourceRange,
         locations: SourceLocationMap,
         messages: inout [ValidationMessage]
     ) {
         if let label = state.element.attributeValue("label"), label.isEmpty {
             appendBadAttributeValue(label, attribute: "label", for: state.element, locations: locations, messages: &messages)
         }
-        if !state.hasLabel, state.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            appendMessage("Element \u{201c}option\u{201d} without attribute \u{201c}label\u{201d} must not be empty.", for: state.element, locations: locations, messages: &messages)
+        if isReportedEmpty {
+            appendMessage("Element \u{201c}option\u{201d} without attribute \u{201c}label\u{201d} must not be empty.", range: emptyPlace, locations: locations, messages: &messages)
         }
     }
 

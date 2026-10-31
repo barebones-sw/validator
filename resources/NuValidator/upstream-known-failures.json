@@ -4,10 +4,6 @@
       "category" : "invalid",
       "failure" : "Expected “The “aria-braillelabel” attribute must not be specified on any “area” element unless the element has a “role” value other than “caption”, “code”, “deletion”, “emphasis”, “generic”, “insertion”, “paragraph”, “presentation”, “strong”, “subscript”, or “superscript”.” but instead encountered “Stray end tag “map”.”."
     },
-    "html-aria/misc/aria-haspopup-on-datalist-input-haswarn.html" : {
-      "category" : "haswarn",
-      "failure" : "Expected a warning only but encountered error “Element “option” without attribute “label” must not be empty.”."
-    },
     "html-aria/misc/aria-label-area-novalid.html" : {
       "category" : "invalid",
       "failure" : "Expected “The “aria-label” attribute must not be specified on any “area” element unless the element has a “role” value other than “caption”, “code”, “deletion”, “emphasis”, “generic”, “insertion”, “paragraph”, “presentation”, “strong”, “subscript”, or “superscript”.” but instead encountered “Stray end tag “map”.”."
@@ -473,7 +469,7 @@
   },
   "passCounts" : {
     "hasinfo" : 5,
-    "haswarn" : 157,
+    "haswarn" : 158,
     "invalid" : 3590,
     "valid" : 1752
   },
