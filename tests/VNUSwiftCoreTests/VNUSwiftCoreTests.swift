@@ -2649,6 +2649,1124 @@ private func isDatetimeMessage(_ message: String) -> Bool {
     return message.hasPrefix("Bad value") && nil != message.range(of: "for attribute \u{201c}(datetime|min|max|value)\u{201d}", options: .regularExpression)
 }
 
+// Case 554591 (A5): media query values as upstream's MediaQuery datatype
+// judges them (see HTMLMediaQueryDatatype). Upstream runs the W3C CSS
+// validator on "@media " + value + " {}" and reports the first error it
+// records, so a media attribute is held to the whole Media Queries grammar
+// that validator knows, quirks and all: its lexer (escapes in two passes,
+// comments anywhere, keywords that a following "(" turns into a function,
+// characters no token matches, a lone CR or an FF that ruins the rest),
+// media types (known, deprecated, unknown, lowercased as Java lowercases),
+// the 35 media features with their own messages and value counts, range
+// syntax, value printing, an unknown feature's range that ends the check,
+// and braces that close the rule early. The port's old subset parser knew
+// four features and needed a media type, so nearly every real media query
+// was a false Bad value. The expected details are vnu.jar's, with the period
+// MediaQuery adds, or not, or two; nil is vnu.jar's acceptance. The datatype
+// returns the detail before the message emitter scrubs it, so values whose
+// detail the scrub could have changed are left out. The cases are the
+// grammar reader's rule examples, a profile of each media feature, every
+// unit, the values reader's rules, a few quirks, every detail shape and the
+// real-world values (see the A5 tests' README). Left out: three values
+// whose braces inject declarations whose detail names a property, as in
+// "screen{}p{color:rad}" (“color”: “rad” is not a “color” value.); the
+// datatype doesn't port the CSS validator's property database, and only
+// their details differ.
+@Test(arguments: [
+    // Grammar rule 0: the first error recorded is the one reported
+    ("tv, foo", "The media \u{201c}tv\u{201d} has been deprecated"),
+    ("foo, tv", "unrecognized media \u{201c}foo\u{201d}."),
+    ("(width: 600), tv", "only \u{201c}0\u{201d} can be a \u{201c}unit\u{201d}. You must put a unit after your number"),
+    ("(color: 2.5) and (width: 600)", "This number should be an integer."),
+    ("tv, (width: 600)", "The media \u{201c}tv\u{201d} has been deprecated"),
+    // Grammar rule 1: how the detail ends: a period added, or not, or two
+    ("screen and", "Parse Error."),
+    ("foo", "unrecognized media \u{201c}foo\u{201d}."),
+    ("tv", "The media \u{201c}tv\u{201d} has been deprecated"),
+    ("(aspect-ratio: -16/9)", "\u{201c}-16/9\u{201d} is not valid, only values greater than \u{201c}0\u{201d} allowed.."),
+    ("(width: 600) and", "only \u{201c}0\u{201d} can be a \u{201c}unit\u{201d}. You must put a unit after your number"),
+    ("screen {} @foo", "Unrecognized at-rule \u{201c}@foo\u{201d}"),
+    // Grammar rule 2: empty, whitespace-only and comment-only values are accepted
+    ("", nil),
+    (" ", nil),
+    ("\t", nil),
+    ("\n", nil),
+    ("/**/", nil),
+    // Grammar rule 3: and, or, not and only are keywords; before ( they need whitespace or a comment
+    ("screen and(color)", "Parse Error."),
+    ("screen AND (color)", nil),
+    ("android", "unrecognized media \u{201c}android\u{201d}."),
+    ("(color) and(monochrome)", "Parse Error."),
+    ("(color) Or (monochrome)", nil),
+    ("(color) or(monochrome)", "Parse Error."),
+    ("NOT (color)", nil),
+    ("not(color)", "Parse Error."),
+    // Grammar rule 4: whitespace is space, TAB, LF, CR and FF, and comments stand anywhere; NBSP and U+3000 are name characters
+    ("not/**/screen", nil),
+    ("screen\u{a0}and (color)", "unrecognized media \u{201c}screen\u{a0}and\u{201d}."),
+    ("screen\u{3000}and (color)", "unrecognized media \u{201c}screen\u{3000}and\u{201d}."),
+    ("screen/**/and (color)", nil),
+    ("(/**/min-width/**/:/**/40em/**/)", nil),
+    ("screen/**/,print", nil),
+    ("(color)/**/,/**/(grid)", nil),
+    // Grammar rule 5: > and >= take in the whitespace before them, a comment included
+    ("(width /**/>= 600px)", "\u{201c} /**/>=\u{201d} is not a \u{201c}\u{201d} value."),
+    ("(width /**/> 600px)", "\u{201c} /**/>\u{201d} is not a \u{201c}\u{201d} value."),
+    ("(width /**/ >= 600px)", "\u{201c} /**/ >=\u{201d} is not a \u{201c}\u{201d} value."),
+    ("(width\n/**/>= 600px)", "\u{201c}\n/**/>=\u{201d} is not a \u{201c}\u{201d} value."),
+    ("(600px > width /**/ > 100px)", "\u{201c} /**/ >\u{201d} is not a \u{201c}\u{201d} value."),
+    ("(width/**/>=600px)", nil),
+    ("(foo /**/>= 1)", "\u{201c} /**/>=\u{201d} is not a \u{201c}\u{201d} value."),
+    // Grammar rule 6: unclosed comments and strings; stray tokens
+    ("/*", "Parse Error."),
+    ("screen /*", "Parse Error."),
+    ("'screen'", "Parse Error."),
+    ("'screen", "Parse Error."),
+    ("screen !important", "Parse Error."),
+    ("screen & print", "Parse Error."),
+    ("screen ~", "Parse Error."),
+    ("screen =", "Parse Error."),
+    ("screen <p>", "Parse Error."),
+    ("screen <!--", "Parse Error."),
+    ("3d-glasses", "Parse Error."),
+    // Grammar rule 7: characters no token matches
+    ("screen ^", "Parse Error."),
+    ("tv ^", "The media \u{201c}tv\u{201d} has been deprecated"),
+    ("foo ^", "unrecognized media \u{201c}foo\u{201d}."),
+    ("(width: 600) and ^", "only \u{201c}0\u{201d} can be a \u{201c}unit\u{201d}. You must put a unit after your number"),
+    ("screen #", "Parse Error."),
+    ("screen @", "Parse Error."),
+    ("screen\\\nand (color)", "Parse Error."),
+    ("screen \u{1}", "Parse Error."),
+    ("screen \u{7f}", "Parse Error."),
+    ("screen\u{b}", "Parse Error."),
+    // Grammar rule 8: identifiers: --x and a leading digit are not names
+    ("--foo", "Parse Error."),
+    ("-foo", "unrecognized media \u{201c}-foo\u{201d}."),
+    ("_foo", "unrecognized media \u{201c}_foo\u{201d}."),
+    ("(--foo)", "Parse Error."),
+    ("(--foo: 1)", "Parse Error."),
+    ("(1px)", "Parse Error."),
+    // Grammar rule 9: escapes, first pass: a hex escape of a letter, or \ before g-z, becomes the letter before lexing
+    ("\\73 creen", nil),
+    ("\\61 nd", "Parse Error."),
+    ("\\74 v", "The media \u{201c}tv\u{201d} has been deprecated"),
+    ("\\6e\\6f\\74 screen", "unrecognized media \u{201c}notscreen\u{201d}."),
+    ("\\000073creen", nil),
+    ("t\\v", "The media \u{201c}tv\u{201d} has been deprecated"),
+    ("scr\\65 en", nil),
+    ("\\screen", nil),
+    ("\\6e ot screen", nil),
+    // Grammar rule 10: escapes, second pass: what an identifier's escapes print as
+    ("\\33 d", "unrecognized media \u{201c}3d\u{201d}."),
+    ("\\2d foo", "unrecognized media \u{201c}-foo\u{201d}."),
+    ("\\31 23", "unrecognized media \u{201c}123\u{201d}."),
+    ("\\e9", "unrecognized media \u{201c}\\\u{e9}\u{201d}."),
+    ("\\28 color\\29", "unrecognized media \u{201c}\\(color\\)\u{201d}."),
+    ("\\,screen", "unrecognized media \u{201c}\\,screen\u{201d}."),
+    ("\\a ll", "unrecognized media \u{201c}\\00000all\u{201d}."),
+    ("\\1F600", "unrecognized media \u{201c}\\01f600\u{201d}."),
+    ("\\73creen", "unrecognized media \u{201c}\\73creen\u{201d}."),
+    ("s\\creen", "unrecognized media \u{201c}s\\creen\u{201d}."),
+    ("scr\\een", "unrecognized media \u{201c}scr\\\u{ee}n\u{201d}."),
+    // Grammar rule 11: media query lists and their commas
+    (",", "Parse Error."),
+    ("screen,", "Parse Error."),
+    (",screen", "Parse Error."),
+    ("screen,,print", "Parse Error."),
+    ("screen, print", nil),
+    ("screen,print", nil),
+    ("screen, ", "Parse Error."),
+    ("screen ,print", nil),
+    ("screen\n,\nprint", nil),
+    // Grammar rule 12: a media type is judged the moment it is read
+    ("foo and", "unrecognized media \u{201c}foo\u{201d}."),
+    ("notx (color)", "unrecognized media \u{201c}notx\u{201d}."),
+    ("color)", "unrecognized media \u{201c}color\u{201d}."),
+    ("tv and", "The media \u{201c}tv\u{201d} has been deprecated"),
+    ("not screen and (color)", nil),
+    ("foo and (width: 600)", "unrecognized media \u{201c}foo\u{201d}."),
+    ("tv and (width: 600)", "The media \u{201c}tv\u{201d} has been deprecated"),
+    ("only screen and not (color)", nil),
+    // Grammar rule 13: not and only
+    ("not", "Parse Error."),
+    ("not tv", "The media \u{201c}tv\u{201d} has been deprecated"),
+    ("only foo", "unrecognized media \u{201c}foo\u{201d}."),
+    ("only", "Parse Error."),
+    ("not not screen", "Parse Error."),
+    ("not only screen", "Parse Error."),
+    ("only not screen", "Parse Error."),
+    ("only (color)", "Parse Error."),
+    ("only (screen)", "Parse Error."),
+    // Grammar rule 14: after a media type: and, then a condition without or
+    ("screen and (color) and (monochrome) and (grid)", nil),
+    ("screen and (color) or (monochrome)", "Parse Error."),
+    ("screen and not (color)", nil),
+    ("screen and not (color) and (monochrome)", "Parse Error."),
+    ("screen and ((color) or (monochrome))", nil),
+    ("screen and (color) and not (monochrome)", "Parse Error."),
+    ("screen and print", "Parse Error."),
+    // Grammar rule 15: conditions: and and or don't mix; not takes one operand
+    ("(color) and (monochrome)", nil),
+    ("(color) and (monochrome) or (grid)", "Parse Error."),
+    ("(color) or (monochrome) or (grid)", nil),
+    ("(color) or (monochrome) and (grid)", "Parse Error."),
+    ("not (color)", nil),
+    ("not (color) and (monochrome)", "Parse Error."),
+    ("(color) and (not (monochrome))", nil),
+    ("not (color) or (monochrome)", "Parse Error."),
+    ("not ((color) and (monochrome))", nil),
+    // Grammar rule 16: parentheses and nesting
+    ("((color))", nil),
+    ("()", "Parse Error."),
+    ("((((((((color))))))))", nil),
+    ("( )", "Parse Error."),
+    ("( (color) )", nil),
+    ("(())", "Parse Error."),
+    ("(/**/(color)/**/)", nil),
+    ("((color)", "Parse Error."),
+    // Grammar rule 17: there is no general-enclosed
+    ("(foo bar)", "Parse Error."),
+    ("(foo bar baz)", "Parse Error."),
+    ("(prefers-color-scheme dark)", "Parse Error."),
+    ("(foo(bar))", "Parse Error."),
+    ("foo(bar)", "Parse Error."),
+    ("(not(color))", "Parse Error."),
+    // Grammar rule 18: plain and boolean features; unknown and vendor feature names
+    ("(min-width:)", "Parse Error."),
+    ("(foo)", nil),
+    ("(and)", "Parse Error."),
+    ("(foo: bar)", nil),
+    ("(not: 1)", "Parse Error."),
+    ("(foo: 1px 2px)", nil),
+    ("(min-width: )", "Parse Error."),
+    ("(-webkit-min-device-pixel-ratio: 2)", nil),
+    ("(-moz-foo)", nil),
+    ("(:40em)", "Parse Error."),
+    // Grammar rule 19: feature values: several terms, and what a term may be
+    ("(foo: a, b, c)", nil),
+    ("(min-width: var(--x))", "Parse Error."),
+    ("(foo: f(x))", nil),
+    ("(min-width: env(safe-area-inset-left))", "Parse Error."),
+    ("(foo: rgb(1, 2, 3))", nil),
+    ("(min-width: attr(data-x))", "Parse Error."),
+    ("(foo: url(x))", nil),
+    ("(foo: not(x))", "Parse Error."),
+    ("(foo: U+0-7F)", nil),
+    ("(foo: layer(x))", "Parse Error."),
+    // Grammar rule 20: an identifier followed by a colon inside a value
+    ("(color: a: b)", "Missing a semicolon before the property name \u{201c}a\u{201d}."),
+    ("(foo: a: b)", "Missing a semicolon before the property name \u{201c}a\u{201d}."),
+    // Grammar rule 21: unknown dimensions, and exponents that lex as one
+    ("(min-width: 10foo)", "Unknown dimension."),
+    ("(min-width: 1e1px)", nil),
+    ("(foo: 10foo)", "Unknown dimension."),
+    ("(min-width: 1.5e-1px)", nil),
+    ("(min-width: 1e)", "Unknown dimension."),
+    ("(color: 8e0)", "Unknown dimension."),
+    ("(aspect-ratio: 1e1/1)", "Unknown dimension."),
+    ("(min-width: 1cqw)", "Unknown dimension."),
+    // Grammar rule 22: CSS hacks in values
+    ("(color: 1 !ie)", "css-hack."),
+    ("(foo: 0\\0)", nil),
+    ("(min-width: 0\\0)", "too few values for the property \u{201c}width\u{201d}"),
+    ("(foo: !ie)", "css-hack."),
+    ("(min-width: 10px\\9)", "too few values for the property \u{201c}width\u{201d}"),
+    ("(foo: 1 !ie7)", "css-hack."),
+    // Grammar rule 23: ratios
+    ("(aspect-ratio: 16/9)", nil),
+    ("(aspect-ratio: 16/-9)", "Parse Error."),
+    ("(foo: 0/1)", "\u{201c}0/1\u{201d} is not valid, only values greater than \u{201c}0\u{201d} allowed.."),
+    ("(aspect-ratio: 16 / 9)", nil),
+    ("(aspect-ratio: 16/+9)", "Parse Error."),
+    ("(width >= 0/1)", "\u{201c}0/1\u{201d} is not valid, only values greater than \u{201c}0\u{201d} allowed.."),
+    ("(aspect-ratio: 16\n/\n9)", nil),
+    ("(aspect-ratio: 16/)", "Parse Error."),
+    // Grammar rule 24: value constructors: colors, images and math functions
+    ("(foo: rgb(1))", "Invalid RGB function."),
+    ("(foo: hsl(x))", "\u{201c}x\u{201d} is not a valid HSL color."),
+    ("(foo: linear-gradient(red))", "too few values for the property \u{201c}linear-gradient\u{201d}."),
+    ("(foo: image(x))", "\u{201c}x\u{201d} is not a \u{201c}color\u{201d} value."),
+    ("(foo: atsc-rgba(1, 2, 3, 4))", "\u{201c}\u{201d} this function is only for the atsc-tv medium."),
+    ("(foo: min(1px, 1s))", "The types are incompatible."),
+    ("(foo: calc(1px * 2px))", "One operand must be a number."),
+    ("(foo: calc(1px / 0))", "Division by zero."),
+    // Grammar rule 25: calc() and the whitespace around + and -
+    ("(min-width: calc(100px+ 2em))", "Whitespace is required on both sides of the \u{201c}+\u{201d} or \u{201c}-\u{201d} operators."),
+    ("(min-width: calc(100px+2em))", "Parse Error."),
+    ("(min-width: calc(100px - 2em))", nil),
+    ("(min-width: calc(100px +2em))", "Parse Error."),
+    ("(min-width: -webkit-calc(100px + 2em))", nil),
+    ("(min-width: calc(100px -2em))", "Parse Error."),
+    // Grammar rule 26: range syntax
+    ("(width >= 600px)", nil),
+    ("(width >= 600px <= 900px)", "Parse Error."),
+    ("(width>=600px)", nil),
+    ("(600px <= width <= 700px <= 800px)", "Parse Error."),
+    ("(width<600px)", nil),
+    ("(600px <= 700px)", "Parse Error."),
+    ("(width = 600px)", nil),
+    ("(>= 600px)", "Parse Error."),
+    ("(600px <= width)", nil),
+    ("(width >=)", "Parse Error."),
+    // Grammar rule 27: comparator spellings
+    ("(width => 600px)", "Parse Error."),
+    ("(width =< 600px)", "Parse Error."),
+    ("(width == 600px)", "Parse Error."),
+    ("(width < = 600px)", "Parse Error."),
+    ("(width > = 600px)", "Parse Error."),
+    ("(width <> 600px)", "Parse Error."),
+    // Grammar rule 28: an identifier then a comparator is read name first
+    ("(width <= height)", "\u{201c}height\u{201d} is not a \u{201c}width\u{201d} value"),
+    ("(hover = any-hover)", "\u{201c}=\u{201d} is not a \u{201c}hover\u{201d} value"),
+    ("(landscape = orientation)", "Parse Error."),
+    ("(fine = any-pointer)", "Parse Error."),
+    // Grammar rule 29: two-sided ranges
+    ("(400px <= width >= 700px)", nil),
+    ("(400px = width = 700px)", "The \u{201c}=\u{201d} and \u{201c}=\u{201d} comparators are not compatible in a media feature of type \u{201c}range\u{201d}"),
+    ("(400px < width = 700px)", "The \u{201c}<\u{201d} and \u{201c}=\u{201d} comparators are not compatible in a media feature of type \u{201c}range\u{201d}"),
+    ("(400px = width < 700px)", "The \u{201c}=\u{201d} and \u{201c}<\u{201d} comparators are not compatible in a media feature of type \u{201c}range\u{201d}"),
+    ("(400px <= width > 700px)", nil),
+    ("(700px > width < 400px)", nil),
+    ("(600px <= width <= 400px)", nil),
+    // Grammar rule 30: < name > lexes as an HTML start tag
+    ("(400px < width > 700px)", "Parse Error."),
+    ("(400px<width>700px)", "Parse Error."),
+    ("(400px < width >= 700px)", "Parse Error."),
+    // Grammar rule 31: a range on an unknown or vendor feature: Parse Error., and nothing after it is checked
+    ("(foo >= 1)", "Parse Error."),
+    ("tv, (foo >= 1)", "The media \u{201c}tv\u{201d} has been deprecated"),
+    ("(width: 600), (foo >= 1)", "only \u{201c}0\u{201d} can be a \u{201c}unit\u{201d}. You must put a unit after your number"),
+    ("(foo: 1) and (width >= 600px)", nil),
+    ("(1 <= foo <= 2)", "Parse Error."),
+    ("(-webkit-device-pixel-ratio >= 2)", "Parse Error."),
+    ("(and >= 1)", "Parse Error."),
+    ("(not < 5)", "Parse Error."),
+    ("(min-foo >= 1)", "Parse Error."),
+    // Grammar rule 32: discrete features, prefixes and deprecated features in range form
+    ("(orientation = landscape)", "\u{201c}=\u{201d} is not a \u{201c}orientation\u{201d} value"),
+    ("(hover > none)", "\u{201c}>\u{201d} is not a \u{201c}hover\u{201d} value"),
+    ("(prefers-color-scheme = dark)", "\u{201c}=\u{201d} is not a \u{201c}prefers-color-scheme\u{201d} value"),
+    ("(grid = 1)", "Too many values or values are not recognized"),
+    ("(min-width >= 600px)", "No prefixes are allowed for range media features"),
+    ("(device-width >= 600px)", "Deprecated media feature \u{201c}device-width\u{201d}. For guidance, see the Deprecated Media Features section in the current Media Queries specification."),
+    ("(width >= 600)", "only \u{201c}0\u{201d} can be a \u{201c}unit\u{201d}. You must put a unit after your number"),
+    // Grammar rule 33: known media types
+    ("all", nil),
+    ("print", nil),
+    ("screen", nil),
+    ("SCREEN", nil),
+    ("sCrEeN", nil),
+    ("Only Screen", nil),
+    ("not all", nil),
+    ("\\41ll", nil),
+    // Grammar rule 34: deprecated media types
+    ("projection", "The media \u{201c}projection\u{201d} has been deprecated"),
+    ("aural", "The media \u{201c}aural\u{201d} has been deprecated"),
+    ("braille", "The media \u{201c}braille\u{201d} has been deprecated"),
+    ("embossed", "The media \u{201c}embossed\u{201d} has been deprecated"),
+    ("handheld", "The media \u{201c}handheld\u{201d} has been deprecated"),
+    ("speech", "The media \u{201c}speech\u{201d} has been deprecated"),
+    ("tty", "The media \u{201c}tty\u{201d} has been deprecated"),
+    ("TV", "The media \u{201c}tv\u{201d} has been deprecated"),
+    ("only tv", "The media \u{201c}tv\u{201d} has been deprecated"),
+    ("tv, handheld", "The media \u{201c}tv\u{201d} has been deprecated"),
+    ("print, tv", "The media \u{201c}tv\u{201d} has been deprecated"),
+    // Grammar rule 35: unknown media types, lowercased as Java lowercases
+    ("Foo-Bar", "unrecognized media \u{201c}foo-bar\u{201d}."),
+    ("-webkit-screen", "unrecognized media \u{201c}-webkit-screen\u{201d}."),
+    ("layer", "unrecognized media \u{201c}layer\u{201d}."),
+    ("\u{e9}", "unrecognized media \u{201c}\u{e9}\u{201d}."),
+    ("\u{c9}CRAN", "unrecognized media \u{201c}\u{e9}cran\u{201d}."),
+    ("\u{391}\u{3a3}", "unrecognized media \u{201c}\u{3b1}\u{3c2}\u{201d}."),
+    ("\u{ff34}\u{ff36}", "unrecognized media \u{201c}\u{ff54}\u{ff56}\u{201d}."),
+    ("\u{17f}creen", "unrecognized media \u{201c}\u{17f}creen\u{201d}."),
+    ("\u{1f600}", "unrecognized media \u{201c}\u{1f600}\u{201d}."),
+    ("FOO", "unrecognized media \u{201c}foo\u{201d}."),
+    ("screen, foo, bar", "unrecognized media \u{201c}foo\u{201d}."),
+    // Grammar rule 36: a lone CR or an FF ruins the rest of the value; CRLF is harmless
+    ("screen\u{d}", "Parse Error."),
+    ("tv\u{d}", "The media \u{201c}tv\u{201d} has been deprecated"),
+    ("screen\u{d}\nand (color)", nil),
+    ("screen\u{d}and (color)", "Parse Error."),
+    ("screen\u{d}\n", nil),
+    ("\u{d}screen", "Parse Error."),
+    ("(color) and (grid)\u{d}", "Parse Error."),
+    ("screen\u{d}\u{d}\n", "Parse Error."),
+    ("screen\u{c}and (color)", "Parse Error."),
+    ("screen\u{c}", "Parse Error."),
+    // Grammar rule 37: braces in the value close the rule early
+    ("screen {} @media print", nil),
+    ("screen {} @media tv", "The media \u{201c}tv\u{201d} has been deprecated"),
+    ("screen {} @media foo", "unrecognized media \u{201c}foo\u{201d}."),
+    ("screen {} @import 'x';", "@import are not allowed after any valid statement other than @charset and @import.."),
+    ("screen {} a { color: red }", "Parse Error."),
+    ("screen{}@media print", nil),
+    ("screen {}/*", "Parse Error."),
+    ("{} @media print", nil),
+    ("screen {}", "Parse Error."),
+    // Feature any-hover: keywords none, hover; no prefixes
+    ("(any-hover: hover)", nil),
+    ("(any-hover: foo)", "\u{201c}foo\u{201d} is not a \u{201c}any-hover\u{201d} value"),
+    // Feature any-pointer: keywords none, coarse, fine; no prefixes
+    ("(any-pointer: none)", nil),
+    ("(any-pointer: coarse)", nil),
+    ("(any-pointer: fine)", nil),
+    ("(any-pointer: foo)", "\u{201c}foo\u{201d} is not a \u{201c}any-pointer\u{201d} value"),
+    // Feature color-gamut: keywords srgb, p3, rec2020; no prefixes
+    ("(color-gamut: srgb)", nil),
+    ("(color-gamut: rec2020)", nil),
+    ("(color-gamut: foo)", "\u{201c}foo\u{201d} is not a \u{201c}color-gamut\u{201d} value"),
+    // Feature dynamic-range: keywords standard, high; no prefixes
+    ("(dynamic-range: standard)", nil),
+    ("(dynamic-range: foo)", "\u{201c}foo\u{201d} is not a \u{201c}dynamic-range\u{201d} value"),
+    // Feature environment-blending: keywords opaque, additive, subtractive; no prefixes
+    ("(environment-blending: opaque)", nil),
+    ("(environment-blending: additive)", nil),
+    ("(environment-blending: subtractive)", nil),
+    ("(environment-blending: foo)", "\u{201c}foo\u{201d} is not a \u{201c}environment-blending\u{201d} value"),
+    // Feature forced-colors: keywords none, active; no prefixes
+    ("(forced-colors: none)", nil),
+    ("(forced-colors: foo)", "\u{201c}foo\u{201d} is not a \u{201c}forced-colors\u{201d} value"),
+    // Feature hover: keywords none, hover; no prefixes
+    ("(hover)", nil),
+    ("(min-hover)", "The media feature \u{201c}hover\u{201d} does not support prefixes"),
+    ("(min-hover: none)", "The media feature \u{201c}hover\u{201d} does not support prefixes"),
+    ("(HOVER: none)", nil),
+    ("(hover: NONE)", nil),
+    ("(hover: 10px\\9)", "too few values for the property \u{201c}hover\u{201d}"),
+    ("(none > hover)", "Parse Error."),
+    ("(none < hover < hover)", "Parse Error."),
+    ("(2 < hover < 2.5)", "Too many values or values are not recognized"),
+    ("(hover: 1 2)", "Too many values or values are not recognized"),
+    // Feature inverted-colors: keywords none, inverted; no prefixes
+    ("(inverted-colors: none)", nil),
+    ("(inverted-colors: foo)", "\u{201c}foo\u{201d} is not a \u{201c}inverted-colors\u{201d} value"),
+    // Feature overflow-block: keywords none, scroll, paged; no prefixes
+    ("(overflow-block: none)", nil),
+    ("(overflow-block: scroll)", nil),
+    ("(overflow-block: paged)", nil),
+    ("(overflow-block: foo)", "\u{201c}foo\u{201d} is not a \u{201c}overflow-block\u{201d} value"),
+    // Feature overflow-inline: keywords none, scroll; no prefixes
+    ("(overflow-inline: none)", nil),
+    ("(overflow-inline: scroll)", nil),
+    ("(overflow-inline: foo)", "\u{201c}foo\u{201d} is not a \u{201c}overflow-inline\u{201d} value"),
+    // Feature pointer: keywords none, coarse, fine; no prefixes
+    ("(pointer: none)", nil),
+    ("(pointer: foo)", "\u{201c}foo\u{201d} is not a \u{201c}pointer\u{201d} value"),
+    // Feature prefers-contrast: keywords no-preference, less, more, custom; no prefixes
+    ("(prefers-contrast: no-preference)", nil),
+    ("(prefers-contrast: less)", nil),
+    ("(prefers-contrast: custom)", nil),
+    ("(prefers-contrast: foo)", "\u{201c}foo\u{201d} is not a \u{201c}prefers-contrast\u{201d} value"),
+    // Feature prefers-reduced-motion: keywords no-preference, reduce; no prefixes
+    ("(prefers-reduced-motion: foo)", "\u{201c}foo\u{201d} is not a \u{201c}prefers-reduced-motion\u{201d} value"),
+    // Feature prefers-reduced-transparency: keywords no-preference, reduce; no prefixes
+    ("(prefers-reduced-transparency: no-preference)", nil),
+    ("(prefers-reduced-transparency: foo)", "\u{201c}foo\u{201d} is not a \u{201c}prefers-reduced-transparency\u{201d} value"),
+    // Feature scan: keywords interlace, progressive; no prefixes
+    ("(scan: interlace)", nil),
+    ("(scan: foo)", "\u{201c}foo\u{201d} is not a \u{201c}scan\u{201d} value"),
+    // Feature scripting: keywords none, initial-only, enabled; no prefixes
+    ("(scripting: initial-only)", nil),
+    ("(scripting: enabled)", nil),
+    ("(scripting: foo)", "\u{201c}foo\u{201d} is not a \u{201c}scripting\u{201d} value"),
+    // Feature update: keywords none, slow, fast; no prefixes
+    ("(update: none)", nil),
+    ("(update: slow)", nil),
+    ("(update: foo)", "\u{201c}foo\u{201d} is not a \u{201c}update\u{201d} value"),
+    // Feature video-color-gamut: keywords srgb, p3, rec2020; no prefixes
+    ("(video-color-gamut: srgb)", nil),
+    ("(video-color-gamut: p3)", nil),
+    ("(video-color-gamut: rec2020)", nil),
+    ("(video-color-gamut: foo)", "\u{201c}foo\u{201d} is not a \u{201c}video-color-gamut\u{201d} value"),
+    // Feature video-dynamic-range: keywords standard, high; no prefixes
+    ("(video-dynamic-range: standard)", nil),
+    ("(video-dynamic-range: foo)", "\u{201c}foo\u{201d} is not a \u{201c}video-dynamic-range\u{201d} value"),
+    // Feature view-mode: keywords windowed, floating, fullscreen, maximized, minimized; no prefixes; deprecated, but only with a warning
+    ("(view-mode: windowed)", nil),
+    ("(view-mode: floating)", nil),
+    ("(view-mode: fullscreen)", nil),
+    ("(view-mode: maximized)", nil),
+    ("(view-mode: minimized)", nil),
+    ("(view-mode: foo)", "\u{201c}foo\u{201d} is not a \u{201c}view-mode\u{201d} value"),
+    // Feature width: lengths of any sign and unitless 0; min-/max- with a value; any number of values, only the first checked
+    ("(width)", nil),
+    ("(min-width)", "No prefixes are allowed for media features with no value"),
+    ("(min-width: 10px)", nil),
+    ("(width: foo)", "\u{201c}foo\u{201d} is not a \u{201c}width\u{201d} value"),
+    ("(width: 2)", "only \u{201c}0\u{201d} can be a \u{201c}unit\u{201d}. You must put a unit after your number"),
+    ("(width: 0)", nil),
+    ("(width: -10px)", nil),
+    ("(width: 16/9)", "\u{201c}16/9\u{201d} is not a \u{201c}width\u{201d} value"),
+    ("(width: \"a\")", "\u{201c}\"a\"\u{201d} is not a \u{201c}width\u{201d} value"),
+    ("(width: 10px 20px 30px)", nil),
+    ("(width: calc(2))", nil),
+    ("(10px > width)", nil),
+    ("(10px < width = 20px)", "The \u{201c}<\u{201d} and \u{201c}=\u{201d} comparators are not compatible in a media feature of type \u{201c}range\u{201d}"),
+    ("(2 < width < 2.5)", "only \u{201c}0\u{201d} can be a \u{201c}unit\u{201d}. You must put a unit after your number"),
+    ("(min-width > 10px)", "No prefixes are allowed for range media features"),
+    ("(width > foo)", "\u{201c}foo\u{201d} is not a \u{201c}width\u{201d} value"),
+    ("(width: 10px\\9)", "too few values for the property \u{201c}width\u{201d}"),
+    ("(width: 0\\0)", "too few values for the property \u{201c}width\u{201d}"),
+    // Feature height: as width, but at most two values
+    ("(min-height)", "No prefixes are allowed for media features with no value"),
+    ("(10px < height < 20px)", nil),
+    ("(height: 10px\\9)", "too few values for the property \u{201c}height\u{201d}"),
+    ("(height: foo)", "\u{201c}foo\u{201d} is not a \u{201c}height\u{201d} value"),
+    ("(height: 2)", "only \u{201c}0\u{201d} can be a \u{201c}unit\u{201d}. You must put a unit after your number"),
+    ("(height: 10px 20px)", nil),
+    ("(height: 10px 20px 30px)", "Too many values or values are not recognized"),
+    // Feature aspect-ratio: positive ratios; min-/max- with a value; at most two values
+    ("(aspect-ratio)", nil),
+    ("(min-aspect-ratio)", "No prefixes are allowed for media features with no value"),
+    ("(4/3 < aspect-ratio < 16/9)", nil),
+    ("(min-aspect-ratio > 4/3)", "No prefixes are allowed for range media features"),
+    ("(aspect-ratio: 10px\\9)", "too few values for the property \u{201c}aspect-ratio\u{201d}"),
+    ("(aspect-ratio: foo)", "\u{201c}foo\u{201d} is not a \u{201c}aspect-ratio\u{201d} value"),
+    ("(aspect-ratio: 2)", "\u{201c}2\u{201d} is not a \u{201c}aspect-ratio\u{201d} value"),
+    ("(aspect-ratio: 16/9 4/3)", nil),
+    ("(aspect-ratio: 16/9 4/3 1/1)", "Too many values or values are not recognized"),
+    // Feature resolution: dpi, dpcm, dppx, x and infinite; any other identifier falls through and is accepted, unchecked
+    ("(resolution)", nil),
+    ("(min-resolution)", "No prefixes are allowed for media features with no value"),
+    ("(1dppx < resolution < 2dppx)", nil),
+    ("(resolution > foo)", "Too many values or values are not recognized"),
+    ("(min-resolution > 1dppx)", "No prefixes are allowed for range media features"),
+    ("(min-resolution: 10px\\9)", "too few values for the property \u{201c}resolution\u{201d}"),
+    ("(resolution: foo)", nil),
+    ("(resolution: 2)", "Too many values or values are not recognized"),
+    ("(resolution: 2x)", nil),
+    ("(resolution: infinite)", nil),
+    ("(resolution: 10px)", "Too many values or values are not recognized"),
+    ("(resolution: foo bar)", nil),
+    ("(resolution: 1 2 3)", "Too many values or values are not recognized"),
+    // Feature color: integers of any sign, one value; so a two-sided range is too many
+    ("(color)", nil),
+    ("(min-color)", "No prefixes are allowed for media features with no value"),
+    ("(min-color: 1)", nil),
+    ("(1 < color < 8)", "Too many values or values are not recognized"),
+    ("(color > 2.5)", "This number should be an integer."),
+    ("(color: 10px\\9)", "too few values for the property \u{201c}color\u{201d}"),
+    ("(color: foo)", "\u{201c}foo\u{201d} is not a \u{201c}color\u{201d} value"),
+    ("(color: -1)", nil),
+    ("(color: 10px)", "\u{201c}10px\u{201d} is not a \u{201c}color\u{201d} value"),
+    ("(color: 1 2)", "Too many values or values are not recognized"),
+    ("(color: calc(2))", nil),
+    // Feature color-index: integers; two values, so two-sided ranges are fine
+    ("(1 < color-index < 256)", nil),
+    ("(color-index: 2.5)", "This number should be an integer."),
+    ("(color-index: 1 2)", nil),
+    ("(color-index: 1 2 3)", "Too many values or values are not recognized"),
+    ("(color-index: 10px)", "\u{201c}10px\u{201d} is not a \u{201c}color-index\u{201d} value"),
+    // Feature monochrome: integers; one value
+    ("(1 < monochrome < 8)", "Too many values or values are not recognized"),
+    ("(monochrome: 2.5)", "This number should be an integer."),
+    ("(monochrome: foo)", "\u{201c}foo\u{201d} is not a \u{201c}monochrome\u{201d} value"),
+    ("(monochrome: 1 2)", "Too many values or values are not recognized"),
+    // Feature horizontal-viewport-segments: integers; one value
+    ("(1 < horizontal-viewport-segments < 2)", "Too many values or values are not recognized"),
+    ("(horizontal-viewport-segments: 2.5)", "This number should be an integer."),
+    ("(horizontal-viewport-segments: foo)", "\u{201c}foo\u{201d} is not a \u{201c}horizontal-viewport-segments\u{201d} value"),
+    ("(horizontal-viewport-segments: 1 2)", "Too many values or values are not recognized"),
+    // Feature vertical-viewport-segments: integers; one value
+    ("(1 < vertical-viewport-segments < 2)", "Too many values or values are not recognized"),
+    ("(vertical-viewport-segments: 2.5)", "This number should be an integer."),
+    ("(vertical-viewport-segments: foo)", "\u{201c}foo\u{201d} is not a \u{201c}vertical-viewport-segments\u{201d} value"),
+    ("(vertical-viewport-segments: 1 2)", "Too many values or values are not recognized"),
+    // Feature grid: 0 or 1; no prefixes; an int overflow gives an empty detail
+    ("(min-grid: 0)", "The media feature \u{201c}grid\u{201d} does not support prefixes"),
+    ("(grid > 0)", "Too many values or values are not recognized"),
+    ("(grid: 0)", nil),
+    ("(grid: 1)", nil),
+    ("(grid: 2)", "Only \u{201c}0\u{201d} and \u{201c}1\u{201d} are acceptable values for grid"),
+    ("(grid: 2.5)", "This number should be an integer."),
+    ("(grid: foo)", "Too many values or values are not recognized"),
+    ("(grid: 1 2)", "Too many values or values are not recognized"),
+    ("(grid: calc(2))", nil),
+    ("(grid: 2147483647)", "Only \u{201c}0\u{201d} and \u{201c}1\u{201d} are acceptable values for grid"),
+    ("(grid: 2147483648)", ""),
+    // Feature device-width: deprecated, whatever the value or the form
+    ("(device-width)", "Deprecated media feature \u{201c}device-width\u{201d}. For guidance, see the Deprecated Media Features section in the current Media Queries specification."),
+    ("(device-width: 10px)", "Deprecated media feature \u{201c}device-width\u{201d}. For guidance, see the Deprecated Media Features section in the current Media Queries specification."),
+    ("(min-device-width: 10px)", "Deprecated media feature \u{201c}min-device-width\u{201d}. For guidance, see the Deprecated Media Features section in the current Media Queries specification."),
+    ("(device-width > 10px)", "Deprecated media feature \u{201c}device-width\u{201d}. For guidance, see the Deprecated Media Features section in the current Media Queries specification."),
+    ("(device-width: foo)", "Deprecated media feature \u{201c}device-width\u{201d}. For guidance, see the Deprecated Media Features section in the current Media Queries specification."),
+    // Feature device-height: deprecated, whatever the value or the form
+    ("(device-height)", "Deprecated media feature \u{201c}device-height\u{201d}. For guidance, see the Deprecated Media Features section in the current Media Queries specification."),
+    ("(device-height: 10px)", "Deprecated media feature \u{201c}device-height\u{201d}. For guidance, see the Deprecated Media Features section in the current Media Queries specification."),
+    // Feature device-aspect-ratio: deprecated, whatever the value or the form
+    ("(device-aspect-ratio)", "Deprecated media feature \u{201c}device-aspect-ratio\u{201d}. For guidance, see the Deprecated Media Features section in the current Media Queries specification."),
+    ("(device-aspect-ratio: 4/3)", "Deprecated media feature \u{201c}device-aspect-ratio\u{201d}. For guidance, see the Deprecated Media Features section in the current Media Queries specification."),
+    // Every length unit (dvmin is rejected: the unit table spells it dvnim) and every resolution unit
+    ("(width: 1ex)", nil),
+    ("(width: 1rex)", nil),
+    ("(width: 1cap)", nil),
+    ("(width: 1rcap)", nil),
+    ("(width: 1ch)", nil),
+    ("(width: 1rch)", nil),
+    ("(width: 1ic)", nil),
+    ("(width: 1ric)", nil),
+    ("(width: 1lh)", nil),
+    ("(width: 1rlh)", nil),
+    ("(width: 1vw)", nil),
+    ("(width: 1svw)", nil),
+    ("(width: 1lvw)", nil),
+    ("(width: 1dvw)", nil),
+    ("(width: 1vh)", nil),
+    ("(width: 1svh)", nil),
+    ("(width: 1lvh)", nil),
+    ("(width: 1dvh)", nil),
+    ("(width: 1vi)", nil),
+    ("(width: 1svi)", nil),
+    ("(width: 1lvi)", nil),
+    ("(width: 1dvi)", nil),
+    ("(width: 1vb)", nil),
+    ("(width: 1svb)", nil),
+    ("(width: 1lvb)", nil),
+    ("(width: 1dvb)", nil),
+    ("(width: 1vmin)", nil),
+    ("(width: 1svmin)", nil),
+    ("(width: 1lvmin)", nil),
+    ("(width: 1dvmin)", "\u{201c}dvmin\u{201d} is an incorrect unit."),
+    ("(width: 1vmax)", nil),
+    ("(width: 1svmax)", nil),
+    ("(width: 1lvmax)", nil),
+    ("(width: 1dvmax)", nil),
+    ("(width: 1cm)", nil),
+    ("(width: 1mm)", nil),
+    ("(width: 1q)", nil),
+    ("(width: 1in)", nil),
+    ("(width: 1pt)", nil),
+    ("(width: 1pc)", nil),
+    // The values reader's rules: numbers, exponents, lengths, calc() and math, integers, ratios, resolutions, keywords, hacks
+    ("(min-width: 10dvmin)", "\u{201c}dvmin\u{201d} is an incorrect unit."),
+    ("(max-width: var(--x))", "Parse Error."),
+    ("all{a{width: 10dvmin}}", "\u{201c}width\u{201d}: \u{201c}dvmin\u{201d} is an incorrect unit."),
+    ("(min-width: 1e3)", "Unknown dimension."),
+    ("(color: 1e+1)", nil),
+    ("(min-width: 10x)", "\u{201c}10x\u{201d} is not a \u{201c}width\u{201d} value"),
+    ("(min-width: 10n)", "Parse Error."),
+    ("(min-width: 5.)", "Parse Error."),
+    ("(min-width: 50%)", "\u{201c}50%\u{201d} is not a \u{201c}width\u{201d} value"),
+    ("(max-width: calc(10%))", "\u{201c}calc(10%)\u{201d} is not a \u{201c}width\u{201d} value"),
+    ("(max-width: calc(1px + 1s))", "The types are incompatible."),
+    ("(max-width: calc(env(foo)))", "Invalid type: \u{201c}env(foo)\u{201d}."),
+    ("(max-width: round(1px))", "Too many values or values are not recognized."),
+    ("(color: calc(2.5))", nil),
+    ("(color: 8px)", "\u{201c}8px\u{201d} is not a \u{201c}color\u{201d} value"),
+    ("(1 < color < 5)", "Too many values or values are not recognized"),
+    ("(grid: 99999999999)", ""),
+    ("(min-grid: 1)", "The media feature \u{201c}grid\u{201d} does not support prefixes"),
+    ("(aspect-ratio: 16)", "\u{201c}16\u{201d} is not a \u{201c}aspect-ratio\u{201d} value"),
+    ("(aspect-ratio: 16/**/9)", "\u{201c}16\u{201d} is not a \u{201c}aspect-ratio\u{201d} value"),
+    ("(aspect-ratio: 1e+999999999999/1)", "\u{201c}1e+999999999999/1\u{201d} is not a \u{201c}\u{201d} value."),
+    ("(resolution: INFINITE)", nil),
+    ("(min-resolution: foo)", "No prefixes are allowed for range media features"),
+    ("(orientation: foo)", "\u{201c}foo\u{201d} is not a \u{201c}orientation\u{201d} value"),
+    ("(orientation: portrait landscape)", "Too many values or values are not recognized"),
+    ("(min-orientation: portrait)", "The media feature \u{201c}orientation\u{201d} does not support prefixes"),
+    ("(orientation > portrait)", "\u{201c}>\u{201d} is not a \u{201c}orientation\u{201d} value"),
+    ("(min-device-width: foo)", "Deprecated media feature \u{201c}min-device-width\u{201d}. For guidance, see the Deprecated Media Features section in the current Media Queries specification."),
+    ("(min-width: a:b)", "Missing a semicolon before the property name \u{201c}a\u{201d}."),
+    ("(orientation: 10PX)", "\u{201c}10px\u{201d} is not a \u{201c}orientation\u{201d} value"),
+    ("(ORIENTATION: foo)", "\u{201c}foo\u{201d} is not a \u{201c}orientation\u{201d} value"),
+    ("(min-width: 600)", "only \u{201c}0\u{201d} can be a \u{201c}unit\u{201d}. You must put a unit after your number"),
+    ("(min-width: 1e999999999999px)", "can't find the error message for invalid-number."),
+    ("(width: calc(1px+ 2px))", "Whitespace is required on both sides of the \u{201c}+\u{201d} or \u{201c}-\u{201d} operators."),
+    ("(max-width: calc(100px / 0))", "Division by zero."),
+    ("(max-width: calc(100px * 2px))", "One operand must be a number."),
+    ("(color: 2.0)", "This number should be an integer."),
+    ("(grid: -1)", "Only \u{201c}0\u{201d} and \u{201c}1\u{201d} are acceptable values for grid"),
+    ("(aspect-ratio: 0/0)", "\u{201c}0/0\u{201d} is not valid, only values greater than \u{201c}0\u{201d} allowed.."),
+    ("all{a{color:}}@media foo", "\u{201c}color\u{201d}: Parse Error."),
+    ("all{a{color:red}}@media foo", "unrecognized media \u{201c}foo\u{201d}."),
+    ("(min-width: 10px !ie)", "css-hack."),
+    // Feature quirks: math functions in a value: their type decides, as calc()'s does
+    ("(max-width: min(10px, 5em))", nil),
+    ("(max-width: clamp(10px, 5em, 20px))", nil),
+    ("(max-width: max(600))", nil),
+    ("(max-width: round(up, 1px, 2px))", nil),
+    ("(max-width: mod(10px, 3px))", nil),
+    ("(max-width: hypot(3px, 4px))", nil),
+    ("(max-width: sin(1deg))", nil),
+    ("(max-width: atan2(1px, 1px))", "\u{201c}atan2(1px, 1px)\u{201d} is not a \u{201c}width\u{201d} value"),
+    ("(width: min(5%, 10%))", "\u{201c}min(5%, 10%)\u{201d} is not a \u{201c}width\u{201d} value"),
+    ("(max-width: -min(1px, 2px))", "\u{201c}-min(1px,2px)\u{201d} is not a \u{201c}width\u{201d} value"),
+    ("(max-width: clamp(1px, 2px))", "Parse Error."),
+    ("(width: min())", "Parse Error."),
+    ("(width: max(1px, 1))", "The types are incompatible."),
+    ("(color: max(2.5))", nil),
+    // Feature quirks: what follows a range on an unknown feature is parsed as more style sheet
+    ("(foo > 1) a", nil),
+    ("(foo > 1) a {} b", nil),
+    ("(foo > 1) and", nil),
+    ("(foo > 1),", "Parse Error."),
+    ("(foo > 1) and (color)", "Parse Error."),
+    ("(hover > none) a", "\u{201c}>\u{201d} is not a \u{201c}hover\u{201d} value"),
+    // Feature quirks: resolution: an identifier other than infinite ends the check of the whole value
+    ("(resolution: foo), (color: 2.5)", nil),
+    ("(color: 2.5), (resolution: foo)", "This number should be an integer."),
+    ("(resolution: foo) and (color: 2.5)", nil),
+    ("(resolution: foo bar baz)", "Too many values or values are not recognized"),
+    ("(max-resolution: foo)", "No prefixes are allowed for range media features"),
+    // Feature quirks: feature names: escapes, case, and names that only look like a prefix
+    ("(min\\-width: foo)", "\u{201c}foo\u{201d} is not a \u{201c}width\u{201d} value"),
+    ("(\\77 idth: foo)", "\u{201c}foo\u{201d} is not a \u{201c}width\u{201d} value"),
+    ("(Min-Width: foo)", "\u{201c}foo\u{201d} is not a \u{201c}width\u{201d} value"),
+    ("(min-max-width: 10px)", nil),
+    ("(-min-width: foo)", nil),
+    // Feature quirks: keywords match by Java hash code, so names that collide are accepted
+    ("(prefers-color-scheme: d_\u{b0}k)", nil),
+    ("(prefers-color-scheme: d_\u{b0}j)", "\u{201c}d_\u{b0}j\u{201d} is not a \u{201c}prefers-color-scheme\u{201d} value"),
+    // Feature quirks: how a value prints in “V” is not a “F” value
+    ("(hover: 2.50)", "\u{201c}2.50\u{201d} is not a \u{201c}hover\u{201d} value"),
+    ("(hover: 007)", "\u{201c}7\u{201d} is not a \u{201c}hover\u{201d} value"),
+    ("(hover: 1e3px)", "\u{201c}1000px\u{201d} is not a \u{201c}hover\u{201d} value"),
+    ("(hover: 0dppx)", "\u{201c}0dpi\u{201d} is not a \u{201c}hover\u{201d} value"),
+    ("(hover: url( 'x' ))", "\u{201c}url(\"x\")\u{201d} is not a \u{201c}hover\u{201d} value"),
+    ("(hover: calc( 1px  +  2px ))", "\u{201c}calc(1px + 2px)\u{201d} is not a \u{201c}hover\u{201d} value"),
+    ("(hover: rgb(1,2,3))", "\u{201c}rgba(1, 2, 3)\u{201d} is not a \u{201c}hover\u{201d} value"),
+    // Feature quirks: number forms
+    ("(width: 1e+2px)", nil),
+    ("(width: 1.e2px)", "Parse Error."),
+    ("(width: 10 px)", "only \u{201c}0\u{201d} can be a \u{201c}unit\u{201d}. You must put a unit after your number"),
+    // Feature quirks: unknown features: their values are still parsed
+    ("(foo: calc(1px + 1))", "The types are incompatible."),
+    ("(foo: round(1.5px))", "Too many values or values are not recognized."),
+    ("(foo > 0/1)", "\u{201c}0/1\u{201d} is not valid, only values greater than \u{201c}0\u{201d} allowed.."),
+    // Feature quirks: whitespace and comments inside features
+    ("(10px< width)", nil),
+    ("(width\\: 10px)", "Parse Error."),
+    // Every other detail shape
+    ("screen {} @charset 'x';", "The @charset rule may only occur at the start of the style sheet. Please check that there are no spaces before it.."),
+    ("all{a{width:1e1}}", "\u{201c}width\u{201d}: Unknown dimension."),
+    // Real-world values: frameworks, sites, upstream's fixtures and the Bare Bones website, and the mistakes seen in them
+    ("ALL", nil),
+    ("  screen", nil),
+    ("tv and (scan: progressive)", "The media \u{201c}tv\u{201d} has been deprecated"),
+    ("alla", "unrecognized media \u{201c}alla\u{201d}."),
+    ("notscreen", "unrecognized media \u{201c}notscreen\u{201d}."),
+    ("onlyscreen", "unrecognized media \u{201c}onlyscreen\u{201d}."),
+    ("screenand (min-width: 400px)", "unrecognized media \u{201c}screenand\u{201d}."),
+    ("only screen", nil),
+    ("not screen", nil),
+    ("print and (orientation: landscape)", nil),
+    ("screen and (min-width: 400px) and (max-width: 600px)", nil),
+    ("screen and (min-width: 400px)and (max-width: 600px)", nil),
+    ("(min-width: 40em) or (orientation: portrait)", nil),
+    ("(not (width:500px)) and (width:500px)", nil),
+    ("(123)", "Parse Error."),
+    ("(})", "Parse Error."),
+    ("screen and (min-width:", "Parse Error."),
+    ("screen and (min-width: 400px) and", "Parse Error."),
+    ("screen and (min-width: 400px;)", "Parse Error."),
+    ("screen and (min-width: 400uu)", "Unknown dimension."),
+    ("screen and (min-width: 400)", "only \u{201c}0\u{201d} can be a \u{201c}unit\u{201d}. You must put a unit after your number"),
+    ("screen and (min-width: 400dpi)", "\u{201c}400dpi\u{201d} is not a \u{201c}width\u{201d} value"),
+    ("screen and (color: 1em)", "\u{201c}1em\u{201d} is not a \u{201c}color\u{201d} value"),
+    ("screen and (min-width: 400px)", nil),
+    ("screen and (min-width:400px)", nil),
+    ("screen and ( min-width: 400px )", nil),
+    ("screen and ( min-width : 400px )", nil),
+    ("screen and (min-width:    400px)", nil),
+    ("screen and (   min-width: 400px)", nil),
+    ("screen and (min-width: 400px   )", nil),
+    ("screen   and (min-width: 400px)", nil),
+    ("screen and   (min-width: 400px)", nil),
+    ("screen  and (min-width: 400px)", nil),
+    ("screen and (min-width: 400px)   and (max-width: 600px)", nil),
+    ("screen and (min-width: 400px) and   (max-width: 600px)", nil),
+    ("screen\\9", "unrecognized media \u{201c}screen\\000009\u{201d}."),
+    ("\\0screen", "Parse Error."),
+    ("screen and (min-width:0\\0)", "too few values for the property \u{201c}width\u{201d}"),
+    ("\\0screen\\,screen\\9", "Parse Error."),
+    ("all and (min-width:0\\0) and (min-resolution:.001dpcm)", "too few values for the property \u{201c}width\u{201d}"),
+    ("(width: 600)", "only \u{201c}0\u{201d} can be a \u{201c}unit\u{201d}. You must put a unit after your number"),
+    ("(min-width: 40em)", nil),
+    ("(min-width: -10px)", nil),
+    ("(max-width: calc(100px + 2em))", nil),
+    ("(min-aspect-ratio: 16/9)", nil),
+    ("(min-aspect-ratio: 16 / 9)", nil),
+    ("(max-aspect-ratio: 1/1)", nil),
+    ("(grid)", nil),
+    ("(any-hover: none)", nil),
+    ("(color-gamut: p3)", nil),
+    ("(dynamic-range: high)", nil),
+    ("(forced-colors: active)", nil),
+    ("(inverted-colors: inverted)", nil),
+    ("(prefers-color-scheme: light)", nil),
+    ("(prefers-color-scheme: dark)", nil),
+    ("(prefers-contrast: more)", nil),
+    ("(prefers-reduced-motion: no-preference)", nil),
+    ("(prefers-reduced-motion: reduce)", nil),
+    ("(prefers-reduced-transparency: reduce)", nil),
+    ("(scan: progressive)", nil),
+    ("(scripting: none)", nil),
+    ("(update: fast)", nil),
+    ("(video-dynamic-range: high)", nil),
+    ("(width >= 40rem)", nil),
+    ("(display-mode: standalone)", nil),
+    ("(min-width: 1024px)", nil),
+    ("(min-width: 600px)", nil),
+    ("(min-width: 640px) and (orientation: landscape)", nil),
+    ("(min-width: 800px)", nil),
+    ("only screen and (max-width: 640px)", nil),
+    ("screen and (orientation: landscape)", nil),
+    ("(max-width: 1024px)", nil),
+    ("(max-width: 600px)", nil),
+    ("(max-width: 1200px)", nil),
+    ("(min-width: 1200px)", nil),
+    ("(min-width: 990px) calc((100vw - 130px) /", "Parse Error."),
+    ("(min-width: 750px) calc((100vw - 120px) /", "Parse Error."),
+    ("(min-width: 300px)", nil),
+    ("(max-width: 300px)", nil),
+    ("(max-width: 579.98px)", nil),
+    (" \n\t", nil),
+    (" \n\tscreen \n\t", nil),
+    (" all ", nil),
+    ("print and (min-resolution: 100dpi)", nil),
+    ("screen and (color: 0)", nil),
+    ("screen and (color: 1)", nil),
+    ("screen and (color: 2)", nil),
+    ("screen and (device-aspect-ratio: 16/9)", "Deprecated media feature \u{201c}device-aspect-ratio\u{201d}. For guidance, see the Deprecated Media Features section in the current Media Queries specification."),
+    ("screen and (min-width: .0)", nil),
+    ("screen and (min-width: 0)", nil),
+    ("screen and (min-width: 0.0)", nil),
+    ("screen and (min-width: 00)", nil),
+    ("screen and (min-width: 400px), print", nil),
+    ("screen and(min-width: 400px)", "Parse Error."),
+    ("(max-width: 600px) calc(100vw -", "Parse Error."),
+    ("(min-width: 640px)", nil),
+    ("(min-width:1500px)", nil),
+    ("(min-width:1000px)", nil),
+    ("(min-width:500px)", nil),
+    ("(min-width:500px) 500px foo", "Parse Error."),
+    ("(min-width:calc(500px))", nil),
+    ("all and (min-width:500px)", nil),
+    ("min-width:500px", "unrecognized media \u{201c}min-width\u{201d}."),
+    ("screen and (max-width: 1000px)", nil),
+    ("screen and (max-width: 820px)", nil),
+    ("screen and (max-width: 576px)", nil),
+    ("screen and (max-width: 768px)", nil),
+    ("screen and (max-width: 430px)", nil),
+    ("screen and (max-width: 450px)", nil),
+    ("screen and (max-width: 910px)", nil),
+    ("screen and (max-width: 1164px)", nil),
+    ("(min-width: 1000px)", nil),
+    ("print,\n  (-webkit-min-device-pixel-ratio: 1.25),\n  (min-resolution: 1.25dppx),\n  (min-resolution: 120dpi)", nil),
+    ("screen and (max-width: $breakpoint-lg)", "Parse Error."),
+    ("(min-width: $breakpoint-lg)", "Parse Error."),
+    ("(min-width: 576px)", nil),
+    ("(min-width: 768px)", nil),
+    ("(min-width: 992px)", nil),
+    ("(min-width: 1400px)", nil),
+    ("(max-width: 575.98px)", nil),
+    ("(max-width: 767.98px)", nil),
+    ("(max-width: 991.98px)", nil),
+    ("(max-width: 1199.98px)", nil),
+    ("(min-width: 768px) and (max-width: 991.98px)", nil),
+    ("(min-width: 1280px)", nil),
+    ("(min-width: 1536px)", nil),
+    ("(width >= 48rem)", nil),
+    ("(width >= 64rem)", nil),
+    ("(width < 40rem)", nil),
+    ("(hover: hover) and (pointer: fine)", nil),
+    ("(hover: none) and (pointer: coarse)", nil),
+    ("screen and (prefers-reduced-motion: reduce)", nil),
+    ("(max-width: 37.5em)", nil),
+    ("(min-width: 48em)", nil),
+    ("(min-height: 680px), screen and (orientation: portrait)", nil),
+    ("screen and (max-width: 782px)", nil),
+    ("screen and (max-width: 600px)", nil),
+    ("only screen and (max-width: 480px)", nil),
+    ("only screen and (min-device-width: 320px) and (max-device-width: 480px)", "Deprecated media feature \u{201c}min-device-width\u{201d}. For guidance, see the Deprecated Media Features section in the current Media Queries specification."),
+    ("only screen and (min-device-pixel-ratio: 1.5)", nil),
+    ("(-webkit-min-device-pixel-ratio: 1.5), (min--moz-device-pixel-ratio: 1.5), (-o-min-device-pixel-ratio: 3/2), (min-resolution: 1.5dppx)", nil),
+    ("only screen and (-webkit-min-device-pixel-ratio: 2), only screen and (min--moz-device-pixel-ratio: 2), only screen and (-o-min-device-pixel-ratio: 2/1), only screen and (min-device-pixel-ratio: 2), only screen and (min-resolution: 192dpi), only screen and (min-resolution: 2dppx)", nil),
+    ("screen and (-webkit-min-device-pixel-ratio: 2), screen and (min-resolution: 192dpi)", nil),
+    ("(orientation: portrait) and (max-width: 767px)", nil),
+    ("all and (-ms-high-contrast: none), (-ms-high-contrast: active)", nil),
+    ("screen and (-ms-high-contrast: active), (-ms-high-contrast: none)", nil),
+    ("not all and (min-resolution:.001dpcm)", nil),
+    ("(min-resolution: .001dpcm)", nil),
+    ("screen and (max-device-width: 480px)", "Deprecated media feature \u{201c}max-device-width\u{201d}. For guidance, see the Deprecated Media Features section in the current Media Queries specification."),
+    ("screen and (min-width: 768px) and (max-width: 1023px)", nil),
+    ("screen and (-webkit-min-device-pixel-ratio: 1.5), (min-resolution: 144dpi)", nil),
+    ("(color: 2.5)", "This number should be an integer."),
+    // From A5's mutation run: values the cases above didn't need to judge, which catch mutations of the datatype
+    ("progid:DXImageTransform.Microsoft.gradient(x)", "Parse Error."),
+    ("(foo: progid:DXImageTransform.Microsoft.foo(a))", "Parse Error."),
+    ("(min-width: \\31 0px)", "\u{201c}10px\u{201d} is not a \u{201c}width\u{201d} value"),
+    ("(orientation: hsl(1, 2%, 3%))", "\u{201c}hsl(1 2% 3%)\u{201d} is not a \u{201c}orientation\u{201d} value"),
+    ("(foo > 1) div p", nil),
+    ("(foo > 1) a:hover", nil),
+    ("screen {} a { color: red } @media print", nil),
+    ("screen { a { color: red } } @media print", nil),
+    ("(foo: linear-gradient(red, blue))", nil),
+    ("(width: pow(2px, 2))", "The types are incompatible."),
+    ("(min-height:  url(x:))", "\u{201c}url(x:)\u{201d} is an incorrect URL."),
+    ("(any-poininter: 0\\0", "Parse Error."),
+    ("( prefers-color-scheme:round(.5Q, .5) )", "The types are incompatible."),
+    ("(2dppx > resolut)ion > 1dpp^x)", "Lexical error at line 1, column 36.  Encountered: 'x' (120), after prefix \"^\"."),
+    ("@-@viewport{a:exp(K}", "\u{201c}a\u{201d}: Character K is neither a decimal digit number, decimal point, nor \"e\" notation exponential mark.."),
+    ("#/*#", "Parse Error."),
+    ("(not rgb(red))", "\u{201c}red\u{201d} is not a valid rgba color."),
+    ("#*|", "Parse Error."),
+    ("only print and (hover:@/**/::/**/round(&/**/)", "Parse Error."),
+    ("\\\\6@", "unrecognized media \u{201c}\\\\6\u{201d}."),
+    ("(aspect-ratio=rgba(progid:dximagetransform.microsoft.a()", "Parse Error."),
+    ("a", "unrecognized media \u{201c}a\u{201d}."),
+] as [(String, String?)])
+func mediaQueryValuesMatchUpstream(value: String, expected: String?) {
+    let expectedOutcome: HTMLMediaQueryDatatype.Outcome = expected.map { .error($0) } ?? .valid
+    #expect(expectedOutcome == HTMLMediaQueryDatatype.checkMediaQueryList(value), "\(value.debugDescription)")
+}
+
+// Case 554591 (A5): media attributes in whole documents, as vnu.jar checks
+// them. The datatype judges the media of link, style, source (in picture and
+// in video) and meta name=theme-color, after the HTML parser has decoded
+// character references (&#12; to a space; &#13; to a CR, which ruins the
+// rest of the value for the CSS validator) and turned a literal CR or CRLF
+// into LF. The message shows the decoded value, which vnu.jar's message
+// emitter leaves out at 200 UTF-16 code units or more. Nothing is checked in
+// template contents, in an SVG desc's or a MathML annotation-xml's content
+// (an SVG foreignObject's HTML is checked), on an element the schema rejects
+// where it stands (style in body or in a foreignObject, source in a div), or
+// on a meta whose media the schema doesn't allow (charset, http-equiv,
+// itemprop, property: "not allowed" instead). And Assertions adds its rules:
+// a picture source whose media is empty or "all" is an error for each later
+// sibling with srcset, and a meta with media and no name=theme-color is one,
+// after the schema's message. The expected messages are vnu.jar's, with its
+// "Bad value …: detail" worded as TestRunner's "Bad value …." as the port
+// words it.
+@Test(arguments: [
+    // Link: a valid media query list is accepted
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<link rel=stylesheet href=a.css media=\"screen and (min-width: 40em)\">\n", []),
+    // Link: a bad one is a Bad value (here a unitless width)
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<link rel=stylesheet href=a.css media=\"screen and (min-width: 400)\">\n", [("error", "Bad value \u{201c}screen and (min-width: 400)\u{201d} for attribute \u{201c}media\u{201d} on element \u{201c}link\u{201d}.")]),
+    // Style in head: a valid media type
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<style media=print>p{color:red}</style>\n", []),
+    // Style in head: a bad keyword is a Bad value on style
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<style media=\"(orientation: sideways)\">p{color:red}</style>\n", [("error", "Bad value \u{201c}(orientation: sideways)\u{201d} for attribute \u{201c}media\u{201d} on element \u{201c}style\u{201d}.")]),
+    // Source in picture: a valid media
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<picture><source srcset=a.png media=\"(min-width: 600px)\"><img src=b.png alt=x></picture>\n", []),
+    // Source in picture: a bad media is a Bad value on source
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<picture><source srcset=a.png media=\"(min-width: 600)\"><img src=b.png alt=x></picture>\n", [("error", "Bad value \u{201c}(min-width: 600)\u{201d} for attribute \u{201c}media\u{201d} on element \u{201c}source\u{201d}.")]),
+    // Source in video: a valid media
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<video controls><source src=a.mp4 media=\"(orientation: landscape)\"></video>\n", []),
+    // Source in video: a deprecated media type is a Bad value on source
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<video controls><source src=a.mp4 media=tv></video>\n", [("error", "Bad value \u{201c}tv\u{201d} for attribute \u{201c}media\u{201d} on element \u{201c}source\u{201d}.")]),
+    // Meta name=theme-color: a valid media
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<meta name=theme-color content=\"#fff\" media=\"(prefers-color-scheme: dark)\">\n", []),
+    // Meta name=theme-color: a bad media is a Bad value on meta, and nothing else
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<meta name=theme-color content=\"#fff\" media=\"(prefers-color-scheme: blue)\">\n", [("error", "Bad value \u{201c}(prefers-color-scheme: blue)\u{201d} for attribute \u{201c}media\u{201d} on element \u{201c}meta\u{201d}.")]),
+    // Character references are decoded before the check: &#115;creen is screen
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<link rel=stylesheet href=a.css media=\"&#115;creen\">\n", []),
+    // &#12; reaches the check as a space, not as a form feed
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<link rel=stylesheet href=a.css media=\"screen&#12;and (color)\">\n", []),
+    // &#13; reaches the check as a carriage return, which ruins the rest of the value; the HTML parser also reports the reference
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<link rel=stylesheet href=a.css media=\"screen&#13;and (color)\">\n", [("error", "A numeric character reference expanded to carriage return."), ("error", "Bad value \u{201c}screen\u{d}and (color)\u{201d} for attribute \u{201c}media\u{201d} on element \u{201c}link\u{201d}.")]),
+    // &amp; is decoded: the value checked and shown is “screen & print”
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<link rel=stylesheet href=a.css media=\"screen &amp; print\">\n", [("error", "Bad value \u{201c}screen & print\u{201d} for attribute \u{201c}media\u{201d} on element \u{201c}link\u{201d}.")]),
+    // A named reference for an ASCII character (&lpar; is “(”) is decoded too
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<link rel=stylesheet href=a.css media=\"&lpar;color)\">\n", []),
+    // An empty value is accepted
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<link rel=stylesheet href=a.css media=\"\">\n", []),
+    // A whitespace-only value is accepted
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<link rel=stylesheet href=a.css media=\"  \">\n", []),
+    // A media attribute with no value is accepted
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<link rel=stylesheet href=a.css media>\n", []),
+    // A literal line break in the value is whitespace
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<link rel=stylesheet href=a.css media=\"screen and\n(min-width: 40em)\">\n", []),
+    // A Bad value shows the literal line break as written
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<link rel=stylesheet href=a.css media=\"screen,\nfoo\">\n", [("error", "Bad value \u{201c}screen,\nfoo\u{201d} for attribute \u{201c}media\u{201d} on element \u{201c}link\u{201d}.")]),
+    // A literal CRLF in the value reaches the check, and the message, as LF
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<link rel=stylesheet href=a.css media=\"screen,\u{d}\nfoo\">\n", [("error", "Bad value \u{201c}screen,\nfoo\u{201d} for attribute \u{201c}media\u{201d} on element \u{201c}link\u{201d}.")]),
+    // A literal lone CR in the value reaches the check as LF, so it is whitespace (unlike &#13;)
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<link rel=stylesheet href=a.css media=\"screen\u{d}and (color)\">\n", []),
+    // Nothing in template contents is checked: no Bad value, no picture rule, no theme-color rule
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<template><link rel=stylesheet href=a.css media=foo><style media=foo></style><picture><source srcset=a.png media=\"\"><img src=b.png srcset=c.png alt=x></picture><meta name=description content=x media=foo></template>\n", []),
+    // A link in an SVG desc
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<svg><desc><link rel=stylesheet href=a.css media=foo></desc></svg>\n", []),
+    // A link in an SVG foreignObject
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<svg><foreignObject><link rel=stylesheet href=a.css media=foo></foreignObject></svg>\n", [("error", "Bad value \u{201c}foo\u{201d} for attribute \u{201c}media\u{201d} on element \u{201c}link\u{201d}.")]),
+    // A link in a MathML annotation-xml
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<math><semantics><mi>x</mi><annotation-xml encoding=\"text/html\"><link rel=stylesheet href=a.css media=foo></annotation-xml></semantics></math>\n", []),
+    // Picture: a source with media="" followed by two siblings with srcset: the empty-media error once for each
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<picture><source srcset=a.png media=\"\"><source srcset=b.png type=image/webp><img src=c.png srcset=d.png alt=x></picture>\n", [("error", "Value of \u{201c}media\u{201d} attribute here must not be empty."), ("error", "Value of \u{201c}media\u{201d} attribute here must not be empty.")]),
+    // Picture: media=" all " (trimmed of ASCII whitespace) with two later srcset siblings: the “all” error once for each
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<picture><source srcset=a.png media=\" all \"><source srcset=b.png type=image/webp><img src=c.png srcset=d.png alt=x></picture>\n", [("error", "Value of \u{201c}media\u{201d} attribute here must not be \u{201c}all\u{201d}."), ("error", "Value of \u{201c}media\u{201d} attribute here must not be \u{201c}all\u{201d}.")]),
+    // Picture: media=ALL (compared ignoring case) with two later srcset siblings: the “all” error once for each
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<picture><source srcset=a.png media=ALL><source srcset=b.png type=image/webp><img src=c.png srcset=d.png alt=x></picture>\n", [("error", "Value of \u{201c}media\u{201d} attribute here must not be \u{201c}all\u{201d}."), ("error", "Value of \u{201c}media\u{201d} attribute here must not be \u{201c}all\u{201d}.")]),
+    // Picture: media="" with no later sibling that has srcset: no error
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<picture><source srcset=a.png media=\"\"><img src=c.png alt=x></picture>\n", []),
+    // Picture: media=" all " with no later srcset sibling: no error
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<picture><source srcset=a.png media=\" all \"><img src=c.png alt=x></picture>\n", []),
+    // Picture: media=ALL with no later srcset sibling: no error
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<picture><source srcset=a.png media=ALL><img src=c.png alt=x></picture>\n", []),
+    // Meta name=description: the Bad value, then the theme-color rule's error
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<meta name=description content=x media=foo>\n", [("error", "Bad value \u{201c}foo\u{201d} for attribute \u{201c}media\u{201d} on element \u{201c}meta\u{201d}."), ("error", "A \u{201c}meta\u{201d} element with a \u{201c}media\u{201d} attribute must have a \u{201c}name\u{201d} attribute whose value is \u{201c}theme-color\u{201d}.")]),
+    // Meta name=description with a valid media: only the theme-color rule's error
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<meta name=description content=x media=print>\n", [("error", "A \u{201c}meta\u{201d} element with a \u{201c}media\u{201d} attribute must have a \u{201c}name\u{201d} attribute whose value is \u{201c}theme-color\u{201d}.")]),
+    // Meta name=Theme-Color: the name is compared ignoring case, so only the Bad value
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<meta name=Theme-Color content=\"#fff\" media=foo>\n", [("error", "Bad value \u{201c}foo\u{201d} for attribute \u{201c}media\u{201d} on element \u{201c}meta\u{201d}.")]),
+    // Meta charset: media is not allowed there, and its value isn't checked
+    ("<!doctype html><html lang=en><meta charset=utf-8 media=foo><title>T</title>\n<p>x</p>\n", [("error", "Attribute \u{201c}media\u{201d} not allowed on element \u{201c}meta\u{201d} at this point."), ("error", "A \u{201c}meta\u{201d} element with a \u{201c}media\u{201d} attribute must have a \u{201c}name\u{201d} attribute whose value is \u{201c}theme-color\u{201d}.")]),
+    // Meta http-equiv: media is not allowed, and not checked
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<meta http-equiv=refresh content=30 media=foo>\n", [("error", "Attribute \u{201c}media\u{201d} not allowed on element \u{201c}meta\u{201d} at this point."), ("error", "A \u{201c}meta\u{201d} element with a \u{201c}media\u{201d} attribute must have a \u{201c}name\u{201d} attribute whose value is \u{201c}theme-color\u{201d}.")]),
+    // Meta itemprop: media is not allowed, and not checked
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<div itemscope><meta itemprop=name content=x media=foo></div>\n", [("error", "Attribute \u{201c}media\u{201d} not allowed on element \u{201c}meta\u{201d} at this point."), ("error", "A \u{201c}meta\u{201d} element with a \u{201c}media\u{201d} attribute must have a \u{201c}name\u{201d} attribute whose value is \u{201c}theme-color\u{201d}.")]),
+    // Meta property (RDFa): media is not allowed, and not checked
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<meta property=og:title content=x media=foo>\n", [("error", "Attribute \u{201c}media\u{201d} not allowed on element \u{201c}meta\u{201d} at this point."), ("error", "A \u{201c}meta\u{201d} element with a \u{201c}media\u{201d} attribute must have a \u{201c}name\u{201d} attribute whose value is \u{201c}theme-color\u{201d}.")]),
+    // A bad value of 199 UTF-16 code units is shown in the message
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<link rel=stylesheet href=a.css media=\"screen,     screen, screen, screen, screen, screen, screen, screen, screen, screen, screen, screen, screen, screen, screen, screen, screen, screen, screen, screen, screen, screen, screen, screen, foo\">\n", [("error", "Bad value \u{201c}screen,     screen, screen, screen, screen, screen, screen, screen, screen, screen, screen, screen, screen, screen, screen, screen, screen, screen, screen, screen, screen, screen, screen, screen, foo\u{201d} for attribute \u{201c}media\u{201d} on element \u{201c}link\u{201d}.")]),
+    // Two media attributes: the parser reports the duplicate and keeps the first, which is checked
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<link rel=stylesheet href=a.css media=foo media=print>\n", [("error", "Duplicate attribute \u{201c}media\u{201d}."), ("error", "Bad value \u{201c}foo\u{201d} for attribute \u{201c}media\u{201d} on element \u{201c}link\u{201d}.")]),
+    // Two media attributes: the second, bad, one is dropped unchecked
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<link rel=stylesheet href=a.css media=print media=foo>\n", [("error", "Duplicate attribute \u{201c}media\u{201d}.")]),
+    // Meta with the media first: it decides meta.name as a name would, so the value is checked
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<meta media=\"foo\" name=\"description\" content=\"x\">\n", [("error", "Bad value \u{201c}foo\u{201d} for attribute \u{201c}media\u{201d} on element \u{201c}meta\u{201d}."), ("error", "A \u{201c}meta\u{201d} element with a \u{201c}media\u{201d} attribute must have a \u{201c}name\u{201d} attribute whose value is \u{201c}theme-color\u{201d}.")]),
+    // Meta with a name before an itemprop: meta.name, so the itemprop isn't allowed and the media is checked
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<meta name=\"theme-color\" itemprop=\"x\" content=\"#fff\" media=\"foo\">\n", [("error", "Attribute \u{201c}itemprop\u{201d} not allowed on element \u{201c}meta\u{201d} at this point."), ("error", "Bad value \u{201c}foo\u{201d} for attribute \u{201c}media\u{201d} on element \u{201c}meta\u{201d}."), ("error", "The \u{201c}itemprop\u{201d} attribute was specified, but the element is not a property of any item.")]),
+    // Meta with a property (RDFa) before the name: its pattern takes the name but not the media
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<meta property=\"og:x\" name=\"theme-color\" content=\"#fff\" media=\"screen\">\n", [("error", "Attribute \u{201c}media\u{201d} not allowed on element \u{201c}meta\u{201d} at this point.")]),
+    // From A5's review of its element rules (the reviewer's documents, with vnu.jar 26.10.27's answers):
+    // Media on an a in template contents: nothing is checked there
+    ("<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<title>t</title>\n</head>\n<body>\n<template><a href=\"print.html\" media=\"print\">Print</a></template>\n</body>\n</html>\n", []),
+    // Media on an area in template contents: nothing
+    ("<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<title>t</title>\n</head>\n<body>\n<template><map name=\"m\"><area href=\"x\" alt=\"x\" media=\"print\"></map></template>\n</body>\n</html>\n", []),
+    // Media on a picture in an SVG desc: nothing
+    ("<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<title>t</title>\n</head>\n<body>\n<svg><desc><picture media=\"all\"><img src=\"a.png\" alt=\"a\"></picture></desc></svg>\n</body>\n</html>\n", []),
+    // Name, then property: only meta.property is left, which has no media
+    ("<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<title>t</title>\n<meta name=\"theme-color\" property=\"og:theme\" media=\"(prefers-color-scheme: dark)\" content=\"#000\">\n</head>\n<body>\n<p>x</p>\n</body>\n</html>\n", [("error", "Attribute \u{201c}media\u{201d} not allowed on element \u{201c}meta\u{201d} at this point.")]),
+    // Name, then property, with a bad media: not allowed, not a Bad value
+    ("<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<title>t</title>\n<meta name=\"theme-color\" property=\"og:theme\" media=\"bad!\" content=\"#000\">\n</head>\n<body>\n<p>x</p>\n</body>\n</html>\n", [("error", "Attribute \u{201c}media\u{201d} not allowed on element \u{201c}meta\u{201d} at this point.")]),
+    // From A5's mutation run, cases no test held before (vnu.jar 26.10.27's answers):
+    // A link's imagesrcset in a picture triggers the source rules too, and the message names the imagesrcset
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<picture><source srcset=\"a\"><link rel=\"preload\" as=\"image\" imagesrcset=\"b\"><img src=\"c\" alt=\"x\"></picture>\n", [("error", "A \u{201c}source\u{201d} element that has a following sibling \u{201c}source\u{201d} element or \u{201c}img\u{201d} element with a \u{201c}imagesrcset\u{201d} attribute must have a \u{201c}media\u{201d} attribute and/or \u{201c}type\u{201d} attribute."), ("error", "Element \u{201c}link\u{201d} not allowed as child of \u{201c}picture\u{201d} in this context.")]),
+    // A source with neither media nor type is reported once, at the first later srcset sibling, not again at the next
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<picture><source srcset=\"a\"><source srcset=\"b\" media=\"(min-width: 1px)\"><img srcset=\"c\" alt=\"x\"></picture>\n", [("error", "A \u{201c}source\u{201d} element that has a following sibling \u{201c}source\u{201d} element or \u{201c}img\u{201d} element with a \u{201c}srcset\u{201d} attribute must have a \u{201c}media\u{201d} attribute and/or \u{201c}type\u{201d} attribute.")]),
+    // An em space isn't ASCII whitespace: media="&#x2003;all" is an unrecognized media type, and not "all" for the picture rule
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<picture><source srcset=\"a\" media=\"&#x2003;all\"><img srcset=\"b\" alt=\"x\"></picture>\n", [("error", "Bad value \u{201c}\u{2003}all\u{201d} for attribute \u{201c}media\u{201d} on element \u{201c}source\u{201d}.")]),
+    // A source after a picture's img is rejected, so its media isn't checked
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<picture><img src=\"a\" alt=\"x\"><source srcset=\"b\" media=\"foo\"></picture>\n", [("error", "Element \u{201c}source\u{201d} not allowed as child of \u{201c}picture\u{201d} in this context.")]),
+    // The theme-color name is compared decoded: theme&#45;color is theme-color
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<meta name=\"theme&#45;color\" media=\"screen\" content=\"#fff\">\n", []),
+    // ... and not trimmed: " theme-color" isn't theme-color
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<meta name=\" theme-color\" media=\"screen\" content=\"#fff\">\n", [("error", "A \u{201c}meta\u{201d} element with a \u{201c}media\u{201d} attribute must have a \u{201c}name\u{201d} attribute whose value is \u{201c}theme-color\u{201d}.")]),
+    // From A5's mutation run, part 2 (vnu.jar 26.10.27's answers):
+    // A source without a srcset is judged too, as upstream judges every source child
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<picture><source media=\"\"><img srcset=\"b\" alt=\"x\"></picture>\n", [("error", "Element \u{201c}source\u{201d} is missing required attribute \u{201c}srcset\u{201d}."), ("error", "Value of \u{201c}media\u{201d} attribute here must not be empty.")]),
+    // The picture rule reads the decoded media: &#97;ll is all
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<picture><source srcset=\"a\" media=\"&#97;ll\"><img srcset=\"b\" alt=\"x\"></picture>\n", [("error", "Value of \u{201c}media\u{201d} attribute here must not be \u{201c}all\u{201d}.")]),
+    // A srcset in a picture in template contents judges no sources, not even an outer picture's (upstream's Assertions never sees template contents)
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<picture><source srcset=\"a\"><template><picture><img srcset=\"b\" alt=\"x\"></picture></template><img src=\"c\" alt=\"x\"></picture>\n", []),
+] as [(String, [(String, String)])])
+func mediaAttributesMatchUpstream(document: String, expected: [(String, String)]) {
+    let actual = checkHTML(document).messages
+        .filter { "info" != $0.type || "warning" == $0.subType }
+        .map { "\("info" == $0.type ? "warning" : "error"): \($0.message)" }
+    let wanted = expected.map { "\($0.0): \($0.1)" }
+    #expect(actual.sorted() == wanted.sorted(), "\(document)")
+    // (Upstream reports an element's media messages in a fixed order, its
+    // schema's before its Assertions', so a meta's Bad value comes before the
+    // theme-color error; they're compared in order too. A duplicate
+    // attribute is the parser's, reported in a pass of its own, so it's left
+    // out of that.)
+    let schemaAndAssertions: (String) -> Bool = { isMediaMessage($0) && !$0.contains("Duplicate attribute") }
+    #expect(actual.filter(schemaAndAssertions) == wanted.filter(schemaAndAssertions), "\(document)")
+}
+
+// Case 554591 (A5): the media messages at vnu.jar's line and column (its
+// first ones, as BBEdit reads them): a Bad value, and media not allowed, at
+// the element's start tag, even when the tag or the value spans lines; the
+// picture rule's error at the source, though a later sibling triggers it;
+// and the theme-color rule's at its meta. Sorted, as the port's checkers
+// report in separate passes. The expected messages are vnu.jar's.
+@Test(arguments: [
+    // A link's Bad value is at its start tag
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<link rel=stylesheet href=a.css media=foo>\n", [("Bad value \u{201c}foo\u{201d} for attribute \u{201c}media\u{201d} on element \u{201c}link\u{201d}.", 2, 1)]),
+    // A start tag over three lines: the message is at the tag's first line
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<link rel=stylesheet\n  href=a.css\n  media=foo>\n", [("Bad value \u{201c}foo\u{201d} for attribute \u{201c}media\u{201d} on element \u{201c}link\u{201d}.", 2, 1)]),
+    // A source after other elements on the line: its own column
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p>x</p><picture><source srcset=a.png media=tv><img src=b.png alt=x></picture>\n", [("Bad value \u{201c}tv\u{201d} for attribute \u{201c}media\u{201d} on element \u{201c}source\u{201d}.", 2, 18)]),
+    // A style's Bad value
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<style media=foo>p{color:red}</style>\n", [("Bad value \u{201c}foo\u{201d} for attribute \u{201c}media\u{201d} on element \u{201c}style\u{201d}.", 2, 1)]),
+    // Meta: the Bad value and the theme-color error, both at the meta
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<meta name=description content=x media=foo>\n", [("Bad value \u{201c}foo\u{201d} for attribute \u{201c}media\u{201d} on element \u{201c}meta\u{201d}.", 2, 1), ("A \u{201c}meta\u{201d} element with a \u{201c}media\u{201d} attribute must have a \u{201c}name\u{201d} attribute whose value is \u{201c}theme-color\u{201d}.", 2, 1)]),
+    // The picture rule's error is at the source, not at the later img that triggers it
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<picture><source srcset=a.png media=\"\">\n<img src=c.png srcset=d.png alt=x></picture>\n", [("Value of \u{201c}media\u{201d} attribute here must not be empty.", 2, 10)]),
+    // A value with a line break: the message is where the tag starts
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<link rel=stylesheet href=a.css media=\"screen,\nfoo\">\n", [("Bad value \u{201c}screen,\nfoo\u{201d} for attribute \u{201c}media\u{201d} on element \u{201c}link\u{201d}.", 2, 1)]),
+    // Media not allowed on meta charset, on the first line
+    ("<!doctype html><html lang=en><meta charset=utf-8 media=foo><title>T</title>\n<p>x</p>\n", [("Attribute \u{201c}media\u{201d} not allowed on element \u{201c}meta\u{201d} at this point.", 1, 30), ("A \u{201c}meta\u{201d} element with a \u{201c}media\u{201d} attribute must have a \u{201c}name\u{201d} attribute whose value is \u{201c}theme-color\u{201d}.", 1, 30)]),
+    // A style in an SVG foreignObject (no media message; vnu.jar's own message there, that the element isn't allowed, is a content-model check the port doesn't make yet)
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<svg><foreignObject><style media=foo></style></foreignObject></svg>\n", []),
+    // Style in body: the element isn't allowed there, and its media isn't checked (no media message; vnu.jar's own message there, that the element isn't allowed, is a content-model check the port doesn't make yet)
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p>x</p><style media=foo>p{color:red}</style>\n", []),
+    // Source in a div: the element isn't allowed there, and its media isn't checked (no media message; vnu.jar's own message there, that the element isn't allowed, is a content-model check the port doesn't make yet)
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<div><source srcset=a.png media=foo></div>\n", []),
+    // Meta with the media before a charset: meta.name, so the value is checked (vnu.jar's other messages there, the charset not allowed and the missing name and content, aren't A5's)
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<meta media=\"foo\" charset=\"utf-8\">\n", [("Bad value \u{201c}foo\u{201d} for attribute \u{201c}media\u{201d} on element \u{201c}meta\u{201d}.", 2, 1), ("A \u{201c}meta\u{201d} element with a \u{201c}media\u{201d} attribute must have a \u{201c}name\u{201d} attribute whose value is \u{201c}theme-color\u{201d}.", 2, 1)]),
+    // From A5's review of its element rules (the reviewer's documents, with vnu.jar 26.10.27's answers; only their media messages, as the port doesn't yet give the parse errors and rejections vnu.jar gives there):
+    // After the Facebook pixel's noscript img in the head the body has started, so a theme-color meta's media isn't allowed
+    ("<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<title>t</title>\n<noscript><img src=\"https://www.facebook.com/tr?id=1&amp;ev=PageView&amp;noscript=1\" alt=\"\"></noscript>\n<meta name=\"theme-color\" media=\"(prefers-color-scheme: dark)\" content=\"#000\">\n</head>\n<body>\n<p>x</p>\n</body>\n</html>\n", [("Attribute \u{201c}media\u{201d} not allowed on element \u{201c}meta\u{201d} at this point.", 6, 1)]),
+    // After the pixel, a style is in the body, which vnu.jar rejects, so its media isn't checked
+    ("<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<title>t</title>\n<noscript><img src=\"https://www.facebook.com/tr?id=1&amp;ev=PageView&amp;noscript=1\" alt=\"\"></noscript>\n<style media=\"bad!\">p { color: red }</style>\n</head>\n<body>\n<p>x</p>\n</body>\n</html>\n", []),
+    // A script in a head noscript ends the noscript upstream, so the meta after it is the head's and its valid media is checked; the port leaves a meta in a head noscript unjudged
+    ("<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<title>t</title>\n<noscript><script></script><meta name=\"theme-color\" media=\"(prefers-color-scheme: dark)\" content=\"#000\"></noscript>\n</head>\n<body>\n<p>x</p>\n</body>\n</html>\n", []),
+    // A title in a head noscript, likewise
+    ("<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<title>t</title>\n<noscript><title>x</title><meta name=\"theme-color\" media=\"(prefers-color-scheme: dark)\" content=\"#000\"></noscript>\n</head>\n<body>\n<p>x</p>\n</body>\n</html>\n", []),
+    // An a with media in a MathML mi: only the a's rejection
+    ("<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<title>t</title>\n</head>\n<body>\n<math><mi><a href=\"x\" media=\"print\">x</a></mi></math>\n</body>\n</html>\n", []),
+    // Itemref, then charset: the charset is ignored, meta.name is still possible, and the media is checked
+    ("<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<title>t</title>\n<meta itemref=\"a\" charset=\"utf-8\" name=\"theme-color\" media=\"(prefers-color-scheme: dark)\" content=\"#000\">\n</head>\n<body>\n<p>x</p>\n</body>\n</html>\n", []),
+    // About (RDFa), then charset: likewise
+    ("<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<title>t</title>\n<meta about=\"#x\" charset=\"utf-8\" media=\"(prefers-color-scheme: dark)\">\n</head>\n<body>\n<p>x</p>\n</body>\n</html>\n", [("A \u{201c}meta\u{201d} element with a \u{201c}media\u{201d} attribute must have a \u{201c}name\u{201d} attribute whose value is \u{201c}theme-color\u{201d}.", 5, 1)]),
+    // Itemscope, then property: the property is ignored, and the media is checked
+    ("<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<title>t</title>\n<meta itemscope property=\"og:x\" media=\"(prefers-color-scheme: dark)\" content=\"y\">\n</head>\n<body>\n<p>x</p>\n</body>\n</html>\n", [("A \u{201c}meta\u{201d} element with a \u{201c}media\u{201d} attribute must have a \u{201c}name\u{201d} attribute whose value is \u{201c}theme-color\u{201d}.", 5, 1)]),
+    // A meta in a picture is rejected itself; its media isn't judged
+    ("<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<title>t</title>\n</head>\n<body>\n<picture>\n<meta name=\"theme-color\" media=\"screen\" content=\"#000\">\n<img src=\"a.png\" alt=\"a\"></picture>\n</body>\n</html>\n", []),
+    // A meta in a ul is rejected itself; its media isn't judged
+    ("<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<title>t</title>\n</head>\n<body>\n<ul>\n<meta name=\"theme-color\" media=\"screen\" content=\"#000\">\n<li>x</li></ul>\n</body>\n</html>\n", []),
+    // A srcset in an inner picture judges the outer picture's sources too (one list for the document)
+    ("<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<title>t</title>\n</head>\n<body>\n<picture>\n<source srcset=\"a\">\n<span><picture>\n<img srcset=\"b\" alt=\"b\">\n</picture></span>\n<img src=\"c\" alt=\"c\">\n</picture>\n</body>\n</html>\n", [("A \u{201c}source\u{201d} element that has a following sibling \u{201c}source\u{201d} element or \u{201c}img\u{201d} element with a \u{201c}srcset\u{201d} attribute must have a \u{201c}media\u{201d} attribute and/or \u{201c}type\u{201d} attribute.", 8, 1)]),
+    // An inner picture without a srcset judges nothing
+    ("<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<title>t</title>\n</head>\n<body>\n<picture>\n<source srcset=\"a\">\n<span><picture>\n<img src=\"b\" alt=\"b\">\n</picture></span>\n<img srcset=\"c\" alt=\"c\">\n</picture>\n</body>\n</html>\n", []),
+    // A literal NUL in the value reaches the CSS validator as U+FFFD, a name character, so an unknown feature's value with one is still valid
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<link rel=stylesheet href=a.css media=\"(foo: a\u{0})\">\n", []),
+    // ... and a media type with one is unrecognized; the message shows the U+FFFD
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<link rel=stylesheet href=a.css media=\"screen\u{0}\">\n", [("Bad value \u{201c}screen\u{fffd}\u{201d} for attribute \u{201c}media\u{201d} on element \u{201c}link\u{201d}.", 2, 1)]),
+    // From A5's mutation run, cases no test held before (vnu.jar 26.10.27's answers):
+    // A style in a noscript in the body is rejected (its media isn't checked); the port doesn't give the rejection yet
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p>x</p><noscript><style media=\"foo\">p{}</style></noscript>\n", []),
+    // A source in a video with a src is rejected, so its media isn't checked; the port doesn't give the rejection yet
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<video src=\"a.mp4\"><source src=\"b.mp4\" media=\"foo\"></video>\n", []),
+    // From A5's mutation run, part 2 (vnu.jar 26.10.27's answers):
+    // A meta in a noscript in the body is in the body: its media isn't allowed
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p>x</p><noscript><meta name=\"theme-color\" content=\"#fff\" media=\"screen\"></noscript>\n", [("Attribute \u{201c}media\u{201d} not allowed on element \u{201c}meta\u{201d} at this point.", 2, 19)]),
+    // A picture ending in template contents doesn't clear the sources an outer picture is waiting with
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<picture><source srcset=\"a\"><template><picture></picture></template><img srcset=\"b\" alt=\"x\"></picture>\n", [("A \u{201c}source\u{201d} element that has a following sibling \u{201c}source\u{201d} element or \u{201c}img\u{201d} element with a \u{201c}srcset\u{201d} attribute must have a \u{201c}media\u{201d} attribute and/or \u{201c}type\u{201d} attribute.", 2, 10)]),
+    // A picture's sources in template contents aren't kept for a later picture
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<template><picture><source srcset=\"a\"></picture></template><picture><img srcset=\"b\" alt=\"x\"></picture>\n", []),
+] as [(String, [(String, Int, Int)])])
+func mediaMessagesComeInUpstreamsPlaces(document: String, expected: [(String, Int, Int)]) {
+    let actual = checkHTML(document).messages
+        .filter { isMediaMessage($0.message) }
+        .map { "\($0.message) @ \($0.firstLine ?? $0.lastLine ?? 0):\($0.firstColumn ?? $0.lastColumn ?? 0)" }
+        .sorted()
+    #expect(actual == expected.map { "\($0.0) @ \($0.1):\($0.2)" }.sorted(), "\(document)")
+}
+
+/// Case 554591 (A5): whether a message is about a media attribute (see
+/// mediaAttributesMatchUpstream and mediaMessagesComeInUpstreamsPlaces): a
+/// Bad value, media not allowed, the picture and theme-color rules' errors,
+/// or a duplicate media attribute.
+private func isMediaMessage(_ message: String) -> Bool {
+    return message.contains("\u{201c}media\u{201d}")
+}
+
 // Case 554591 (A14/A16): ARIA as upstream judges it: the schema's judgment of
 // aria-checked, aria-multiselectable, aria-placeholder, aria-readonly,
 // aria-selected, aria-valuemin and aria-valuemax against the element's role

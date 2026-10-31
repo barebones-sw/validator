@@ -517,6 +517,19 @@ struct HTMLGeneralAttributeChecker {
         var anchorHrefStack: [Bool] = []
         var labelStack: [LabelState] = []
         var pictureStack: [PictureState] = []
+        // Case 554591 (A5's review): the sources upstream's rules for a
+        // source that would always match will report, at any picture's
+        // following sibling with a srcset (see appendPictureChildMessages).
+        // Upstream keeps one list for the whole document (Assertions'
+        // siblingSources) and clears it at the end of every picture, so a
+        // srcset in a picture inside another picture's rejected child judges
+        // the outer picture's sources too; the port kept one list per picture.
+        // Each source is judged once, as it's added, and only those with
+        // something to report are kept, so a picture with many good sources
+        // costs nothing more; one with many empty or "all" ones, each before
+        // a srcset sibling, gets a message per pair, n(n-1)/2 of them, as in
+        // vnu.jar.
+        var alwaysMatchingSources: [AlwaysMatchingSource] = []
         var mediaStack: [MediaState] = []
         var selectStack: [SelectState] = []
         var optionStack: [OptionState] = []
@@ -716,8 +729,15 @@ struct HTMLGeneralAttributeChecker {
                 }
                 // (Review item A2: for an SVG element, srcset on <image> is the
                 // one disallowed attribute, a schema rule; see
-                // foreignSchemaChecksApply.)
-                if isHTML || foreignSchemaChecksApply {
+                // foreignSchemaChecksApply. Case 554591, A5's review: every
+                // entry is the schema's for an HTML element too, so none
+                // applies where the schema checks nothing: in template
+                // contents, in an SVG desc's or a MathML annotation-xml's
+                // any-element content, or inside an element it rejected.
+                // <template><a href=x media=print> got "Attribute “media” not
+                // allowed on element “a” at this point.", which vnu.jar doesn't
+                // give.)
+                if foreignSchemaChecksApply {
                     appendDisallowedAttributeMessages(for: element, parent: parent, locations: locations, messages: &messages)
                 }
                 appendRoleTokenMessages(for: element, parent: parent, stack: stack, foreignSchemaChecksApply: foreignSchemaChecksApply, inTemplateContents: inTemplateContents, locations: locations, messages: &messages)
@@ -820,12 +840,56 @@ struct HTMLGeneralAttributeChecker {
                     appendTrackMessages(for: element, mediaStack: &mediaStack, locations: locations, messages: &messages)
                     appendScriptAttributeMessages(for: element, locations: locations, messages: &messages)
                     appendStyleElementMessages(for: element, parent: parent, locations: locations, messages: &messages)
-                    appendMediaAttributeMessages(for: element, locations: locations, messages: &messages)
+                    // (Case 554591, A5: a media value is the schema's to check,
+                    // so, as with the date and time values above, only where
+                    // it checks this element (foreignSchemaChecksApply: not in
+                    // template contents, nor in any-element content, nor
+                    // inside an element it rejected in foreign content), and
+                    // only as the pattern that matches has it; see
+                    // schemaMediaRule. The theme-color rule is upstream's
+                    // Assertions', which see every HTML element but those in
+                    // template contents, after the schema's messages; see
+                    // appendMetaMediaNameMessages.)
+                    if foreignSchemaChecksApply, element.hasAttribute("media") {
+                        // (In the head by the parser's model: a child of the
+                        // head, or of the root, or of nothing, as the children
+                        // of an implied head, or of the head reopened after
+                        // </head>, have no head start in the port's events;
+                        // and in any case before the body starts. A5's review:
+                        // the port's tree keeps the head open after the
+                        // Facebook pixel's <noscript><img …></noscript> in the
+                        // head, where upstream's img ends the head and starts
+                        // the body, which the port's sections do note; so a
+                        // theme-color meta after it, a child of the head in
+                        // the port's tree, is in the body for upstream, which
+                        // says its media isn't allowed.)
+                        let bodyStarted = document.bodyStartEvent.map { $0 <= eventIndex } ?? false
+                        let inHead = parentIsHTML && !bodyStarted && ("head" == parent || "html" == parent || nil == parent)
+                        let rule = Self.schemaMediaRule(
+                            for: element,
+                            parent: parentIsHTML ? parent : nil,
+                            inHead: inHead,
+                            bodyStarted: bodyStarted,
+                            mediaElement: mediaStack.last?.element,
+                            pictureSawImage: pictureStack.last?.sawImage ?? false
+                        )
+                        switch rule {
+                        case .value:
+                            appendMediaAttributeMessages(for: element, locations: locations, messages: &messages)
+                        case .notAllowed:
+                            appendAttributeNotAllowed("media", for: element, locations: locations, messages: &messages)
+                        case .unchecked:
+                            break
+                        }
+                    }
+                    if !inTemplateContents {
+                        appendMetaMediaNameMessages(for: element, locations: locations, messages: &messages)
+                    }
                     appendResponsiveImageMessages(for: element, stack: stack, locations: locations, messages: &messages)
                     appendLabelDescendantMessages(for: element, labelStack: &labelStack, locations: locations, messages: &messages)
                 }
                 if parentIsHTML, parent == "picture", let pictureIndex = pictureStack.indices.last {
-                    appendPictureChildMessages(for: element, state: &pictureStack[pictureIndex], locations: locations, messages: &messages)
+                    appendPictureChildMessages(for: element, state: &pictureStack[pictureIndex], alwaysMatchingSources: &alwaysMatchingSources, locations: locations, messages: &messages)
                 }
                 // (Case 554591, item 4: a figure's content model, which this
                 // used to check here, is HTMLValidator's now, as it's a schema
@@ -877,7 +941,7 @@ struct HTMLGeneralAttributeChecker {
                     titleCapture = TitleCapture(element: element)
                 }
                 if isHTML, element.name == "picture" {
-                    pictureStack.append(PictureState(element: element))
+                    pictureStack.append(PictureState(element: element, inTemplateContents: inTemplateContents))
                 }
                 if isHTML, element.name == "details" {
                     detailsStack.append(DetailsState(element: element))
@@ -1066,6 +1130,13 @@ struct HTMLGeneralAttributeChecker {
                 }
                 if endedIsHTML, name == "picture", let state = pictureStack.popLast() {
                     appendPictureMessages(state, locations: locations, messages: &messages)
+                    // (Case 554591, A5's review: upstream forgets every
+                    // picture's sources at the end of any picture
+                    // (Assertions.java:2003-2004), but not at one in template
+                    // contents, which its Assertions never sees.)
+                    if !state.inTemplateContents {
+                        alwaysMatchingSources.removeAll()
+                    }
                 }
                 if endedIsHTML, name == "audio" || name == "video", !mediaStack.isEmpty {
                     _ = mediaStack.popLast()
@@ -1898,9 +1969,12 @@ struct HTMLGeneralAttributeChecker {
 
     private struct PictureState {
         var element: HTMLStartElement
+        /// Case 554591 (A5): whether this picture is in template contents,
+        /// where upstream's Assertions, and so its rules for sources that
+        /// would always match, never look (see appendPictureChildMessages).
+        var inTemplateContents: Bool
         var sourcesMissingSizes: [HTMLStartElement] = []
         var sourcesWithAutoSizes: [HTMLStartElement] = []
-        var sourceSelectionCandidates: [HTMLStartElement] = []
         var permitsSourceWidthWithoutSizes = false
         var sawImage = false
     }
@@ -2276,13 +2350,32 @@ struct HTMLGeneralAttributeChecker {
     private func appendPictureChildMessages(
         for element: HTMLStartElement,
         state: inout PictureState,
+        alwaysMatchingSources: inout [AlwaysMatchingSource],
         locations: SourceLocationMap,
         messages: inout [ValidationMessage]
     ) {
-        let hasSrcset = element.hasAttribute("srcset")
-        if hasSrcset, element.name == "source" || element.name == "img" {
-            appendAlwaysMatchingSourceMessages(for: state.sourceSelectionCandidates, locations: locations, messages: &messages)
-            state.sourceSelectionCandidates.removeAll()
+        // Case 554591 (A5, and review item A27): upstream's rules for a
+        // source that would always match run as an img, a source or a link
+        // with a srcset (a link's is imagesrcset) starts, over every source
+        // before it in any picture still on the list (Assertions.java:
+        // 2873-2883, 2946-2975); then a source joins them (:3071-3078),
+        // whether or not it has a srcset, and after the img too; and the end
+        // of any picture just forgets them (:2003-2004; see the caller's
+        // alwaysMatchingSources). The port used to judge only the sources
+        // with a srcset, forget them after one srcset sibling, so each
+        // message came once where upstream repeats the empty and "all" ones
+        // at every later srcset sibling, and judge whatever was left at the
+        // end of the picture too, which reported a last <source srcset> with
+        // no media or type although nothing after it had a srcset (A27).
+        // None of it applies in template contents, which upstream's
+        // Assertions never sees.
+        let srcsetName = "link" == element.name ? "imagesrcset" : "srcset"
+        if "img" == element.name || "source" == element.name || "link" == element.name,
+           element.hasAttribute(srcsetName), !state.inTemplateContents {
+            appendAlwaysMatchingSourceMessages(for: &alwaysMatchingSources, srcsetName: srcsetName, locations: locations, messages: &messages)
+        }
+        if "source" == element.name, !state.inTemplateContents, let source = alwaysMatchingSource(element) {
+            alwaysMatchingSources.append(source)
         }
 
         switch element.name {
@@ -2300,7 +2393,6 @@ struct HTMLGeneralAttributeChecker {
             if element.attributeValue("sizes")?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased().hasPrefix("auto") == true {
                 state.sourcesWithAutoSizes.append(element)
             }
-            state.sourceSelectionCandidates.append(element)
         case "img":
             if state.sawImage {
                 appendElementNotAllowedInPictureMessage(for: element, locations: locations, messages: &messages)
@@ -2347,33 +2439,89 @@ struct HTMLGeneralAttributeChecker {
                 )
             }
         }
-
-        appendAlwaysMatchingSourceMessages(for: state.sourceSelectionCandidates, locations: locations, messages: &messages)
+        // (Case 554591, A27: the sources still waiting here are judged by
+        // nothing; upstream's end of a picture only forgets them. This used
+        // to judge them as if a srcset sibling followed; see
+        // appendPictureChildMessages.)
     }
 
+    /// Case 554591 (A5): a picture's source that upstream's rules for a
+    /// source that would always match report (Assertions.java:2946-2975), and
+    /// for what.
+    private struct AlwaysMatchingSource {
+        enum Problem {
+            /// Neither media nor type: reported once, at the first following
+            /// sibling with a srcset (upstream then removes it from its list).
+            case noMediaOrType
+            /// A media value that's empty, or "all", once trimmed: reported at
+            /// every following sibling with a srcset (upstream keeps it).
+            case emptyMedia
+            case allMedia
+        }
+
+        var element: HTMLStartElement
+        var problem: Problem
+    }
+
+    /// Case 554591 (A5): what upstream's rules for a source that would always
+    /// match will report about this source, in their order: no media and no
+    /// type; or a media value, as upstream's tokenizer decoded it, that once
+    /// trimmed of ASCII whitespace (trimSpaces, :114-143) is empty, or is
+    /// "all" in any ASCII case. nil if nothing. The port used to read the raw
+    /// text, trim Unicode whitespace and lowercase it, so media="&#97;ll"
+    /// wasn't "all", while media="\u{2003}all" (an em space) was.
+    private func alwaysMatchingSource(_ element: HTMLStartElement) -> AlwaysMatchingSource? {
+        guard element.hasAttribute("media") else {
+            return element.hasAttribute("type") ? nil : AlwaysMatchingSource(element: element, problem: .noMediaOrType)
+        }
+        let media = trimmingASCIIWhitespace(HTMLCharacterReferences.decodeAttributeValue(element.attributeValue("media") ?? ""))
+        if media.isEmpty {
+            return AlwaysMatchingSource(element: element, problem: .emptyMedia)
+        }
+        if Self.equalsIgnoringASCIICase(media, "all") {
+            return AlwaysMatchingSource(element: element, problem: .allMedia)
+        }
+        return nil
+    }
+
+    /// Case 554591 (A5): upstream's rules for the sources that would always
+    /// match, as a following sibling with `srcsetName` starts (see
+    /// AlwaysMatchingSource), each source's message at the source. (The port's
+    /// message named the srcset even for a link's imagesrcset.)
     private func appendAlwaysMatchingSourceMessages(
-        for sources: [HTMLStartElement],
+        for sources: inout [AlwaysMatchingSource],
+        srcsetName: String,
         locations: SourceLocationMap,
         messages: inout [ValidationMessage]
     ) {
-        for element in sources {
-            if element.hasAttribute("media") {
-                let media = element.attributeValue("media") ?? ""
-                let trimmed = media.trimmingCharacters(in: .whitespacesAndNewlines)
-                if trimmed.isEmpty {
-                    appendMessage("Value of \u{201c}media\u{201d} attribute here must not be empty.", for: element, locations: locations, messages: &messages)
-                } else if trimmed.lowercased() == "all" {
-                    appendMessage("Value of \u{201c}media\u{201d} attribute here must not be \u{201c}all\u{201d}.", for: element, locations: locations, messages: &messages)
-                }
-            } else if !element.hasAttribute("type") {
+        for source in sources {
+            switch source.problem {
+            case .noMediaOrType:
                 appendMessage(
-                    "A \u{201c}source\u{201d} element that has a following sibling \u{201c}source\u{201d} element or \u{201c}img\u{201d} element with a \u{201c}srcset\u{201d} attribute must have a \u{201c}media\u{201d} attribute and/or \u{201c}type\u{201d} attribute.",
-                    for: element,
+                    "A \u{201c}source\u{201d} element that has a following sibling \u{201c}source\u{201d} element or \u{201c}img\u{201d} element with a \u{201c}\(srcsetName)\u{201d} attribute must have a \u{201c}media\u{201d} attribute and/or \u{201c}type\u{201d} attribute.",
+                    for: source.element,
                     locations: locations,
                     messages: &messages
                 )
+            case .emptyMedia:
+                appendMessage("Value of \u{201c}media\u{201d} attribute here must not be empty.", for: source.element, locations: locations, messages: &messages)
+            case .allMedia:
+                appendMessage("Value of \u{201c}media\u{201d} attribute here must not be \u{201c}all\u{201d}.", for: source.element, locations: locations, messages: &messages)
             }
         }
+        sources.removeAll { .noMediaOrType == $0.problem }
+    }
+
+    /// Case 554591 (A5): `value` without the ASCII whitespace (space, tab,
+    /// line feed, form feed and carriage return) at either end, as
+    /// upstream's Assertions.trimSpaces trims it.
+    private func trimmingASCIIWhitespace(_ value: String) -> String {
+        let scalars = value.unicodeScalars
+        guard let first = scalars.firstIndex(where: { !isASCIIWhitespace($0) }),
+              let last = scalars.lastIndex(where: { !isASCIIWhitespace($0) }) else {
+            return ""
+        }
+        return String(Substring(scalars[first...last]))
     }
 
     private func appendElementNotAllowedInPictureMessage(
@@ -5634,18 +5782,276 @@ struct HTMLGeneralAttributeChecker {
         )
     }
 
+    /// Case 554591 (A5): a media attribute's value, judged as upstream's
+    /// schema judges it, by its media-query datatype (common.data.mediaquery,
+    /// which is nu.validator.datatype.MediaQuery; see HTMLMediaQueryDatatype),
+    /// on the value as upstream's tokenizer hands it on: a literal CR or CRLF
+    /// is an LF, and character references are decoded (a reference to a form
+    /// feed being a space; see HTMLCharacterReferences.decodeAttributeValue).
+    /// The message shows that decoded value, as vnu.jar's does.
+    ///
+    /// This used to run a subset parser (an optional not or only, then all,
+    /// print or screen, then "and (feature: value)" with four features) on
+    /// the raw text. So nearly every real media query was a bad value: a bare
+    /// condition such as "(min-width: 40em)", em widths, dppx resolutions,
+    /// orientation, prefers-color-scheme and hover, range syntax such as
+    /// "(width >= 600px)", vendor features such as
+    /// "(-webkit-min-device-pixel-ratio: 2)", and "&#115;creen". And media=""
+    /// was a bad value, where upstream accepts an empty list, while a bare
+    /// media attribute (the same empty value) wasn't. A valueless attribute
+    /// (attributeValue gives nil) is the empty value, which is valid, so it
+    /// has nothing to report.
     private func appendMediaAttributeMessages(
         for element: HTMLStartElement,
         locations: SourceLocationMap,
         messages: inout [ValidationMessage]
     ) {
-        guard Self.mediaAttributeElements.contains(element.name),
-              let media = element.attributeValue("media"),
-              !isValidMediaQueryList(media) else {
+        guard let raw = element.attributeValue("media") else {
             return
         }
-
+        // (The input stream's newline normalization first, so that a CR
+        // written as &#13; stays one, as it does in vnu.jar, where the CSS
+        // validator then rejects it; a literal one is a line feed there. And
+        // upstream's tokenizer turns a literal NUL in an attribute value into
+        // U+FFFD ("Saw U+0000 in stream."), which the CSS validator takes as
+        // a name character, where a NUL matches no token at all: A5's review
+        // found "(foo: a\0)" valid in vnu.jar but a Bad value in the port.)
+        let media = HTMLCharacterReferences.decodeAttributeValue(
+            raw.replacingOccurrences(of: "\r\n", with: "\n").replacingOccurrences(of: "\r", with: "\n")
+                .replacingOccurrences(of: "\u{0}", with: "\u{FFFD}")
+        )
+        guard case .error = HTMLMediaQueryDatatype.checkMediaQueryList(media) else {
+            return
+        }
         appendBadAttributeValue(media, attribute: "media", for: element, locations: locations, messages: &messages)
+    }
+
+    /// Case 554591 (A5): what upstream's schema does with an HTML element's
+    /// media attribute (see schemaMediaRule).
+    private enum SchemaMediaRule {
+        /// A pattern with media (common.data.mediaquery) matches the element
+        /// where it stands: the value is checked.
+        case value
+        /// The pattern that matches has no media: "Attribute “media” not
+        /// allowed on element “…” at this point.", and the value isn't checked.
+        case notAllowed
+        /// The element is rejected where it stands, and Jing checks nothing
+        /// on it ("not allowed as child of … in this context. (Suppressing
+        /// further errors from this subtree.)"), or this is an element whose
+        /// media another rule reports (a, area and picture; see
+        /// disallowedAttributes) or that the port doesn't judge yet.
+        case unchecked
+    }
+
+    /// Case 554591 (A5): what upstream's schema does with this HTML
+    /// element's media attribute: it checks the value only where one of its
+    /// patterns with media matches the element where it stands. The port used
+    /// to check media on link, meta, source and style wherever they stood,
+    /// and on nothing else. `parent` is the parent's name when it's an HTML
+    /// element (else nil), `inHead` whether the element is a child of the
+    /// head, explicit or implied, and `bodyStarted` whether the body has
+    /// started by the parser's model (see HTMLParsedDocument.bodyStartEvent).
+    ///
+    /// The port doesn't model every content model these patterns use (review
+    /// item MM7's wider problem), so where it can't tell, this leans toward
+    /// checking the value, as before: a link is checked wherever it is,
+    /// though upstream rejects one in, say, a <ul>; and so is a source in a
+    /// video or audio after a track or other content, which upstream rejects.
+    /// Nor does the port have an attribute list for every element (MM9):
+    /// vnu.jar's "Attribute “media” not allowed" on, say, an img or a div
+    /// is still missing.
+    private static func schemaMediaRule(
+        for element: HTMLStartElement,
+        parent: String?,
+        inHead: Bool,
+        bodyStarted: Bool,
+        mediaElement: HTMLStartElement?,
+        pictureSawImage: Bool
+    ) -> SchemaMediaRule {
+        switch element.name {
+        case "link":
+            // shared-hyperlink.attrs.media (phrase.rnc:92-95), which every
+            // link pattern has, in the head and in the body (meta.rnc:162,
+            // microdata.rnc:57, rdfa.rnc:209 and :244).
+            return .value
+        case "style":
+            // style.elem is metadata content (meta.rnc:254-261): a child of
+            // the head, or of a noscript in it (one before the body starts).
+            // vnu.jar rejects a style in the body, or in a noscript there, so
+            // it doesn't judge its media, which the port used to.
+            return (inHead || ("noscript" == parent && !bodyStarted)) ? .value : .unchecked
+        case "source":
+            switch parent {
+            case "picture":
+                // embed.rnc:143-153: the sources come before the img; one
+                // after it is rejected (see appendPictureChildMessages).
+                return pictureSawImage ? .unchecked : .value
+            case "video", "audio":
+                // media.rnc:47-60 and 112-151: sources only in a media
+                // element with no src.
+                return (mediaElement?.hasAttribute("src") ?? false) ? .unchecked : .value
+            default:
+                // A source anywhere else is rejected.
+                return .unchecked
+            }
+        case "meta":
+            // Only meta.name has media (meta.rnc:270-283), and only as
+            // metadata content, a child of the head: a noscript in the head
+            // takes only a meta http-equiv, and the body only a meta with
+            // itemprop or property, so there vnu.jar says media isn't
+            // allowed. (A meta whose parent rejects it outright, a <ul>,
+            // say, gets that message here where vnu.jar rejects the meta.)
+            // In the head, it depends on the meta's other attributes; see
+            // metaNarrowingKeepsName. vnu.jar 26.10.27 confirms each case.
+            //
+            // But a meta whose parent is a noscript before the body starts
+            // isn't judged at all (A5's review): upstream's "in head
+            // noscript" mode, which the port's parser doesn't model, ends the
+            // noscript at any start tag but link, meta, style and a few
+            // others, so after <noscript><script></script> (or a title, base
+            // or template) the meta is the head's, and its media is checked,
+            // while the port still sees it in the noscript. Leaving it alone
+            // misses vnu.jar's "not allowed" for a meta that really is in a
+            // head noscript, rather than giving that error where there's none.
+            if "noscript" == parent, !bodyStarted {
+                return .unchecked
+            }
+            // Nor is a meta whose parent can't hold one at all (a list, a
+            // table part, a select, a picture, ...): upstream rejects the
+            // meta itself there ("Element “meta” not allowed as child of …"),
+            // so Jing checks none of its attributes. (A5's review: the port
+            // said media wasn't allowed there instead.)
+            if let parent, Self.metaRejectingParents.contains(parent) {
+                return .unchecked
+            }
+            guard inHead else {
+                return .notAllowed
+            }
+            return Self.metaNarrowingKeepsName(element) ? .value : .notAllowed
+        default:
+            return .unchecked
+        }
+    }
+
+    /// Case 554591 (A5): a meta with media must be a theme-color
+    /// (Assertions.java:4284-4292). This was HTMLMetaChecker's, which runs
+    /// before this checker, so for a meta with a bad media value it gave this
+    /// message before the Bad value, where vnu.jar's schema, which runs
+    /// before its Assertions, gives the Bad value first. And as upstream
+    /// has it: the name as the tokenizer decoded it, compared ignoring ASCII
+    /// case only (HTMLMetaChecker trimmed it and took "theme_color" too, so
+    /// name=" theme-color" and name="theme_color" got no error), and not in
+    /// template contents, which Assertions never sees (see the caller).
+    private func appendMetaMediaNameMessages(
+        for element: HTMLStartElement,
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) {
+        guard "meta" == element.name, element.hasAttribute("media") else {
+            return
+        }
+        // (Upstream's is Java's equalsIgnoreCase, but no other character's
+        // case mapping gives one of theme-color's letters, so ASCII case is
+        // the same test. A valueless name is nil here and "" there; neither
+        // is theme-color.)
+        if let name = element.attributeValue("name"),
+           Self.equalsIgnoringASCIICase(HTMLCharacterReferences.decodeAttributeValue(name), "theme-color") {
+            return
+        }
+        appendMessage(
+            "A \u{201c}meta\u{201d} element with a \u{201c}media\u{201d} attribute must have a \u{201c}name\u{201d} attribute whose value is \u{201c}theme-color\u{201d}.",
+            for: element,
+            locations: locations,
+            messages: &messages
+        )
+    }
+
+    /// Case 554591 (A5): whether `value` is `lowercaseLiteral` but for ASCII
+    /// case, as upstream's AttributeUtil.lowerCaseLiteralEqualsIgnoreAsciiCaseString
+    /// compares a picture source's media with "all" (lowercased() would also
+    /// map other letters, such as U+212A KELVIN SIGN to "k", which upstream
+    /// doesn't). The theme-color rule uses it too: upstream's comparison
+    /// there is Java's equalsIgnoreCase, which for "theme-color" gives the
+    /// same answer, since no other character's case mapping gives one of its
+    /// letters.
+    private static func equalsIgnoringASCIICase(_ value: String, _ lowercaseLiteral: String) -> Bool {
+        lowercaseLiteral.utf8.count == value.utf8.count
+            && zip(value.utf8, lowercaseLiteral.utf8).allSatisfy { ((65...90).contains($0) ? $0 | 0x20 : $0) == $1 }
+    }
+
+    /// Case 554591 (A5's review): HTML elements whose content model takes no
+    /// meta, not even the itemprop or property one that flow and phrasing
+    /// content allow: their children are lists' items, table parts, options,
+    /// a picture's sources and img, and so on.
+    private static let metaRejectingParents: Set<String> = [
+        "ul", "ol", "menu", "dl", "table", "thead", "tbody", "tfoot", "tr", "colgroup",
+        "select", "optgroup", "option", "picture", "hgroup", "frameset"
+    ]
+
+    /// Case 554591 (A5): meta's patterns in the head (meta.rnc:269-295,
+    /// microdata.rnc:79-98, rdfa.rnc:209-289), as Jing narrows them: meta.name
+    /// (the only one with media), meta.property (RDFa), meta.itemprop
+    /// (microdata), meta.charset and the meta.http-equiv patterns.
+    private struct MetaPatterns: OptionSet {
+        let rawValue: UInt8
+
+        static let name = MetaPatterns(rawValue: 1)
+        static let property = MetaPatterns(rawValue: 2)
+        static let itemprop = MetaPatterns(rawValue: 4)
+        static let charset = MetaPatterns(rawValue: 8)
+        static let httpEquiv = MetaPatterns(rawValue: 16)
+        static let all: MetaPatterns = [.name, .property, .itemprop, .charset, .httpEquiv]
+    }
+
+    /// Case 554591 (A5): which of meta's patterns take each attribute that
+    /// tells them apart. Any other attribute is either common to all of them
+    /// or allowed by none, so it narrows nothing (and the content, which only
+    /// meta.charset lacks, comes after the media in Jing's order). meta.name
+    /// adds RDFa's no-content-noproperty attributes (rdfa.rnc:159-167, :289),
+    /// so it shares those with meta.property, and the microdata ones with
+    /// meta.itemprop.
+    private static let metaPatternsTaking: [String: MetaPatterns] = [
+        "name": [.name, .property],
+        "media": [.name],
+        "property": [.property],
+        "itemprop": [.itemprop],
+        "charset": [.charset],
+        "http-equiv": [.httpEquiv],
+        "itemref": [.name, .itemprop], "itemscope": [.name, .itemprop], "itemtype": [.name, .itemprop], "itemid": [.name, .itemprop],
+        "about": [.name, .property], "prefix": [.name, .property], "typeof": [.name, .property], "vocab": [.name, .property],
+        "datatype": [.name, .property], "resource": [.name, .property], "inlist": [.name, .property],
+    ]
+
+    /// Case 554591 (A5, and its review): whether meta.name is still one of a
+    /// head meta's possible patterns when Jing reaches its media, so that
+    /// Jing checks the value; otherwise media isn't allowed. Jing takes the
+    /// attributes in the document's order, but for the content, which it's
+    /// given last (HTMLARIASchema.permute), and only the first of each name;
+    /// each narrows the patterns still possible to those that take it, and
+    /// one that none of them takes is "not allowed" and changes nothing
+    /// (PatternValidator, ImpossibleAttributeIgnored). So a name first leaves
+    /// meta.name and meta.property, and a property after it leaves only
+    /// meta.property, which has no media; but after an itemref, a charset is
+    /// taken by neither meta.name nor meta.itemprop, so it's ignored and the
+    /// media is still checked. (The port first let the first of name, media,
+    /// charset, http-equiv, itemprop and property decide, which the review
+    /// found wrong for both of those.)
+    private static func metaNarrowingKeepsName(_ element: HTMLStartElement) -> Bool {
+        var live = MetaPatterns.all
+        var seen: Set<String> = []
+        for attribute in element.attributes where seen.insert(attribute.name).inserted {
+            if "media" == attribute.name {
+                return live.contains(.name)
+            }
+            guard let taking = metaPatternsTaking[attribute.name] else {
+                continue
+            }
+            let narrowed = live.intersection(taking)
+            if !narrowed.isEmpty {
+                live = narrowed
+            }
+        }
+        return live.contains(.name)
     }
 
     private func appendScriptAttributeMessages(
@@ -6564,113 +6970,6 @@ struct HTMLGeneralAttributeChecker {
         Set((element.attributeValue("rel") ?? "").lowercased().split(whereSeparator: { $0.isWhitespace }).map(String.init))
     }
 
-    private func isValidMediaQueryList(_ value: String) -> Bool {
-        let queries = value.split(separator: ",", omittingEmptySubsequences: false)
-        guard !queries.isEmpty else { return false }
-        return queries.allSatisfy { isValidMediaQuery(String($0)) }
-    }
-
-    private func isValidMediaQuery(_ value: String) -> Bool {
-        var remainder = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !remainder.isEmpty else { return false }
-
-        let prefix = consumeMediaIdentifier(from: remainder).lowercased()
-        if prefix == "not" || prefix == "only" {
-            remainder.removeFirst(prefix.count)
-            guard remainder.first?.isWhitespace == true else { return false }
-            remainder = remainder.trimmingCharacters(in: .whitespacesAndNewlines)
-        }
-
-        let mediaType = consumeMediaIdentifier(from: remainder).lowercased()
-        guard Self.mediaTypes.contains(mediaType) else { return false }
-        remainder.removeFirst(mediaType.count)
-        remainder = remainder.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !remainder.isEmpty else { return true }
-
-        while !remainder.isEmpty {
-            guard remainder.lowercased().hasPrefix("and") else { return false }
-            let afterAnd = remainder.index(remainder.startIndex, offsetBy: 3)
-            guard afterAnd < remainder.endIndex,
-                  remainder[afterAnd].isWhitespace else {
-                return false
-            }
-            remainder = String(remainder[afterAnd...]).trimmingCharacters(in: .whitespacesAndNewlines)
-            guard remainder.first == "(",
-                  let close = remainder.firstIndex(of: ")") else {
-                return false
-            }
-            let featureStart = remainder.index(after: remainder.startIndex)
-            guard isValidMediaFeature(String(remainder[featureStart..<close])) else {
-                return false
-            }
-            remainder = String(remainder[remainder.index(after: close)...]).trimmingCharacters(in: .whitespacesAndNewlines)
-        }
-
-        return true
-    }
-
-    private func consumeMediaIdentifier(from value: String) -> String {
-        String(value.prefix { scalar in
-            scalar.isASCII && (scalar.isLetter || scalar.isNumber || scalar == "-")
-        })
-    }
-
-    private func isValidMediaFeature(_ value: String) -> Bool {
-        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty, !trimmed.contains(";") else { return false }
-        let parts = trimmed.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
-        guard parts.count == 2 else { return false }
-
-        let name = parts[0].trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        let featureValue = parts[1].trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        switch name {
-        case "min-width", "max-width":
-            return isValidMediaLength(featureValue)
-        case "color":
-            return isValidMediaInteger(featureValue)
-        case "min-resolution":
-            return isValidMediaResolution(featureValue)
-        default:
-            return false
-        }
-    }
-
-    private func isValidMediaLength(_ value: String) -> Bool {
-        if isValidCSSNumber(value), Double(value) == 0 {
-            return true
-        }
-        guard value.hasSuffix("px") else { return false }
-        let number = String(value.dropLast(2))
-        return isValidCSSNumber(number) && (Double(number) ?? -1) >= 0
-    }
-
-    private func isValidMediaResolution(_ value: String) -> Bool {
-        guard value.hasSuffix("dpi") else { return false }
-        let number = String(value.dropLast(3))
-        return isValidCSSNumber(number) && (Double(number) ?? 0) > 0
-    }
-
-    private func isValidMediaInteger(_ value: String) -> Bool {
-        !value.isEmpty && value.utf8.allSatisfy(isASCIIDigit)
-    }
-
-    private func isValidCSSNumber(_ value: String) -> Bool {
-        guard !value.isEmpty else { return false }
-        var sawDigit = false
-        var sawDot = false
-        for scalar in value.unicodeScalars {
-            if scalar == "." {
-                guard !sawDot else { return false }
-                sawDot = true
-            } else if scalar.value >= 48 && scalar.value <= 57 {
-                sawDigit = true
-            } else {
-                return false
-            }
-        }
-        return sawDigit
-    }
-
     private func appendSizesMessages(
         _ value: String,
         element: HTMLStartElement,
@@ -6933,14 +7232,6 @@ struct HTMLGeneralAttributeChecker {
 
     private static let integrityRelTokens: Set<String> = [
         "stylesheet", "preload", "modulepreload"
-    ]
-
-    private static let mediaAttributeElements: Set<String> = [
-        "link", "meta", "source", "style"
-    ]
-
-    private static let mediaTypes: Set<String> = [
-        "all", "print", "screen"
     ]
 
     private static let metadataElements: Set<String> = [
@@ -8169,6 +8460,7746 @@ enum HTMLDatetimeDatatype {
                 }
             }
             return value
+        }
+    }
+}
+
+/// Case 554591 (A5): upstream's media query datatypes (nu.validator.datatype
+/// MediaQuery, for media attributes, and MediaCondition, for the conditions
+/// in sizes), as vnu.jar runs them. Upstream doesn't parse media queries
+/// itself: it hands "@media " + value + " {}" (MediaCondition: "@media all
+/// and " + value + " {}") to the W3C CSS validator bundled in vnu.jar, as a
+/// whole style sheet with the css3svg profile and vendor extensions and CSS
+/// hacks as warnings (MediaQuery.java:46-63), and the first error that
+/// validator records with a message that isn't empty is the reason the value
+/// is bad (MediaQuery.java:64-94).
+///
+/// The port used to accept only an optional not or only, then all, print or
+/// screen, then "and (feature: value)" with four features: min-width and
+/// max-width in px (or 0), color as digits, and min-resolution in dpi. So
+/// media queries that begin with a condition ("(min-width: 40em)"), every
+/// other feature (prefers-color-scheme, orientation, hover, aspect-ratio,
+/// ...), other units (em, rem, dppx), "not (color)", range syntax
+/// ("(width >= 600px)"), unknown and vendor features
+/// ("(-webkit-min-device-pixel-ratio: 2)"), comments, and an empty value,
+/// which upstream accepts as an empty list, were all false errors.
+///
+/// What's here mirrors the CSS validator's layers, so values nobody tried
+/// behave as vnu.jar does: the UnescapeFilterReader pass over the style
+/// sheet; the JavaCC token manager's rules (CssParser.jj:529-835); the
+/// parser's productions for @media, with their lookaheads, as the generated
+/// CssParser.java runs them (CssParser.jj:1115-1260, 3354-3700); AtRuleMedia's
+/// media types; CssPropertyFactory's feature-name dispatch and the 35
+/// feature classes' checks; the value classes' parse-time checks; and the
+/// swallowed exceptions of media()'s `finally { return newRule; }`, after
+/// which the rest of the text is parsed as more style sheet. Paths are
+/// relative to /Users/siegel/git/bbsw/validator/css-validator/org/w3c/css
+/// unless noted.
+///
+/// Deliberate differences, each where upstream needs machinery far outside
+/// media queries or would misbehave (see the comments where they apply),
+/// and each erring toward calling a value valid, never toward a false
+/// error:
+/// - Declarations in a rule the value injects ("screen {} a { color:
+///   red }") are parsed for their syntax, but their properties aren't
+///   checked (that needs the CSS property database), so a bad property
+///   there isn't reported, and a NullPointerException there is reported
+///   as "null" rather than with the JDK's helpful message. Selectors there
+///   are read leniently: pseudo-class and pseudo-element names are
+///   checked, functional pseudo-classes, attribute selectors and
+///   namespaces aren't.
+/// - The other at-rules such a value injects (@page, @font-face,
+///   @supports, @layer, @keyframes and the rest; not @media, @viewport or
+///   an unknown one) are skipped to the end of their block unchecked,
+///   where upstream parses each with its own production, so their syntax
+///   errors, and media queries nested in them, aren't reported. A lexical
+///   error while skipping one escapes as it would from those productions.
+/// - Of the color and image functions, rgb(), rgba(), hsl(), hsla() and
+///   image() are checked as upstream checks them, but relative colors
+///   ("rgb(from …)"), hwb(), lab(), lch(), oklab(), oklch(), device-cmyk(),
+///   light-dark(), color-mix() and the gradients are taken on trust (but
+///   for a gradient of one value), also as an env() fallback.
+/// - A number whose plain form would spell out more than 64 zeros is
+///   quoted as written, not as BigDecimal.toPlainString() would (a
+///   "1e+999999" would otherwise make a megabyte of reason), while where
+///   upstream can't print a number at all (its plain form past what a Java
+///   array or string can hold) the port fails as upstream does there,
+///   taking upstream's heap to be large enough for anything short of those
+///   limits.
+/// - The style sheet is filtered as UnescapeFilterReader's first read
+///   (4,096 characters) filters it; a value where a later read would
+///   differ (a lone CR, FF or NUL whose cascade starts there, or a read
+///   that runs over) is given up on as valid.
+/// - Nesting deeper than `depthLimit` is given up on as valid rather than
+///   risking the stack.
+enum HTMLMediaQueryDatatype {
+    /// Valid, or bad with upstream's reason: the text vnu.jar shows after
+    /// "Bad value “…” for attribute “…” on element “…”: ", before
+    /// MessageEmitterAdapter's scrub of control characters and NFC. The
+    /// port's attribute messages leave the reason out, as TestRunner's do.
+    enum Outcome: Equatable {
+        case valid
+        case error(String)
+    }
+
+    /// MediaQuery ("media query", for the media attribute).
+    static func checkMediaQueryList(_ value: String) -> Outcome {
+        check(prefix: "@media ", value)
+    }
+
+    /// MediaCondition (MediaCondition.java: isMediaCondition() is true), for
+    /// the conditions of a sizes attribute: the same machinery, on "@media
+    /// all and " + value + " {}" (MediaQuery.java:57-58).
+    static func checkMediaCondition(_ value: String) -> Outcome {
+        check(prefix: "@media all and ", value)
+    }
+
+    /// How deep values and conditions may nest (parentheses, functions,
+    /// calc() sums, weighted as Parser.enter says) before the port gives
+    /// up. Upstream recurses until Java's stack overflows, which media()'s
+    /// finally block swallows like any other throwable; the port's checks
+    /// run on a background thread whose stack may be 512 KiB, so it stops
+    /// well short of that (at this limit no value needs more than 192 KiB)
+    /// and calls such a value valid: 400 nested parentheses, 200 in a
+    /// calc(), 133 nested functions, or a calc() sum or product of 400
+    /// terms. vnu.jar accepts 200 nested parentheses.
+    private static let depthLimit = 400
+
+    /// String.format("@media %s %s", literal, "{}") (MediaQuery.java:57-61),
+    /// as UTF-16 code units, since the CSS validator works on Java chars;
+    /// then UnescapeFilterReader's pass (StyleSheetParser.java:302-304) and
+    /// the parse.
+    private static func check(prefix: String, _ value: String) -> Outcome {
+        var units = Array(prefix.utf16)
+        units.append(contentsOf: value.utf16)
+        units.append(contentsOf: " {}".utf16)
+        guard let filtered = unescapeFilter(units) else {
+            // a CR, FF or NUL cascade in a later read than the first, whose
+            // extent upstream's buffer state decides (see unescapeFilter)
+            return .valid
+        }
+        let parser = Parser(text: filtered)
+        return parser.run()
+    }
+
+    // MARK: - UnescapeFilterReader
+
+    /// The characters JavaCC's SimpleCharStream asks its first read for
+    /// (its default buffer size, SimpleCharStream.java:263-282).
+    private static let firstRead = 4096
+
+    /// UnescapeFilterReader.read(char[], int, int) (util/UnescapeFilterReader
+    /// .java:85-203), which the CSS validator reads every CSS2-or-later style
+    /// sheet through. It turns a hex escape whose value is an ASCII letter
+    /// into the letter (eating one space, tab or line feed after it), drops
+    /// the backslash before any other ASCII letter that isn't a hex digit,
+    /// and leaves every other escape alone, so escaped letters act as plain
+    /// text in keywords, units and function names.
+    ///
+    /// It also "pre-processes" CR, FF and NUL, writing the replacement into
+    /// the buffer and then falling through to the code that copies the
+    /// current character, which copies again: while nothing earlier in the
+    /// read has shortened the text, the copy overwrites the next character
+    /// with the replacement, and so every later character of the read
+    /// becomes a line feed (or U+FFFD). CR followed by LF is harmless.
+    ///
+    /// The cascade lasts only to the end of a read (Case 554591 review):
+    /// read() fills at most len characters, and the next read starts again
+    /// from the original text (in.reset(); in.skip(i)). JavaCC's first read
+    /// asks for 4,096 characters, from up to 4,104 of input, and that one is
+    /// reproduced exactly; so " {}" survives a CR, FF or NUL in a long
+    /// value's first read. Later reads are sized by SimpleCharStream.FillBuff
+    /// from its buffer state, which isn't modeled: the rest is filtered in
+    /// one piece, and a cascade that would start there gives up (nil, so
+    /// the value is called valid), as does a read that would overflow its
+    /// buffer (a CR, FF or NUL written as its 4,096th character makes
+    /// upstream copy 4,097 into a 4,096-character array).
+    private static func unescapeFilter(_ input: [UInt16]) -> [UInt16]? {
+        let first = filterPiece(input, from: 0, len: firstRead, count: min(firstRead + 8, input.count))
+        if first.overflow {
+            return nil
+        }
+        if first.next >= input.count {
+            return first.out
+        }
+        let rest = filterPiece(input, from: first.next, len: Int.max, count: input.count - first.next)
+        if rest.cascade || rest.overflow {
+            return nil
+        }
+        return first.out + rest.out
+    }
+
+    /// One read() over input[from ..< from + count], writing at most len
+    /// characters: what it writes, where the next read starts, whether a
+    /// CR/FF/NUL cascade began in it, and whether it wrote past len.
+    private static func filterPiece(_ input: [UInt16], from: Int, len: Int, count l: Int)
+        -> (out: [UInt16], next: Int, cascade: Bool, overflow: Bool) {
+        // Java's buffer is len + 8 characters long; the cascade can write
+        // one character past what it read.
+        var chars = Array(input[from..<(from + l)]) + [UInt16](repeating: 0, count: 8)
+        var i = 0
+        var j = 0
+        var cascade = false
+        func isLetterValue(_ v: Int) -> Bool {
+            (v > 96 && v < 123) || (v > 64 && v < 91)
+        }
+        while i < l && j < len {
+            // pre-processing (UnescapeFilterReader.java:97-108)
+            if 0x0D == chars[i] {
+                let lone = !(i + 1 < l && 0x0A == chars[i + 1])
+                if lone && j == i {
+                    cascade = true
+                }
+                chars[j] = 0x0A
+                j += 1
+                if !lone {
+                    i += 1
+                }
+            } else if 0x0C == chars[i] {
+                if j == i {
+                    cascade = true
+                }
+                chars[j] = 0x0A
+                j += 1
+            } else if 0 == chars[i] {
+                if j == i {
+                    cascade = true
+                }
+                chars[j] = 0xFFFD
+                j += 1
+            }
+            // escaping (UnescapeFilterReader.java:111-189)
+            if 0x5C == chars[i] {
+                var val = 0
+                var escaped = false
+                var ignoreEscape = false
+                var k = 1
+                while k < 7 && k + i < l {
+                    let cki = Int(chars[k + i])
+                    if cki > 47 && cki < 58 {
+                        val = (val << 4) + (cki - 48)
+                    } else if cki > 64 && cki < 71 {
+                        val = (val << 4) + (cki - 55)
+                    } else if cki > 96 && cki < 103 {
+                        val = (val << 4) + (cki - 87)
+                    } else if 10 == cki || 9 == cki || 32 == cki {
+                        if isLetterValue(val) {
+                            chars[j] = UInt16(val)
+                            j += 1
+                            escaped = true
+                            i += k
+                        } else {
+                            escaped = true
+                            ignoreEscape = true
+                        }
+                        break
+                    } else {
+                        if 0 == val && isLetterValue(cki) {
+                            // a backslash before a plain letter: drop it
+                            i += 1
+                            ignoreEscape = true
+                            break
+                        }
+                        if isLetterValue(val) {
+                            chars[j] = UInt16(val)
+                            j += 1
+                            escaped = true
+                            i += k - 1
+                        } else {
+                            ignoreEscape = true
+                        }
+                        break
+                    }
+                    k += 1
+                }
+                if !ignoreEscape {
+                    if 7 == k && !escaped {
+                        if isLetterValue(val) {
+                            chars[j] = UInt16(val)
+                            j += 1
+                            i += k - 1
+                            if i + 1 < l {
+                                let cki = chars[i + 1]
+                                if 10 == cki || 9 == cki || 32 == cki {
+                                    i += 1
+                                }
+                            }
+                        } else {
+                            chars[j] = chars[i]
+                            j += 1
+                        }
+                    } else if !escaped {
+                        // the buffer ended inside the escape: upstream ends
+                        // the read here when it has written anything, and
+                        // the next read starts at the backslash
+                        if 0 != j {
+                            return (Array(chars[0..<j]), from + i, cascade, j > len)
+                        }
+                        chars[j] = chars[i]
+                        j += 1
+                    }
+                } else {
+                    chars[j] = chars[i]
+                    j += 1
+                }
+            } else {
+                chars[j] = chars[i]
+                j += 1
+            }
+            i += 1
+        }
+        return (Array(chars[0..<j]), from + i, cascade, j > len)
+    }
+
+    // MARK: - Tokens
+
+    /// The token kinds of CssParserConstants.java that matter, with their
+    /// numbers, since JavaCC breaks a tie between two equally long matches
+    /// in favor of the kind declared first (the lower number).
+    private enum T {
+        static let eof = 0
+        static let s = 21
+        static let sco = 22
+        static let cdo = 23
+        static let cdc = 24
+        static let includes = 25
+        static let dashMatch = 26
+        static let lbrace = 27
+        static let plus = 28
+        static let minus = 29
+        static let greater = 30
+        static let greaterEq = 31
+        static let comma = 32
+        static let tilde = 33
+        static let twoPipes = 34
+        static let and = 35
+        static let or = 36
+        static let only = 37
+        static let not = 38
+        static let string = 39
+        static let invalid = 40
+        static let ident = 41
+        static let hashIdent = 42
+        static let hash = 43
+        static let progid = 44
+        static let dashedIdent = 45
+        static let rbrace = 46
+        static let prefixMatch = 47
+        static let suffixMatch = 48
+        static let substringMatch = 49
+        static let eq = 50
+        static let semicolon = 51
+        static let div = 52
+        static let lbracket = 53
+        static let rbracket = 54
+        static let any = 55
+        static let dot = 56
+        static let rparen = 57
+        static let lparen = 58
+        static let colon = 59
+        static let url = 60
+        static let relFontLength = 61
+        static let relViewLength = 62
+        static let absolutLength = 63
+        static let flex = 64
+        static let angle = 65
+        static let spl = 66
+        static let st = 67
+        static let time = 68
+        static let freq = 69
+        static let resolution = 70
+        static let an = 71
+        static let dimen9 = 72
+        static let dimen = 73
+        static let percentage = 74
+        static let number = 75
+        static let importantSym = 76
+        static let importantNot = 77
+        static let pseudoElement = 78
+        static let charsetSym = 79
+        static let pageSym = 80
+        static let fontFaceSym = 97
+        static let fontFeatureValuesSym = 98
+        static let fontPaletteValuesSym = 99
+        static let importSym = 107
+        static let namespaceSym = 108
+        static let mediaSym = 109
+        static let keyframesSym = 110
+        static let prefSym = 111
+        static let colorProfile = 112
+        static let counterStyleSym = 114
+        static let layerSym = 115
+        static let phoneticAlphabetSym = 116
+        static let supportsSym = 117
+        static let viewportSym = 118
+        static let atKeyword = 119
+        static let unicodeRange = 129
+        static let functionNot = 144
+        static let functionCalc = 145
+        static let functionMathN = 146
+        static let functionMath1 = 147
+        static let functionMath2 = 148
+        static let functionRound = 149
+        static let functionClamp = 150
+        static let functionAttr = 151
+        static let functionVar = 152
+        static let functionEnv = 153
+        static let function = 157
+        static let htmlStartTag = 158
+        static let htmlEndTag = 159
+        static let bang = 161
+        static let dollar = 162
+        static let percent = 163
+        static let ampersand = 164
+        static let backquote = 165
+        static let question = 166
+        static let less = 167
+        static let pipe = 168
+        static let lessEq = 169
+
+        /// The at-rule keywords (CssParser.jj:708-765), all of which tie with
+        /// ATKEYWORD ("@" IDENT) and so win when the keyword is the whole
+        /// at-keyword. "@charset" (CssParser.jj:708-710) sits in a block
+        /// without [IGNORE_CASE], but the options block's IGNORE_CASE = true
+        /// (CssParser.jj:11) covers it too, so "@CHARSET" is CHARSET_SYM
+        /// (Case 554591 review).
+        static let atRules: [(String, Int)] = [
+            ("@page", 80), ("@top-left-corner", 81), ("@top-left", 82), ("@top-center", 83),
+            ("@top-right", 84), ("@top-right-corner", 85), ("@bottom-left-corner", 86),
+            ("@bottom-left", 87), ("@bottom-center", 88), ("@bottom-right", 89),
+            ("@bottom-right-corner", 90), ("@left-top", 91), ("@left-middle", 92),
+            ("@left-bottom", 93), ("@right-top", 94), ("@right-middle", 95), ("@right-bottom", 96),
+            ("@font-face", 97), ("@font-feature-values", 98), ("@font-palette-values", 99),
+            ("@stylistic", 100), ("@historical-forms", 101), ("@styleset", 102),
+            ("@character-variant", 103), ("@swash", 104), ("@ornaments", 105),
+            ("@annotation", 106), ("@import", 107), ("@namespace", 108), ("@media", 109),
+            ("@keyframes", 110), ("@preference", 111), ("@color-profile", 112),
+            ("@counter", 113), ("@counter-style", 114), ("@layer", 115),
+            ("@phonetic-alphabet", 116), ("@supports", 117), ("@viewport", 118)
+        ]
+
+        /// The function keywords (CssParser.jj:785-815), IGNORE_CASE, all of
+        /// which tie with FUNCTION (IDENT "(") and so win.
+        static let functions: [(String, Int)] = [
+            ("lang(", 130), ("dir(", 131), ("is(", 132), ("where(", 133), ("has(", 134),
+            ("slotted(", 135), ("host(", 136), ("host-context(", 137), ("nth-child(", 138),
+            ("nth-last-child(", 139), ("nth-col(", 140), ("nth-last-col(", 141),
+            ("nth-of-type(", 142), ("nth-last-of-type(", 143), ("not(", 144),
+            ("calc(", 145), ("-moz-calc(", 145), ("-webkit-calc(", 145),
+            ("min(", 146), ("max(", 146), ("hypot(", 146),
+            ("sin(", 147), ("cos(", 147), ("tan(", 147), ("asin(", 147), ("acos(", 147),
+            ("atan(", 147), ("sqrt(", 147), ("exp(", 147), ("abs(", 147), ("sign(", 147),
+            ("mod(", 148), ("rem(", 148), ("atan2(", 148), ("pow(", 148), ("log(", 148),
+            ("round(", 149), ("clamp(", 150), ("attr(", 151), ("var(", 152), ("env(", 153),
+            ("layer(", 154), ("selector(", 155), ("at-rule(", 156)
+        ]
+
+        /// The unit tokens (CssParser.jj:654-689), in their declaration
+        /// order, each NUM followed by one of its units (IGNORE_CASE).
+        static let units: [(Int, [String])] = [
+            (61, ["em", "ex", "cap", "ch", "ic", "lh", "rem", "rex", "rcap", "rch", "ric", "rlh"]),
+            (62, ["vw", "vh", "vi", "vb", "vmin", "vmax", "svw", "svh", "svi", "svb", "svmin", "svmax",
+                  "lvw", "lvh", "lvi", "lvb", "lvmin", "lvmax", "dvw", "dvh", "dvi", "dvb", "dvmin", "dvmax"]),
+            (63, ["cm", "mm", "q", "in", "pt", "pc", "px"]),
+            (64, ["fr"]),
+            (65, ["deg", "grad", "rad", "turn"]),
+            (66, ["db"]),
+            (67, ["st"]),
+            (68, ["ms", "s"]),
+            (69, ["hz", "khz"]),
+            (70, ["dpi", "dpcm", "dppx", "x"]),
+            (71, ["n"])
+        ]
+    }
+
+    /// A token: its kind and where its image is in the filtered text.
+    private struct Token {
+        var kind: Int
+        var start: Int
+        var end: Int
+    }
+
+    // MARK: - Characters
+
+    private static func isSpace(_ c: UInt16) -> Bool {
+        0x20 == c || 0x09 == c || 0x0A == c || 0x0D == c || 0x0C == c
+    }
+
+    private static func isDigit(_ c: UInt16) -> Bool {
+        c >= 0x30 && c <= 0x39
+    }
+
+    private static func isHex(_ c: UInt16) -> Bool {
+        (c >= 0x30 && c <= 0x39) || (c >= 0x41 && c <= 0x46) || (c >= 0x61 && c <= 0x66)
+    }
+
+    private static func isASCIILetter(_ c: UInt16) -> Bool {
+        (c >= 0x41 && c <= 0x5A) || (c >= 0x61 && c <= 0x7A)
+    }
+
+    private static func asciiLower(_ c: UInt16) -> UInt16 {
+        (c >= 0x41 && c <= 0x5A) ? c + 0x20 : c
+    }
+
+    private static func string(_ units: ArraySlice<UInt16>) -> String {
+        String(decoding: units, as: UTF16.self)
+    }
+
+    /// Java's String.toLowerCase() (Locale.ROOT behavior, as vnu.jar ran):
+    /// each code point's full Unicode lowercase mapping (U+0130 becomes
+    /// "i̇", as in Java); lone surrogates stay as they are. GREEK CAPITAL
+    /// LETTER SIGMA becomes the final ς as ConditionalSpecialCasing
+    /// .isFinalCased decides: by the JDK's own isCased, within the JDK's
+    /// word segment, so "A1Σ", "A_Σ" and "A-Σ" end in ς and "A·Σ" in σ
+    /// (Case 554591 review: the port once used Unicode's Final_Sigma
+    /// context, which skips case-ignorables instead, and differed there;
+    /// since identEquals hashes the lowercased name, a name built to
+    /// collide with a keyword through its sigma could flip a verdict).
+    private static func javaLowercase(_ units: [UInt16]) -> [UInt16] {
+        var isASCII = true
+        for c in units where c >= 0x80 {
+            isASCII = false
+            break
+        }
+        if isASCII {
+            return units.map(asciiLower)
+        }
+        // decode code points, keeping lone surrogates
+        var points = [UInt32]()
+        points.reserveCapacity(units.count)
+        var i = 0
+        while i < units.count {
+            let c = units[i]
+            if c >= 0xD800 && c <= 0xDBFF && i + 1 < units.count && units[i + 1] >= 0xDC00 && units[i + 1] <= 0xDFFF {
+                points.append(0x10000 + ((UInt32(c) - 0xD800) << 10) + (UInt32(units[i + 1]) - 0xDC00))
+                i += 2
+            } else {
+                points.append(UInt32(c))
+                i += 1
+            }
+        }
+        func scalar(_ p: UInt32) -> Unicode.Scalar? {
+            Unicode.Scalar(p)
+        }
+        // the word segments, found only when a sigma needs them
+        var boundary: [Bool]?
+        var out = [UInt16]()
+        out.reserveCapacity(units.count)
+        for (index, p) in points.enumerated() {
+            if 0x3A3 == p {
+                let segments = boundary ?? jdkWordBoundaries(points)
+                boundary = segments
+                out.append(isFinalCased(points, index, segments) ? 0x3C2 : 0x3C3)
+                continue
+            }
+            guard let s = scalar(p) else {
+                out.append(UInt16(truncatingIfNeeded: p))
+                continue
+            }
+            if p < 0x80 {
+                out.append(asciiLower(UInt16(p)))
+                continue
+            }
+            out.append(contentsOf: s.properties.lowercaseMapping.utf16)
+        }
+        return out
+    }
+
+    /// Unicode decimal digits (general category Nd) of the BMP as ASCII
+    /// digits, as Character.digit(char, 10) reads them for BigDecimal; a
+    /// digit outside the BMP is a surrogate pair to Java, and no digit.
+    private static func asciiDigits(_ units: [UInt16]) -> [UInt16] {
+        var out = units
+        for (index, c) in units.enumerated() where c >= 0x80 {
+            guard !(c >= 0xD800 && c <= 0xDFFF), let scalar = Unicode.Scalar(UInt32(c)),
+                  .decimal == scalar.properties.numericType, let value = scalar.properties.numericValue,
+                  value >= 0 && value <= 9 else {
+                continue
+            }
+            out[index] = 0x30 + UInt16(value)
+        }
+        return out
+    }
+
+    /// Java's String.hashCode(), over UTF-16 code units, wrapping.
+    private static func javaHash(_ units: [UInt16]) -> Int32 {
+        var h: Int32 = 0
+        for c in units {
+            h = h &* 31 &+ Int32(c)
+        }
+        return h
+    }
+
+    /// CssIdent.equals (values/CssIdent.java:124-145): the hashes of both
+    /// names lowercased, so hash collisions match too. The keyword is
+    /// lowercased here as well, as CssIdent.hashCode lowercases both: the
+    /// camel-case "currentColor" once never matched (Case 554591 review).
+    private static func identEquals(_ value: [UInt16], _ keyword: String) -> Bool {
+        javaHash(javaLowercase(value)) == javaHash(javaLowercase(Array(keyword.utf16)))
+    }
+
+    /// Character.toUpperCase(char), then toLowerCase(char): Java's simple
+    /// one-to-one case mappings on one UTF-16 unit.
+    private static func javaUpper(_ c: UInt16) -> UInt16 {
+        guard let s = Unicode.Scalar(UInt32(c)) else {
+            return c
+        }
+        let mapped = Array(s.properties.uppercaseMapping.utf16)
+        return 1 == mapped.count ? mapped[0] : c
+    }
+
+    private static func javaLower(_ c: UInt16) -> UInt16 {
+        guard let s = Unicode.Scalar(UInt32(c)) else {
+            return c
+        }
+        let mapped = Array(s.properties.lowercaseMapping.utf16)
+        return 1 == mapped.count ? mapped[0] : c
+    }
+
+    /// String.equalsIgnoreCase (regionMatches(true, …)): unit by unit,
+    /// equal as they are, or uppercased, or lowercased after that. So
+    /// "tranſparent" (U+017F) equals "transparent", as CssDump agrees.
+    private static func javaEqualsIgnoreCase(_ value: [UInt16], _ keyword: String) -> Bool {
+        let other = Array(keyword.utf16)
+        guard value.count == other.count else {
+            return false
+        }
+        for (a, b) in zip(value, other) where a != b {
+            let ua = javaUpper(a)
+            let ub = javaUpper(b)
+            if ua != ub && javaLower(ua) != javaLower(ub) {
+                return false
+            }
+        }
+        return true
+    }
+
+    // MARK: - Final sigma
+
+    /// The general category of a code point, as Character.getType sees it
+    /// (a lone surrogate is Cs).
+    private static func category(_ p: UInt32) -> Unicode.GeneralCategory {
+        Unicode.Scalar(p)?.properties.generalCategory ?? .surrogate
+    }
+
+    /// ConditionalSpecialCasing.isCased (JDK 27, java/lang/
+    /// ConditionalSpecialCasing.java:363-400): Lu, Ll and Lt, and a fixed
+    /// list of Other_Lowercase and Other_Uppercase ranges (so ª, Lo to
+    /// Java, isn't cased, and ʰ is).
+    private static func isJavaCased(_ p: UInt32) -> Bool {
+        switch category(p) {
+        case .uppercaseLetter, .lowercaseLetter, .titlecaseLetter:
+            return true
+        default:
+            return (p >= 0x02B0 && p <= 0x02B8) || (p >= 0x02C0 && p <= 0x02C1) || (p >= 0x02E0 && p <= 0x02E4)
+                || 0x0345 == p || 0x037A == p || (p >= 0x1D2C && p <= 0x1D61) || (p >= 0x2160 && p <= 0x217F)
+                || (p >= 0x24B6 && p <= 0x24E9)
+        }
+    }
+
+    /// The character classes of the JDK's word rules (sun/text/resources/
+    /// BreakIteratorRules.java:69-146).
+    private static func isKanji(_ p: UInt32) -> Bool {
+        0x3005 == p || (p >= 0x4E00 && p <= 0x9FA5) || (p >= 0xF900 && p <= 0xFA2D)
+    }
+
+    private static func isKata(_ p: UInt32) -> Bool {
+        (p >= 0x30A1 && p <= 0x30FA) || 0x30FD == p || 0x30FE == p
+    }
+
+    private static func isHira(_ p: UInt32) -> Bool {
+        (p >= 0x3041 && p <= 0x3094) || 0x309D == p || 0x309E == p
+    }
+
+    private static func isCJKDiacritic(_ p: UInt32) -> Bool {
+        (p >= 0x3099 && p <= 0x309C) || 0x30FB == p || 0x30FC == p
+    }
+
+    private static func isEnclosing(_ p: UInt32) -> Bool {
+        let c = category(p)
+        return .nonspacingMark == c || .enclosingMark == c
+    }
+
+    /// <letter-base>: [:L::Mc:] but the kanji, kana and CJK diacritics.
+    private static func isLetterBase(_ p: UInt32) -> Bool {
+        switch category(p) {
+        case .uppercaseLetter, .lowercaseLetter, .titlecaseLetter, .modifierLetter, .otherLetter, .spacingMark:
+            return !(isKanji(p) || isKata(p) || isHira(p) || isCJKDiacritic(p))
+        default:
+            return false
+        }
+    }
+
+    /// <digit-base>: [:N:].
+    private static func isDigitBase(_ p: UInt32) -> Bool {
+        switch category(p) {
+        case .decimalNumber, .letterNumber, .otherNumber:
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// <mid-word>: [:Pd::Pc:] U+00AD U+2027 " ' and ".".
+    private static func isMidWord(_ p: UInt32) -> Bool {
+        let c = category(p)
+        return .dashPunctuation == c || .connectorPunctuation == c || 0xAD == p || 0x2027 == p || 0x22 == p
+            || 0x27 == p || 0x2E == p
+    }
+
+    /// <mid-num>: " ' , U+066B and ".".
+    private static func isMidNum(_ p: UInt32) -> Bool {
+        0x22 == p || 0x27 == p || 0x2C == p || 0x066B == p || 0x2E == p
+    }
+
+    /// <pre-num>: [:Sc:] "#" and "." but the cent sign.
+    private static func isPreNum(_ p: UInt32) -> Bool {
+        (.currencySymbol == category(p) && 0xA2 != p) || 0x23 == p || 0x2E == p
+    }
+
+    /// <post-num>: % & ¢ U+066A U+2030 U+2031.
+    private static func isPostNum(_ p: UInt32) -> Bool {
+        0x25 == p || 0x26 == p || 0xA2 == p || 0x066A == p || 0x2030 == p || 0x2031 == p
+    }
+
+    /// <ignore>: the format characters (Cf), but the soft hyphen, which
+    /// <mid-word> names and which so behaves as one ("AⅣ\u{AD}Σ" breaks
+    /// after the numeral, as vnu.jar's JDK does).
+    private static func isIgnorable(_ p: UInt32) -> Bool {
+        0xAD != p && .format == category(p)
+    }
+
+    /// The JDK word BreakIterator's boundaries in a string of code points,
+    /// as its forward rules find them (RuleBasedBreakIterator.handleNext:
+    /// the longest match of any rule, at least one character, from each
+    /// boundary on). Ignorable characters are transparent within a match,
+    /// and one right after it belongs to it.
+    private static func jdkWordBoundaries(_ points: [UInt32]) -> [Bool] {
+        var boundary = [Bool](repeating: false, count: points.count + 1)
+        boundary[0] = true
+        boundary[points.count] = true
+        // the significant (not Cf) characters and where they are, found
+        // once, so the segmenting stays linear
+        var positions = [Int]()
+        var significant = [UInt32]()
+        for (index, p) in points.enumerated() where !isIgnorable(p) {
+            positions.append(index)
+            significant.append(p)
+        }
+        var p = 0
+        var q = 0
+        while p < points.count {
+            while q < positions.count && positions[q] < p {
+                q += 1
+            }
+            var end = p + 1
+            if q < positions.count {
+                let last = jdkWordMatch(significant, q)
+                end = max(end, positions[last - 1] + 1)
+                // an ignorable right after the match keeps it accepting
+                while end < points.count && isIgnorable(points[end]) {
+                    end += 1
+                }
+            }
+            boundary[end] = true
+            p = end
+        }
+        return boundary
+    }
+
+    /// Where the longest match of the word rules (BreakIteratorRules.java:
+    /// 118-146) at s[start] ends (exclusive, at least start + 1).
+    private static func jdkWordMatch(_ s: [UInt32], _ start: Int) -> Int {
+        let m = s.count
+        // <let>=(<letter-base><enclosing>*), <dgt>=(<digit-base><enclosing>*)
+        func run(_ j: Int, _ base: (UInt32) -> Bool) -> Int {
+            var j = j
+            while j < m && base(s[j]) {
+                j += 1
+                while j < m && isEnclosing(s[j]) {
+                    j += 1
+                }
+            }
+            return j
+        }
+        // <word>=((<let><let>*(<mid-word><let><let>*)*){<danda>})
+        func word(_ i: Int) -> Int? {
+            guard i < m, isLetterBase(s[i]) else {
+                return nil
+            }
+            var j = run(i, isLetterBase)
+            while j + 1 < m && isMidWord(s[j]) && isLetterBase(s[j + 1]) {
+                j = run(j + 1, isLetterBase)
+            }
+            if j < m && (0x0964 == s[j] || 0x0965 == s[j]) {
+                j += 1
+            }
+            return j
+        }
+        // <number>=(<dgt><dgt>*(<mid-num><dgt><dgt>*)*)
+        func number(_ i: Int) -> Int? {
+            guard i < m, isDigitBase(s[i]) else {
+                return nil
+            }
+            var j = run(i, isDigitBase)
+            while j + 1 < m && isMidNum(s[j]) && isDigitBase(s[j + 1]) {
+                j = run(j + 1, isDigitBase)
+            }
+            return j
+        }
+        // (<number><word>)*{<number>{<post-num>}} from i
+        func numbersAndWords(_ i: Int) -> Int {
+            var j = i
+            while let n = number(j) {
+                if let w = word(n) {
+                    j = w
+                    continue
+                }
+                j = n
+                if j < m && isPostNum(s[j]) {
+                    j += 1
+                }
+                break
+            }
+            return j
+        }
+        // ".": any character
+        var best = start + 1
+        // {<word>}(<number><word>)*{<number>{<post-num>}}
+        best = max(best, numbersAndWords(word(start) ?? start))
+        // <pre-num>(<number><word>)*{<number>{<post-num>}}
+        if isPreNum(s[start]) {
+            best = max(best, numbersAndWords(start + 1))
+        }
+        // <ws>*{\r}{<ls>}
+        var j = run(start, { 0x09 == $0 || .spaceSeparator == category($0) })
+        if j < m && 0x0D == s[j] {
+            j += 1
+        }
+        if j < m && (0x0A == s[j] || 0x0C == s[j] || 0x2028 == s[j] || 0x2029 == s[j]) {
+            j += 1
+        }
+        best = max(best, j)
+        // runs of katakana, of hiragana (each with CJK diacritics), and of
+        // kanji
+        j = start
+        while j < m && (isKata(s[j]) || isCJKDiacritic(s[j])) {
+            j += 1
+        }
+        best = max(best, j)
+        j = start
+        while j < m && (isHira(s[j]) || isCJKDiacritic(s[j])) {
+            j += 1
+        }
+        best = max(best, j)
+        j = start
+        while j < m && isKanji(s[j]) {
+            j += 1
+        }
+        best = max(best, j)
+        // <base><enclosing><enclosing>*: any but Cc, Cf, Zl, Zp and the
+        // enclosing marks, then those marks
+        switch category(s[start]) {
+        case .control, .format, .lineSeparator, .paragraphSeparator, .nonspacingMark, .enclosingMark:
+            break
+        default:
+            j = start + 1
+            while j < m && isEnclosing(s[j]) {
+                j += 1
+            }
+            if j > start + 1 {
+                best = max(best, j)
+            }
+        }
+        return best
+    }
+
+    /// ConditionalSpecialCasing.isFinalCased (JDK 27, :193-222): within
+    /// the word segment holding the sigma at `index`, a cased character
+    /// comes before it and none after. The segment's ends are where
+    /// isBoundary says so, which is also right after any supplementary
+    /// character but one that starts the text: isBoundary(i) asks
+    /// following(i - 1), and i - 1 is then the character's low surrogate,
+    /// which the iterator steps over as a character of its own ("A𝐀Σ"
+    /// lowercases to "a𝐀σ", "𝐀Σ" to "𝐀ς").
+    private static func isFinalCased(_ points: [UInt32], _ index: Int, _ boundary: [Bool]) -> Bool {
+        func isBoundary(_ i: Int) -> Bool {
+            boundary[i] || (i >= 2 && points[i - 1] >= 0x10000)
+        }
+        var i = index
+        while i > 0 && !isBoundary(i) {
+            if isJavaCased(points[i - 1]) {
+                var k = index + 1
+                while k < points.count && !isBoundary(k) {
+                    if isJavaCased(points[k]) {
+                        return false
+                    }
+                    k += 1
+                }
+                return true
+            }
+            i -= 1
+        }
+        return false
+    }
+
+    // MARK: - convertIdent
+
+    /// StringUtils.convertStringIndex(s, 0, len, false) (util/StringUtils
+    /// .java:16-180), as convertIdent runs it on an identifier's image: a hex
+    /// escape from 32 to 254 becomes its character (after a backslash unless
+    /// it's [A-Za-z0-9_-]); any other is re-escaped as lowercase hex, padded
+    /// to six digits once any escape so far ended in whitespace (the flag is
+    /// never reset); a backslash before other characters stays. The digit
+    /// count's quirk (a seventh hex digit makes it seven) is kept.
+    private static func convertIdent(_ s: [UInt16]) -> [UInt16] {
+        if !s.contains(0x5C) {
+            return s
+        }
+        let len = s.count
+        let maxCount = 6
+        var buf = [UInt16]()
+        buf.reserveCapacity(len)
+        var index = 0
+        var gotWhiteSpace = false
+        let hexdigits: [UInt16] = Array("0123456789abcdef".utf16)
+        while index < len {
+            var c = s[index]
+            if 0x5C == c {
+                index += 1
+                if index < len {
+                    c = s[index]
+                    if isHex(c) {
+                        var numValue = Int(hexValue(c))
+                        var count = 1
+                        while index + 1 < len {
+                            c = s[index + 1]
+                            // Character.digit(c, 16), unlike the switch on
+                            // the first digit, takes any Unicode decimal
+                            // digit and fullwidth A-F and a-f, so "\6" and a
+                            // fullwidth 1 make "a" (Case 554591 review)
+                            let t = javaHexDigit(c)
+                            var digit = false
+                            if -1 != t {
+                                // `count++ < maxCount`, evaluated only for a
+                                // hex digit
+                                digit = count < maxCount
+                                count += 1
+                            }
+                            if digit {
+                                numValue = (numValue << 4) | t
+                                index += 1
+                            } else {
+                                if 0x20 == c || 0x09 == c || 0x0A == c || 0x0C == c {
+                                    index += 1
+                                    gotWhiteSpace = true
+                                } else if 0x0D == c {
+                                    index += 1
+                                    gotWhiteSpace = true
+                                    if index + 1 < len && 0x0A == s[index + 1] {
+                                        index += 1
+                                    }
+                                }
+                                break
+                            }
+                        }
+                        if numValue < 255 && numValue > 31 {
+                            let keep = (numValue > 96 && numValue < 123) || (numValue > 64 && numValue < 91)
+                                || (numValue > 47 && numValue < 58) || 95 == numValue || 45 == numValue
+                            if !keep {
+                                buf.append(0x5C)
+                            }
+                            buf.append(UInt16(numValue))
+                        } else {
+                            var t = gotWhiteSpace ? maxCount : count
+                            var b = [UInt16](repeating: 0x30, count: t)
+                            var v = numValue
+                            while t > 0 {
+                                t -= 1
+                                b[t] = hexdigits[v & 0xF]
+                                v >>= 4
+                            }
+                            buf.append(0x5C)
+                            buf.append(contentsOf: b)
+                        }
+                    } else if 0x0A == c || 0x0C == c {
+                        // an escaped line break is dropped
+                    } else if 0x0D == c {
+                        if index + 1 < len && 0x0A == s[index + 1] {
+                            index += 1
+                        }
+                    } else if 0x2D == c || 0x5F == c || isASCIILetter(c) {
+                        buf.append(c)
+                    } else {
+                        buf.append(0x5C)
+                        buf.append(c)
+                    }
+                } else {
+                    // A trailing backslash throws "unrecognize"; an IDENT
+                    // never ends in one, so keep it.
+                    buf.append(0x5C)
+                }
+            } else {
+                buf.append(c)
+            }
+            index += 1
+        }
+        return buf
+    }
+
+    /// Character.digit(char, 16): an ASCII hex digit; a Unicode decimal
+    /// digit (Nd) of the BMP, as its value; or a fullwidth A-F or a-f
+    /// (U+FF21-FF26, U+FF41-FF46), as 10-15; otherwise -1.
+    private static func javaHexDigit(_ c: UInt16) -> Int {
+        if isHex(c) {
+            return Int(hexValue(c))
+        }
+        if c >= 0xFF21 && c <= 0xFF26 {
+            return Int(c - 0xFF21) + 10
+        }
+        if c >= 0xFF41 && c <= 0xFF46 {
+            return Int(c - 0xFF41) + 10
+        }
+        guard c >= 0x80, let scalar = Unicode.Scalar(UInt32(c)), .decimal == scalar.properties.numericType,
+              let value = scalar.properties.numericValue, value >= 0 && value <= 9 else {
+            return -1
+        }
+        return Int(value)
+    }
+
+    private static func hexValue(_ c: UInt16) -> UInt16 {
+        if c <= 0x39 {
+            return c - 0x30
+        }
+        if c <= 0x46 {
+            return c - 0x41 + 10
+        }
+        return c - 0x61 + 10
+    }
+
+    // MARK: - The token manager
+
+    /// CssParserTokenManager, as CssParser.jj declares its tokens: at each
+    /// position the longest match wins, and of equally long ones the kind
+    /// declared first. COMMENT is a special token, skipped. A character no
+    /// token can start raises TokenMgrError; upstream then backs up to the
+    /// character its automaton died on, which is where the next attempt
+    /// starts (`resume`).
+    private struct Lexer {
+        let t: [UInt16]
+        /// Where the last "*/" and the last ")" are, so an unclosed comment
+        /// or PROGID is known at once, not by a scan to the end each time
+        /// (which made "/* /* /* …" quadratic).
+        let lastCommentClose: Int
+        let lastParen: Int
+
+        init(t: [UInt16]) {
+            self.t = t
+            var close = -1
+            var paren = -1
+            var k = t.count - 1
+            while k >= 0 && (close < 0 || paren < 0) {
+                if paren < 0 && 0x29 == t[k] {
+                    paren = k
+                }
+                if close < 0 && k + 1 < t.count && 0x2A == t[k] && 0x2F == t[k + 1] {
+                    close = k
+                }
+                k -= 1
+            }
+            lastCommentClose = close
+            lastParen = paren
+        }
+
+        enum Result {
+            case token(Int, Int)
+            case comment(Int)
+            case eof
+            case failure(Int)
+        }
+
+        /// Whether the text at i starts with `s` (ASCII), ignoring ASCII
+        /// case when `ignoreCase`.
+        private func startsWith(_ s: String, at i: Int, ignoreCase: Bool) -> Bool {
+            var k = i
+            for u in s.utf16 {
+                guard k < t.count else {
+                    return false
+                }
+                let c = ignoreCase ? HTMLMediaQueryDatatype.asciiLower(t[k]) : t[k]
+                if c != u {
+                    return false
+                }
+                k += 1
+            }
+            return true
+        }
+
+        /// COMMENT (CssParser.jj:532): "/*" … "*/", ending at the first
+        /// "*/"; nil when it isn't closed.
+        private func comment(_ i: Int) -> Int? {
+            guard i + 1 < t.count, 0x2F == t[i], 0x2A == t[i + 1], lastCommentClose >= i + 2 else {
+                return nil
+            }
+            var k = i + 2
+            while k + 1 < t.count {
+                if 0x2A == t[k] && 0x2F == t[k + 1] {
+                    return k + 2
+                }
+                k += 1
+            }
+            return nil
+        }
+
+        /// _S (CssParser.jj:557): a whitespace character, then any run of
+        /// whitespace and complete comments.
+        private func whitespace(_ i: Int) -> Int? {
+            guard i < t.count, HTMLMediaQueryDatatype.isSpace(t[i]) else {
+                return nil
+            }
+            var k = i + 1
+            while k < t.count {
+                if HTMLMediaQueryDatatype.isSpace(t[k]) {
+                    k += 1
+                } else if let e = comment(k) {
+                    k = e
+                } else {
+                    break
+                }
+            }
+            return k
+        }
+
+        /// ( <S> )*: any number of _S runs.
+        private func spaces(_ i: Int) -> Int {
+            var k = i
+            while let e = whitespace(k) {
+                k = e
+            }
+            return k
+        }
+
+        /// ESCAPE (CssParser.jj:540-542): a backslash and one to six hex
+        /// digits with an optional whitespace (CR LF counting as one), or a
+        /// backslash and any character but CR, LF, FF and the hex digits.
+        func escape(_ i: Int) -> Int? {
+            guard i + 1 < t.count, 0x5C == t[i] else {
+                return nil
+            }
+            let c = t[i + 1]
+            if HTMLMediaQueryDatatype.isHex(c) {
+                var k = i + 1
+                var n = 0
+                while k < t.count && n < 6 && HTMLMediaQueryDatatype.isHex(t[k]) {
+                    k += 1
+                    n += 1
+                }
+                if k < t.count {
+                    if 0x0D == t[k] && k + 1 < t.count && 0x0A == t[k + 1] {
+                        k += 2
+                    } else if HTMLMediaQueryDatatype.isSpace(t[k]) {
+                        k += 1
+                    }
+                }
+                return k
+            }
+            if 0x0D == c || 0x0A == c || 0x0C == c {
+                return nil
+            }
+            return i + 2
+        }
+
+        /// NMSTART (CssParser.jj:543).
+        private func nameStart(_ i: Int) -> Int? {
+            guard i < t.count else {
+                return nil
+            }
+            let c = t[i]
+            if HTMLMediaQueryDatatype.isASCIILetter(c) || 0x5F == c || c >= 0x80 {
+                return i + 1
+            }
+            if 0x5C == c {
+                return escape(i)
+            }
+            return nil
+        }
+
+        /// NMCHAR (CssParser.jj:544).
+        private func nameChar(_ i: Int) -> Int? {
+            guard i < t.count else {
+                return nil
+            }
+            let c = t[i]
+            if HTMLMediaQueryDatatype.isASCIILetter(c) || HTMLMediaQueryDatatype.isDigit(c) || 0x2D == c
+                || 0x5F == c || c >= 0x80 {
+                return i + 1
+            }
+            if 0x5C == c {
+                return escape(i)
+            }
+            return nil
+        }
+
+        /// NMCHAR*, and where the last escape in the run began.
+        private func nameChars(_ i: Int) -> (end: Int, lastEscape: Int) {
+            var k = i
+            var lastEscape = -1
+            while let e = nameChar(k) {
+                if 0x5C == t[k] {
+                    lastEscape = k
+                }
+                k = e
+            }
+            return (k, lastEscape)
+        }
+
+        /// _IDENT (CssParser.jj:550): "-"? NMSTART NMCHAR*.
+        func ident(_ i: Int) -> Int? {
+            var k = i
+            if k < t.count && 0x2D == t[k] {
+                k += 1
+            }
+            guard let e = nameStart(k) else {
+                return nil
+            }
+            return nameChars(e).end
+        }
+
+        /// NUM (CssParser.jj:552): where it may end at i, shortest first:
+        /// after the integer digits, after the fraction, after an exponent.
+        private func numberEnds(_ i: Int) -> [Int] {
+            var ends = [Int]()
+            var k = i
+            while k < t.count && HTMLMediaQueryDatatype.isDigit(t[k]) {
+                k += 1
+            }
+            if k > i {
+                ends.append(k)
+            }
+            if k + 1 < t.count && 0x2E == t[k] && HTMLMediaQueryDatatype.isDigit(t[k + 1]) {
+                k += 1
+                while k < t.count && HTMLMediaQueryDatatype.isDigit(t[k]) {
+                    k += 1
+                }
+                ends.append(k)
+            }
+            guard let mantissa = ends.last else {
+                return ends
+            }
+            if mantissa < t.count && 0x65 == HTMLMediaQueryDatatype.asciiLower(t[mantissa]) {
+                var e = mantissa + 1
+                if e < t.count && (0x2B == t[e] || 0x2D == t[e]) {
+                    e += 1
+                }
+                if e < t.count && HTMLMediaQueryDatatype.isDigit(t[e]) {
+                    while e < t.count && HTMLMediaQueryDatatype.isDigit(t[e]) {
+                        e += 1
+                    }
+                    ends.append(e)
+                }
+            }
+            return ends
+        }
+
+        /// The STRING (closed) or INVALID (unclosed) token at i
+        /// (CssParser.jj:545-548).
+        private func quoted(_ i: Int) -> (end: Int, closed: Bool) {
+            let quote = t[i]
+            var k = i + 1
+            while k < t.count {
+                let c = t[k]
+                if c == quote {
+                    return (k + 1, true)
+                }
+                if 0x0A == c || 0x0D == c || 0x0C == c {
+                    return (k, false)
+                }
+                if 0x5C == c {
+                    guard k + 1 < t.count else {
+                        return (k, false)
+                    }
+                    let d = t[k + 1]
+                    if 0x0A == d || 0x0C == d {
+                        k += 2
+                    } else if 0x0D == d {
+                        k += 2
+                        if k < t.count && 0x0A == t[k] {
+                            k += 1
+                        }
+                    } else if let e = escape(k) {
+                        k = e
+                    } else {
+                        k += 2
+                    }
+                    continue
+                }
+                k += 1
+            }
+            return (k, false)
+        }
+
+        /// URL (CssParser.jj:651-653): "url(" S* ( STRING | _URL ) S* ")".
+        private func url(_ i: Int) -> Int? {
+            guard startsWith("url(", at: i, ignoreCase: true) else {
+                return nil
+            }
+            var k = spaces(i + 4)
+            if k < t.count && (0x22 == t[k] || 0x27 == t[k]) {
+                let q = quoted(k)
+                guard q.closed else {
+                    return nil
+                }
+                k = q.end
+            } else {
+                while k < t.count {
+                    let c = t[k]
+                    if 0x21 == c || (c >= 0x23 && c <= 0x26) || (c >= 0x2A && c <= 0x5B) || (c >= 0x5D && c <= 0x7E)
+                        || c >= 0x80 {
+                        k += 1
+                    } else if 0x5C == c, let e = escape(k) {
+                        k = e
+                    } else {
+                        break
+                    }
+                }
+            }
+            k = spaces(k)
+            guard k < t.count, 0x29 == t[k] else {
+                return nil
+            }
+            return k + 1
+        }
+
+        /// UNICODERANGE (CssParser.jj:768-781): "U+" with one to six hex
+        /// digits and question marks (six at most), or a hex range.
+        private func unicodeRange(_ i: Int) -> Int? {
+            guard i + 1 < t.count, 0x75 == HTMLMediaQueryDatatype.asciiLower(t[i]), 0x2B == t[i + 1] else {
+                return nil
+            }
+            var best: Int?
+            var k = i + 2
+            var h = 0
+            while k < t.count && h < 6 && HTMLMediaQueryDatatype.isHex(t[k]) {
+                k += 1
+                h += 1
+            }
+            var q = 0
+            while k < t.count && h + q < 6 && 0x3F == t[k] {
+                k += 1
+                q += 1
+            }
+            if h + q > 0 {
+                best = k
+            }
+            if h > 0 {
+                var e = i + 2 + h
+                if e < t.count && 0x2D == t[e] {
+                    e += 1
+                    var h2 = 0
+                    while e < t.count && h2 < 6 && HTMLMediaQueryDatatype.isHex(t[e]) {
+                        e += 1
+                        h2 += 1
+                    }
+                    if h2 > 0 && e > (best ?? 0) {
+                        best = e
+                    }
+                }
+            }
+            return best
+        }
+
+        /// PROGID (CssParser.jj:576): "progid:DXImageTransform.Microsoft."
+        /// [a-z]+ ~[")"]+ ")".
+        private func progid(_ i: Int) -> Int? {
+            let prefix = "progid:dximagetransform.microsoft."
+            guard startsWith(prefix, at: i, ignoreCase: true) else {
+                return nil
+            }
+            var k = i + prefix.utf16.count
+            guard k < t.count, HTMLMediaQueryDatatype.isASCIILetter(t[k]) else {
+                return nil
+            }
+            k += 1
+            guard k < t.count, 0x29 != t[k], lastParen > k else {
+                return nil
+            }
+            while k < t.count && 0x29 != t[k] {
+                k += 1
+            }
+            return k < t.count ? k + 1 : nil
+        }
+
+        /// HTMLSTARTTAG and HTMLENDTAG (CssParser.jj:826-833), with each
+        /// identifier taken whole.
+        private func htmlTag(_ i: Int) -> (Int, Int)? {
+            guard i < t.count, 0x3C == t[i] else {
+                return nil
+            }
+            if i + 1 < t.count && 0x2F == t[i + 1] {
+                var k = spaces(i + 2)
+                guard let e = ident(k) else {
+                    return nil
+                }
+                k = spaces(e)
+                guard k < t.count, 0x3E == t[k] else {
+                    return nil
+                }
+                return (T.htmlEndTag, k + 1)
+            }
+            var k = i + 1
+            if startsWith("!doctype", at: k, ignoreCase: true) {
+                k += 8
+            }
+            k = spaces(k)
+            guard let e = ident(k) else {
+                return nil
+            }
+            k = spaces(e)
+            while true {
+                guard let a = ident(k), a < t.count, 0x3D == t[a] else {
+                    break
+                }
+                var v = a + 1
+                if let e2 = ident(v) {
+                    v = e2
+                } else if v < t.count && (0x22 == t[v] || 0x27 == t[v]) {
+                    let q = quoted(v)
+                    guard q.closed else {
+                        break
+                    }
+                    v = q.end
+                } else {
+                    break
+                }
+                k = spaces(v)
+            }
+            guard k < t.count, 0x3E == t[k] else {
+                return nil
+            }
+            return (T.htmlStartTag, k + 1)
+        }
+
+        func lex(_ p: Int) -> Result {
+            guard p < t.count else {
+                return .eof
+            }
+            let c = t[p]
+            var bestKind = -1
+            var bestEnd = p
+            func offer(_ kind: Int, _ end: Int?) {
+                guard let e = end, e > p else {
+                    return
+                }
+                if e > bestEnd || (e == bestEnd && kind < bestKind) {
+                    bestKind = kind
+                    bestEnd = e
+                }
+            }
+            func next(_ k: Int) -> UInt16? {
+                k < t.count ? t[k] : nil
+            }
+            switch c {
+            case 0x20, 0x09, 0x0A, 0x0D, 0x0C:
+                // S, and the tokens that begin with optional whitespace
+                // (CssParser.jj:589-599)
+                let w = whitespace(p) ?? p + 1
+                offer(T.s, w)
+                if let d = next(w) {
+                    switch d {
+                    case 0x7B:
+                        offer(T.lbrace, w + 1)
+                    case 0x2B:
+                        offer(T.plus, w + 1)
+                    case 0x3E:
+                        offer(T.greater, w + 1)
+                        if 0x3D == next(w + 1) {
+                            offer(T.greaterEq, w + 2)
+                        }
+                    case 0x2C:
+                        offer(T.comma, w + 1)
+                    case 0x7E:
+                        offer(T.tilde, w + 1)
+                        if 0x3D == next(w + 1) {
+                            offer(T.includes, w + 2)
+                        }
+                    case 0x7C:
+                        if 0x7C == next(w + 1) {
+                            offer(T.twoPipes, w + 2)
+                        }
+                    default:
+                        break
+                    }
+                }
+            case 0x2F:
+                if let e = comment(p) {
+                    return .comment(e)
+                }
+                if 0x2A == next(p + 1) {
+                    offer(T.sco, p + 2)
+                }
+                offer(T.div, p + 1)
+            case 0x7B:
+                offer(T.lbrace, p + 1)
+            case 0x7D:
+                offer(T.rbrace, p + 1)
+            case 0x2B:
+                offer(T.plus, p + 1)
+            case 0x3E:
+                offer(T.greater, p + 1)
+                if 0x3D == next(p + 1) {
+                    offer(T.greaterEq, p + 2)
+                }
+            case 0x2C:
+                offer(T.comma, p + 1)
+            case 0x7E:
+                offer(T.tilde, p + 1)
+                if 0x3D == next(p + 1) {
+                    offer(T.includes, p + 2)
+                }
+            case 0x7C:
+                offer(T.pipe, p + 1)
+                if 0x3D == next(p + 1) {
+                    offer(T.dashMatch, p + 2)
+                }
+                if 0x7C == next(p + 1) {
+                    offer(T.twoPipes, p + 2)
+                }
+            case 0x5E:
+                if 0x3D == next(p + 1) {
+                    offer(T.prefixMatch, p + 2)
+                }
+            case 0x24:
+                offer(T.dollar, p + 1)
+                if 0x3D == next(p + 1) {
+                    offer(T.suffixMatch, p + 2)
+                }
+            case 0x2A:
+                offer(T.any, p + 1)
+                if 0x3D == next(p + 1) {
+                    offer(T.substringMatch, p + 2)
+                }
+            case 0x3D:
+                offer(T.eq, p + 1)
+            case 0x3B:
+                offer(T.semicolon, p + 1)
+            case 0x5B:
+                offer(T.lbracket, p + 1)
+            case 0x5D:
+                offer(T.rbracket, p + 1)
+            case 0x28:
+                offer(T.lparen, p + 1)
+            case 0x29:
+                offer(T.rparen, p + 1)
+            case 0x3A:
+                offer(T.colon, p + 1)
+                if 0x3A == next(p + 1) {
+                    offer(T.pseudoElement, p + 2)
+                }
+            case 0x25:
+                offer(T.percent, p + 1)
+            case 0x26:
+                offer(T.ampersand, p + 1)
+            case 0x60:
+                offer(T.backquote, p + 1)
+            case 0x3F:
+                offer(T.question, p + 1)
+            case 0x22, 0x27:
+                let q = quoted(p)
+                offer(q.closed ? T.string : T.invalid, q.end)
+            case 0x21:
+                // "!", IMPORTANT_SYM and IMPORTANT_NOT (CssParser.jj:692-696)
+                offer(T.bang, p + 1)
+                let k = spaces(p + 1)
+                if startsWith("important", at: k, ignoreCase: true) {
+                    offer(T.importantSym, k + 9)
+                }
+                if startsWith("ie", at: k, ignoreCase: true) {
+                    var e = k + 2
+                    if let d = next(e), 0x37 == d || 0x39 == d {
+                        e += 1
+                    }
+                    offer(T.importantNot, e)
+                }
+            case 0x3C:
+                offer(T.less, p + 1)
+                if 0x3D == next(p + 1) {
+                    offer(T.lessEq, p + 2)
+                }
+                if startsWith("<!--", at: p, ignoreCase: false) {
+                    offer(T.cdo, p + 4)
+                }
+                if let (kind, e) = htmlTag(p) {
+                    offer(kind, e)
+                }
+            case 0x40:
+                // the at-rule keywords and ATKEYWORD (CssParser.jj:705-765)
+                if let e = ident(p + 1) {
+                    offer(T.atKeyword, e)
+                    if startsWith("@charset", at: p, ignoreCase: true) {
+                        offer(T.charsetSym, p + 8)
+                    }
+                    for (keyword, kind) in T.atRules where startsWith(keyword, at: p, ignoreCase: true) {
+                        offer(kind, p + keyword.utf16.count)
+                    }
+                }
+            case 0x23:
+                // HASHIDENT and HASH (CssParser.jj:574-575)
+                offer(T.hashIdent, ident(p + 1))
+                let n = nameChars(p + 1).end
+                if n > p + 1 {
+                    offer(T.hash, n)
+                }
+            case 0x2E, 0x30...0x39:
+                lexNumber(p, offer)
+                if 0x2E == c {
+                    offer(T.dot, p + 1)
+                }
+            default:
+                break
+            }
+            // identifiers, and what begins like one (CssParser.jj:563-603,
+            // 783-821)
+            if HTMLMediaQueryDatatype.isASCIILetter(c) || 0x5F == c || 0x5C == c || 0x2D == c || c >= 0x80 {
+                if 0x2D == c {
+                    offer(T.minus, p + 1)
+                    if 0x2D == next(p + 1) {
+                        // DASHED_IDENT (CssParser.jj:580)
+                        if let s = nameStart(p + 2) {
+                            offer(T.dashedIdent, nameChars(s).end)
+                        } else {
+                            offer(T.dashedIdent, p + 2)
+                        }
+                        if 0x3E == next(p + 2) {
+                            offer(T.cdc, p + 3)
+                        }
+                    }
+                }
+                if let e = ident(p) {
+                    offer(T.ident, e)
+                    let n = e - p
+                    if 3 == n && startsWith("and", at: p, ignoreCase: true) {
+                        offer(T.and, e)
+                    } else if 2 == n && startsWith("or", at: p, ignoreCase: true) {
+                        offer(T.or, e)
+                    } else if 4 == n && startsWith("only", at: p, ignoreCase: true) {
+                        offer(T.only, e)
+                    } else if 3 == n && startsWith("not", at: p, ignoreCase: true) {
+                        offer(T.not, e)
+                    }
+                    if 0x28 == next(e) {
+                        offer(T.function, e + 1)
+                        for (keyword, kind) in T.functions
+                        where keyword.utf16.count == e + 1 - p && startsWith(keyword, at: p, ignoreCase: true) {
+                            offer(kind, e + 1)
+                        }
+                        offer(T.url, url(p))
+                    }
+                    if 0x75 == HTMLMediaQueryDatatype.asciiLower(c) {
+                        offer(T.unicodeRange, unicodeRange(p))
+                    }
+                    if 0x70 == HTMLMediaQueryDatatype.asciiLower(c) {
+                        offer(T.progid, progid(p))
+                    }
+                } else if 0x75 == HTMLMediaQueryDatatype.asciiLower(c) {
+                    offer(T.unicodeRange, unicodeRange(p))
+                }
+            }
+            if bestKind >= 0 {
+                return .token(bestKind, bestEnd)
+            }
+            return .failure(failurePoint(p))
+        }
+
+        /// The NUM-based tokens at p (CssParser.jj:654-689): each unit token
+        /// with the longest NUM it can follow, DIMEN_9 when DIMEN's match
+        /// ends in exactly "\9", PERCENTAGE and NUMBER.
+        private func lexNumber(_ p: Int, _ offer: (Int, Int?) -> Void) {
+            let ends = numberEnds(p)
+            guard !ends.isEmpty else {
+                return
+            }
+            for e in ends {
+                for (kind, units) in T.units {
+                    for unit in units where startsWith(unit, at: e, ignoreCase: true) {
+                        offer(kind, e + unit.utf16.count)
+                    }
+                }
+                if let s = nameStart(e) {
+                    // DIMEN_9's "\\9" follows NMSTART NMCHAR*, so it has to
+                    // be an escape of the NMCHAR run, not the NMSTART
+                    let run = nameChars(s)
+                    offer(T.dimen, run.end)
+                    let lastEscape = run.lastEscape
+                    if lastEscape >= 0 && lastEscape + 2 == run.end && 0x39 == t[lastEscape + 1] {
+                        offer(T.dimen9, run.end)
+                    }
+                }
+                if e < t.count && 0x25 == t[e] {
+                    offer(T.percentage, e + 1)
+                }
+                offer(T.number, e)
+            }
+        }
+
+        /// Where upstream's automaton died on a character no token starts
+        /// with, which is where its stream is left (the error handling in
+        /// CssParserTokenManager.getNextToken backs up to it): the character
+        /// itself when nothing can start there, else the one after the live
+        /// prefix ("@ ", "# ", "^x", a backslash before a line break).
+        private func failurePoint(_ p: Int) -> Int {
+            let c = t[p]
+            /// After "#", "@" or "@-", a backslash keeps HASH's, HASHIDENT's
+            /// or ATKEYWORD's ESCAPE alive, and only the line break after it
+            /// kills the automaton (Case 554591 review): resuming on the
+            /// backslash failed a second time where upstream goes on.
+            func afterEscapeStart(_ k: Int) -> Int {
+                if k + 1 < t.count && 0x5C == t[k] && (0x0A == t[k + 1] || 0x0D == t[k + 1] || 0x0C == t[k + 1]) {
+                    return k + 1
+                }
+                return min(k, t.count)
+            }
+            switch c {
+            case 0x40:
+                var k = p + 1
+                if k < t.count && 0x2D == t[k] {
+                    k += 1
+                }
+                return afterEscapeStart(k)
+            case 0x23:
+                return afterEscapeStart(p + 1)
+            case 0x5E, 0x5C:
+                return min(p + 1, t.count)
+            default:
+                return p
+            }
+        }
+    }
+
+    // MARK: - Numbers
+
+    /// A java.math.BigDecimal as BigDecimal(String) builds it from a token:
+    /// the unscaled value's digits and the scale. Exponents are kept as the
+    /// scale, never multiplied out, so "1e+999999" costs nothing.
+    private struct Num {
+        var negative: Bool
+        /// The unscaled value's digits without leading zeros: empty for zero.
+        var digits: [UInt8]
+        var scale: Int
+        /// The text it was made from, for quoting a number whose plain form
+        /// would be huge.
+        var source: String
+
+        /// BigDecimal(String) on [+-]?digits(.digits)?(e[+-]?digits)?; nil
+        /// for its NumberFormatException, which in the JDK vnu.jar runs on
+        /// comes from more than ten exponent digits after its leading
+        /// zeros, or a scale (fraction digits less the exponent) beyond a
+        /// Java int: so 1e+2147483648 is a number (its scale is
+        /// Integer.MIN_VALUE) and 1e+2147483649 isn't, as runs confirm.
+        static func parse(_ s: [UInt16]) -> Num? {
+            var i = 0
+            var negative = false
+            if i < s.count && (0x2D == s[i] || 0x2B == s[i]) {
+                negative = 0x2D == s[i]
+                i += 1
+            }
+            var digits = [UInt8]()
+            var fraction = 0
+            var sawDigit = false
+            var sawPoint = false
+            while i < s.count {
+                let c = s[i]
+                if isDigit(c) {
+                    sawDigit = true
+                    if !digits.isEmpty || 0x30 != c {
+                        digits.append(UInt8(c - 0x30))
+                    }
+                    if sawPoint {
+                        fraction += 1
+                    }
+                } else if 0x2E == c && !sawPoint {
+                    sawPoint = true
+                } else {
+                    break
+                }
+                i += 1
+            }
+            guard sawDigit else {
+                return nil
+            }
+            var exponent = 0
+            if i < s.count {
+                guard 0x65 == asciiLower(s[i]) else {
+                    return nil
+                }
+                i += 1
+                var expNegative = false
+                if i < s.count && (0x2D == s[i] || 0x2B == s[i]) {
+                    expNegative = 0x2D == s[i]
+                    i += 1
+                }
+                let allDigits = s[i...]
+                guard !allDigits.isEmpty, allDigits.allSatisfy(isDigit) else {
+                    return nil
+                }
+                // parseExp skips leading zeros while more than ten digits
+                // remain; by index, since removeFirst() on each made a
+                // million zeros quadratic (Case 554591 review)
+                var firstDigit = allDigits.startIndex
+                while allDigits.endIndex - firstDigit > 10 && 0x30 == allDigits[firstDigit] {
+                    firstDigit += 1
+                }
+                let expDigits = allDigits[firstDigit...]
+                if expDigits.count > 10 {
+                    return nil
+                }
+                var e: Int64 = 0
+                for d in expDigits {
+                    e = e * 10 + Int64(d - 0x30)
+                }
+                if expNegative {
+                    e = -e
+                }
+                exponent = Int(e)
+            }
+            let scale = Int64(fraction) - Int64(exponent)
+            guard scale >= Int64(Int32.min) && scale <= Int64(Int32.max) else {
+                return nil
+            }
+            return Num(negative: negative && !digits.isEmpty, digits: digits, scale: Int(scale),
+                       source: HTMLMediaQueryDatatype.string(s[...]))
+        }
+
+        var isZero: Bool {
+            digits.isEmpty
+        }
+
+        /// The message of the NumberFormatException BigDecimal(String)
+        /// throws where parse returns nil, as JDK 27 words it (CssDump
+        /// shows "Exponent overflow." for a scale past an int and "Too many
+        /// nonzero exponent digits." for more than ten): upstream records it
+        /// for a value in a declaration.
+        static func failure(_ s: [UInt16]) -> String {
+            var i = 0
+            if i < s.count && (0x2D == s[i] || 0x2B == s[i]) {
+                i += 1
+            }
+            var sawPoint = false
+            while i < s.count {
+                let c = s[i]
+                if isDigit(c) {
+                    i += 1
+                    continue
+                }
+                if 0x2E == c && !sawPoint {
+                    sawPoint = true
+                    i += 1
+                    continue
+                }
+                if 0x65 == asciiLower(c) {
+                    var k = i + 1
+                    if k < s.count && (0x2D == s[k] || 0x2B == s[k]) {
+                        k += 1
+                    }
+                    let exponent = s[k...]
+                    if exponent.isEmpty {
+                        return "No exponent digits."
+                    }
+                    if !exponent.allSatisfy(isDigit) {
+                        return "Not a digit."
+                    }
+                    var first = exponent.startIndex
+                    while exponent.endIndex - first > 10 && 0x30 == exponent[first] {
+                        first += 1
+                    }
+                    if exponent.endIndex - first > 10 {
+                        return "Too many nonzero exponent digits."
+                    }
+                    return "Exponent overflow."
+                }
+                let character = HTMLMediaQueryDatatype.string(s[i...i])
+                return "Character \(character) is neither a decimal digit number, decimal point, nor \"e\" notation exponential mark."
+            }
+            return "No digits found."
+        }
+
+        /// Whether a number is greater than a small positive integer,
+        /// without multiplying out its exponent.
+        static func greaterThan(_ n: Num, _ limit: Int) -> Bool {
+            if n.negative || n.digits.isEmpty {
+                return false
+            }
+            // the integer part's digit count
+            let integerDigits = n.digits.count - n.scale
+            let limitDigits = String(limit).count
+            if integerDigits > limitDigits {
+                return true
+            }
+            if integerDigits < limitDigits {
+                return false
+            }
+            // same magnitude: compare the integer part, then any fraction;
+            // with a negative scale the integer part ends in zeros the
+            // digits don't hold (Case 554591 review: 3e+2 compared as 3)
+            var integer = 0
+            for index in 0..<integerDigits {
+                integer = integer * 10 + (index < n.digits.count ? Int(n.digits[index]) : 0)
+            }
+            if integer != limit {
+                return integer > limit
+            }
+            return n.digits.dropFirst(integerDigits).contains(where: { 0 != $0 })
+        }
+
+        var signum: Int {
+            digits.isEmpty ? 0 : (negative ? -1 : 1)
+        }
+
+        /// Whether BigDecimal.toPlainString() throws rather than return: the
+        /// StringBuilder it sizes for the digits and zeros is past what a
+        /// Java array can be (its int size overflows, or exceeds the VM's
+        /// limit), or the zeros' count isn't an int (checkScaleNonZero's
+        /// ArithmeticException). Upstream then fails wherever it prints the
+        /// number: (width: 1e+2147483647px) is a Parse Error, as media()
+        /// prints its features, and (orientation: 1e+2147483647) is valid,
+        /// as building the error message throws inside the feature's
+        /// constructor. (A plain form of a billion characters is merely
+        /// slow upstream, and is taken to succeed.)
+        var plainThrows: Bool {
+            // HotSpot's largest byte[]: a vnu.jar run with a big heap
+            // printed a number of 2,147,483,621 characters
+            let limit = Int64(Int32.max) - 2
+            if scale < 0 {
+                if digits.isEmpty {
+                    return false
+                }
+                let zeros = -Int64(scale)
+                if zeros > Int64(Int32.max) {
+                    return true
+                }
+                let capacity = (digits.count <= 18 ? 20 : Int64(digits.count)) + zeros
+                return capacity > limit
+            }
+            if scale > 0 {
+                // getValueString's "0.000…" buffer, 3 + the zeros + the digits
+                let body = Int64(max(1, digits.count))
+                return Int64(scale) - body + 3 + body > limit
+            }
+            return false
+        }
+
+        /// How long BigDecimal.toPlainString() is, which can be far longer
+        /// than the text the number came from.
+        var plainLength: Int64 {
+            let sign: Int64 = negative ? 1 : 0
+            if digits.isEmpty {
+                return scale > 0 ? 2 + Int64(scale) : 1
+            }
+            if scale <= 0 {
+                return sign + Int64(digits.count) - Int64(scale)
+            }
+            if digits.count > scale {
+                return sign + Int64(digits.count) + 1
+            }
+            return sign + 2 + Int64(scale)
+        }
+
+        /// Whether a float of this number is infinite (it's past
+        /// Float.MAX_VALUE, 3.4028235e38), as RGB's and HSL's filters
+        /// compute it.
+        var floatOverflows: Bool {
+            guard !digits.isEmpty else {
+                return false
+            }
+            let magnitude = Int64(digits.count) - Int64(scale)
+            if 39 != magnitude {
+                return magnitude > 39
+            }
+            let leading = digits.prefix(9).reduce(0) { $0 * 10 + Int($1) }
+            let padded = leading * Int(pow(10.0, Double(9 - min(9, digits.count))))
+            return padded > 340282356
+        }
+
+        /// BigDecimal.toPlainString(), unless that would spell out more
+        /// than 64 zeros: then the number as written, so a value like
+        /// 1e+999999 can't make a megabyte of reason. (Upstream spells them
+        /// all out.)
+        var plain: String {
+            // toPlainString's signum() == 0 branch: a zero with a negative
+            // scale has no zeros to spell out, so the 64-zero limit below
+            // doesn't apply (Case 554591 review: "0e+70" was quoted as
+            // written)
+            if digits.isEmpty && scale < 0 {
+                return "0"
+            }
+            if scale < -64 || scale > 64 + digits.count {
+                var text = source
+                if text.hasPrefix("+") {
+                    text.removeFirst()
+                }
+                return text
+            }
+            var out = negative ? "-" : ""
+            let body = digits.isEmpty ? [UInt8]([0]) : digits
+            if scale <= 0 {
+                for d in body {
+                    out.append(Character(Unicode.Scalar(0x30 + d)))
+                }
+                if !digits.isEmpty {
+                    out.append(String(repeating: "0", count: -scale))
+                }
+                return out
+            }
+            if body.count > scale {
+                for (index, d) in body.enumerated() {
+                    if index == body.count - scale {
+                        out.append(".")
+                    }
+                    out.append(Character(Unicode.Scalar(0x30 + d)))
+                }
+            } else {
+                out.append("0.")
+                out.append(String(repeating: "0", count: scale - body.count))
+                for d in body {
+                    out.append(Character(Unicode.Scalar(0x30 + d)))
+                }
+            }
+            return out
+        }
+
+        /// BigDecimal.intValueExact(): nil when the value has a fraction or
+        /// doesn't fit a Java int.
+        var intValueExact: Int32? {
+            if digits.isEmpty {
+                return 0
+            }
+            // digits beyond the point must be zeros
+            var integral = digits
+            if scale > 0 {
+                guard scale <= integral.count else {
+                    return nil
+                }
+                let fractionDigits = integral.suffix(scale)
+                guard fractionDigits.allSatisfy({ 0 == $0 }) else {
+                    return nil
+                }
+                integral.removeLast(scale)
+            } else if scale < 0 {
+                guard -scale <= 10 else {
+                    return nil
+                }
+                integral.append(contentsOf: [UInt8](repeating: 0, count: -scale))
+            }
+            let significant = integral.drop(while: { 0 == $0 })
+            guard significant.count <= 10 else {
+                return nil
+            }
+            var v: Int64 = 0
+            for d in significant {
+                v = v * 10 + Int64(d)
+            }
+            if negative {
+                v = -v
+            }
+            guard v >= Int64(Int32.min) && v <= Int64(Int32.max) else {
+                return nil
+            }
+            return Int32(v)
+        }
+    }
+
+    // MARK: - Values
+
+    /// CssTypes (values/CssTypes.java).
+    private enum CssType {
+        static let unknown = -1
+        static let ident = 0
+        static let string = 1
+        static let url = 2
+        static let color = 3
+        static let percentage = 4
+        static let number = 5
+        static let length = 6
+        static let angle = 7
+        static let time = 8
+        static let frequency = 9
+        static let resolution = 10
+        static let function = 11
+        static let unicodeRange = 12
+        static let ratio = 13
+        static let switchValue = 14
+        static let hashIdent = 15
+        static let image = 16
+        static let volume = 17
+        static let semitone = 18
+        static let calc = 19
+        static let attr = 20
+        static let flex = 21
+        static let bracket = 22
+        static let comparator = 23
+        static let mathFunction = 24
+        static let variable = 25
+        static let env = 27
+        static let dashedIdent = 28
+    }
+
+    /// A CssExpression: values, each with the operator after it (' ' or
+    /// ','), and the flags the grammar marks.
+    private final class Expression {
+        var values = [Value]()
+        var operators = [UInt16]()
+        var hasVariable = false
+
+        var count: Int {
+            values.count
+        }
+
+        /// addValue, with the marks the parser's setValue (CssParser.jj:
+        /// 402-447) adds as it hands a value over: besides a var() itself,
+        /// an env() still of type env, a calc() that holds a variable, and a
+        /// function, image or color whose arguments do. The color and image
+        /// classes skip their checks for a marked expression (Case 554591
+        /// review).
+        func add(_ value: Value) {
+            switch value {
+            case .variable:
+                hasVariable = true
+            case .env(_, let type, _):
+                if CssType.env == type {
+                    hasVariable = true
+                }
+            case .calc(let c):
+                if c.containsVariable {
+                    hasVariable = true
+                }
+            case .function(_, let args), .image(_, let args):
+                if args.hasVariable {
+                    hasVariable = true
+                }
+            case .color(let c):
+                if c.marked {
+                    hasVariable = true
+                }
+            default:
+                break
+            }
+            values.append(value)
+            operators.append(0x20)
+        }
+
+        func setOperator(_ op: UInt16) {
+            if !operators.isEmpty {
+                operators[operators.count - 1] = op
+            }
+        }
+
+        /// The values with ", " where a comma was, as the color and image
+        /// classes print their arguments.
+        var spacedText: String {
+            var out = ""
+            for (index, value) in values.enumerated() {
+                if index > 0 {
+                    out += 0x2C == operators[index - 1] ? ", " : " "
+                }
+                out.append(value.text)
+            }
+            return out
+        }
+
+        /// toStringFromStart(): each value and its operator, without the
+        /// last operator.
+        var text: String {
+            var out = ""
+            for (index, value) in values.enumerated() {
+                if index > 0 {
+                    out.append(Character(Unicode.Scalar(operators[index - 1]) ?? " "))
+                }
+                out.append(value.text)
+            }
+            return out
+        }
+    }
+
+    /// A CssCalc (values/CssCalc.java): one value, or two with an operator,
+    /// its computed type, and whether it's an explicit calc().
+    private final class Calc {
+        var val1: Value
+        var val2: Value?
+        var op: UInt16 = 0x20
+        var computedType: Int
+        var hasParen = false
+        var implicitFunction = true
+        var containsVariable = false
+
+        init(_ value: Value) {
+            val1 = value
+            if case .calc(let c) = value {
+                containsVariable = c.containsVariable
+            } else if CssType.variable == value.type {
+                containsVariable = true
+            }
+            computedType = value.type
+        }
+
+        var type: Int {
+            CssType.calc == computedType ? CssType.calc : computedType
+        }
+
+        /// toStringUnprefixed().
+        var unprefixed: String {
+            var out = hasParen ? "(" : ""
+            if case .calc(let c) = val1, c.implicitFunction {
+                out += c.unprefixed
+            } else {
+                out += val1.text
+            }
+            if let v2 = val2 {
+                out += " " + String(Character(Unicode.Scalar(op) ?? " ")) + " "
+                if case .calc(let c) = v2, c.implicitFunction {
+                    out += c.unprefixed
+                } else {
+                    out += v2.text
+                }
+            }
+            if hasParen {
+                out += ")"
+            }
+            return out
+        }
+
+        var text: String {
+            implicitFunction ? unprefixed : "calc(" + unprefixed + ")"
+        }
+    }
+
+    /// A CssMathFunction (values/CssMathFunction.java).
+    private final class MathFunction {
+        let prefix: String
+        var values = [Value]()
+        var computedType = CssType.unknown
+        var hasVariable = false
+        /// The list functions' type fold (min, max, hypot, clamp), kept
+        /// between calls: upstream folds the whole list again at every
+        /// addValue, which is quadratic, and a fold of a prefix doesn't
+        /// depend on what follows, so carrying it on gives the same types
+        /// and the same first error.
+        var listType = CssType.mathFunction
+        var listFirst = true
+        var listPrevious: Value?
+        var listFolded = 0
+
+        init(prefix: String) {
+            self.prefix = prefix
+        }
+
+        var type: Int {
+            CssType.mathFunction == computedType ? CssType.mathFunction : computedType
+        }
+
+        var unprefixed: String {
+            values.map { $0.text }.joined(separator: ", ")
+        }
+
+        var text: String {
+            prefix + unprefixed + ")"
+        }
+    }
+
+    /// A CssColor's toString, built when a message needs it: RGBA's
+    /// modern "rgb(r g b / a)" or legacy "rgba(r, g, b, a)" form
+    /// (values/color/RGBA.java:511-537), HSL's "hsl(h s l / a)", or a color
+    /// function this port doesn't take apart, as written. The parts are
+    /// the values as the color keeps them, after its filters' clamping.
+    private final class ColorText {
+        enum Form {
+            case modernRGB
+            case legacyRGB
+            case hsl(String)
+            case asWritten(String)
+            case relative(String)
+        }
+
+        let form: Form
+        let printedParts: [Value]
+        let printedAlpha: Value?
+        let expression: Expression?
+
+        init(_ form: Form, _ parts: [Value], alpha: Value?, expression: Expression?) {
+            self.form = form
+            printedParts = parts
+            printedAlpha = alpha
+            self.expression = expression
+        }
+
+        /// CssColor.hasCssVariable: RGBA, HSL and the other color parsers
+        /// mark the color when their arguments hold a variable;
+        /// LightDark only when one of its colors is marked, and ColorMix
+        /// never (Case 554591 review).
+        var marked: Bool {
+            guard let e = expression else {
+                return false
+            }
+            if case .asWritten(let name) = form {
+                switch name.lowercased() {
+                case "color-mix":
+                    return false
+                case "light-dark":
+                    return e.values.contains { v in
+                        if case .color(let c) = v {
+                            return c.marked
+                        }
+                        return false
+                    }
+                default:
+                    return e.hasVariable
+                }
+            }
+            return e.hasVariable
+        }
+
+        /// One of the color functions function() takes on trust
+        /// (colorOrFunction), or a relative color; not hsl() kept as
+        /// written for a variable.
+        var isOnTrust: Bool {
+            switch form {
+            case .relative:
+                return true
+            case .asWritten(let name):
+                return ["hwb", "lab", "lch", "oklab", "oklch", "device-cmyk", "light-dark", "color-mix"]
+                    .contains(name.lowercased())
+            default:
+                return false
+            }
+        }
+
+        /// Whether the text is the arguments as written, rather than the
+        /// filtered parts.
+        var printsExpression: Bool {
+            switch form {
+            case .asWritten, .relative:
+                return true
+            default:
+                return false
+            }
+        }
+
+        var text: String {
+            switch form {
+            case .modernRGB:
+                return "rgb(" + printedParts.map { $0.text }.joined(separator: " ")
+                    + (printedAlpha.map { " / " + $0.text } ?? "") + ")"
+            case .legacyRGB:
+                return "rgba(" + printedParts.map { $0.text }.joined(separator: ", ")
+                    + (printedAlpha.map { ", " + $0.text } ?? "") + ")"
+            case .hsl(let name):
+                return name + "(" + printedParts.map { $0.text }.joined(separator: " ")
+                    + (printedAlpha.map { " / " + $0.text } ?? "") + ")"
+            case .asWritten(let name):
+                return name + "(" + (expression?.spacedText ?? "") + ")"
+            case .relative(let name):
+                // RGBA's and HSL's toString for a relative color put "from
+                // <color> " before the function (RGBA.java:515-517)
+                guard let e = expression, e.count >= 2 else {
+                    return name + "()"
+                }
+                let rest = e.values.dropFirst(2)
+                var inner = [String]()
+                var slash = false
+                for v in rest {
+                    if case .switchValue = v {
+                        slash = true
+                        continue
+                    }
+                    inner.append((slash ? "/ " : "") + v.text)
+                    slash = false
+                }
+                return "from " + e.values[1].text + " " + name + "(" + inner.joined(separator: " ") + ")"
+            }
+        }
+    }
+
+    /// A CSS value, as the validator's CssValue subclasses hold it.
+    private indirect enum Value {
+        case number(Num, isInt: Bool, special: String?)
+        case percentage(Num)
+        case length(Num, String)
+        case flex(Num)
+        case angle(Num, String)
+        case time(Num, String)
+        case frequency(Num, String)
+        case resolution(Num, String)
+        case semitone(Num)
+        case volume(Num)
+        case ratio(Num, Num)
+        case ident([UInt16])
+        case string(String)
+        case hashIdent(String)
+        case url(String)
+        case unicodeRange(String)
+        case dashedIdent(String)
+        case switchValue
+        case bracket(String)
+        case function(String, Expression)
+        case color(ColorText)
+        case image(String, Expression)
+        case calc(Calc)
+        case math(MathFunction)
+        /// var(), env() and attr(): the text up to their fallback or
+        /// declaration, their type, and that expression, printed when a
+        /// message needs it.
+        case variable(String, Int, Expression?)
+        case env(String, Int, Expression?)
+        case attr(String, Int, Expression?)
+        case comparator(String, Expression)
+
+        /// getType().
+        var type: Int {
+            switch self {
+            case .number:
+                return CssType.number
+            case .percentage:
+                return CssType.percentage
+            case .length:
+                return CssType.length
+            case .flex:
+                return CssType.flex
+            case .angle:
+                return CssType.angle
+            case .time:
+                return CssType.time
+            case .frequency:
+                return CssType.frequency
+            case .resolution:
+                return CssType.resolution
+            case .semitone:
+                return CssType.semitone
+            case .volume:
+                return CssType.volume
+            case .ratio:
+                return CssType.ratio
+            case .ident:
+                return CssType.ident
+            case .string:
+                return CssType.string
+            case .hashIdent:
+                return CssType.hashIdent
+            case .url:
+                return CssType.url
+            case .unicodeRange:
+                return CssType.unicodeRange
+            case .dashedIdent:
+                return CssType.dashedIdent
+            case .switchValue:
+                return CssType.switchValue
+            case .bracket:
+                return CssType.bracket
+            case .function:
+                return CssType.function
+            case .color:
+                return CssType.color
+            case .image:
+                return CssType.image
+            case .calc(let c):
+                return c.type
+            case .math(let m):
+                return m.type
+            case .variable(_, let t, _), .env(_, let t, _), .attr(_, let t, _):
+                return t
+            case .comparator:
+                return CssType.comparator
+            }
+        }
+
+        /// getIdent() as each class answers it: an identifier is itself; a
+        /// var() or env() of identifier type gives its one fallback value's
+        /// (CssVariable.java:361-367, CssEnv.java:458-464); anything else,
+        /// such as abs(var(--x, a)), whose type is that fallback's,
+        /// throws ClassCastException (CssValue.java:89-91), nil here.
+        var javaIdent: [UInt16]? {
+            if case .ident(let units)? = javaIdentValue {
+                return units
+            }
+            return nil
+        }
+
+        /// The identifier getIdent() answers with, as a value (for its text).
+        var javaIdentValue: Value? {
+            switch self {
+            case .ident:
+                return self
+            case .variable(_, let type, let fallback), .env(_, let type, let fallback):
+                guard CssType.ident == type, let f = fallback, 1 == f.count else {
+                    return nil
+                }
+                return f.values[0].javaIdentValue
+            default:
+                return nil
+            }
+        }
+
+        /// getRawType().
+        var rawType: Int {
+            switch self {
+            case .calc:
+                return CssType.calc
+            case .math:
+                return CssType.mathFunction
+            case .variable:
+                return CssType.variable
+            case .env:
+                return CssType.env
+            case .attr:
+                return CssType.attr
+            default:
+                return type
+            }
+        }
+
+        /// toString().
+        var text: String {
+            switch self {
+            case .number(let n, _, let special):
+                return special ?? n.plain
+            case .percentage(let n):
+                return n.plain + "%"
+            case .length(let n, let unit):
+                return n.isZero ? "0" : n.plain + unit
+            case .flex(let n):
+                return n.isZero ? "0" : n.plain + "fr"
+            case .angle(let n, let unit):
+                return n.plain + (n.isZero ? "deg" : unit)
+            case .time(let n, let unit):
+                return n.plain + (n.isZero ? "s" : unit)
+            case .frequency(let n, let unit):
+                return n.isZero ? "0" : n.plain + unit
+            case .resolution(let n, let unit):
+                return n.plain + (n.isZero ? "dpi" : unit)
+            case .semitone(let n):
+                return n.plain + "st"
+            case .volume(let n):
+                return n.plain + "db"
+            case .ratio(let w, let h):
+                return w.plain + "/" + h.plain
+            case .string(let s), .hashIdent(let s), .url(let s), .unicodeRange(let s),
+                 .dashedIdent(let s), .bracket(let s):
+                return s
+            case .color(let c):
+                return c.text
+            case .image(let name, let args):
+                return name + "(" + args.spacedText + ")"
+            case .ident(let units):
+                return HTMLMediaQueryDatatype.string(units[...])
+            case .switchValue:
+                return "/"
+            case .function(let name, let args):
+                return name + "(" + args.text + ")"
+            case .calc(let c):
+                return c.text
+            case .math(let m):
+                return m.text
+            case .variable(let head, _, let tail), .env(let head, _, let tail), .attr(let head, _, let tail):
+                return head + (tail.map { ", " + $0.text } ?? "") + ")"
+            case .comparator(let symbol, _):
+                return symbol
+            }
+        }
+
+        /// How long Java's toString() of this value is (saturating), for
+        /// knowing whether it, or a message holding it, can be built.
+        var textLength: Int64 {
+            func add(_ a: Int64, _ b: Int64) -> Int64 {
+                let (sum, overflow) = a.addingReportingOverflow(b)
+                return overflow ? Int64.max / 2 : min(sum, Int64.max / 2)
+            }
+            func sum(_ values: [Value]) -> Int64 {
+                values.reduce(Int64(0)) { add(add($0, $1.textLength), 2) }
+            }
+            switch self {
+            case .number(let n, _, let special):
+                return special.map { Int64($0.utf16.count) } ?? n.plainLength
+            case .length(let n, let unit), .frequency(let n, let unit):
+                return n.isZero ? 1 : add(n.plainLength, Int64(unit.utf16.count))
+            case .flex(let n):
+                return n.isZero ? 1 : add(n.plainLength, 2)
+            case .percentage(let n):
+                return add(n.plainLength, 1)
+            case .angle(let n, _), .time(let n, _), .resolution(let n, _), .semitone(let n), .volume(let n):
+                return add(n.plainLength, 4)
+            case .ratio(let w, let h):
+                return add(add(w.plainLength, h.plainLength), 1)
+            case .function(let name, let args), .image(let name, let args):
+                return add(Int64(name.utf16.count) + 2, sum(args.values))
+            case .color(let c):
+                return add(add(sum(c.printedParts), c.printedAlpha?.textLength ?? 0),
+                           add(16, sum(c.printsExpression ? c.expression?.values ?? [] : [])))
+            case .calc(let c):
+                return add(add(c.val1.textLength, c.val2?.textLength ?? 0), 8)
+            case .math(let m):
+                return add(Int64(m.prefix.utf16.count) + 1, sum(m.values))
+            case .variable(let head, _, let tail), .env(let head, _, let tail), .attr(let head, _, let tail):
+                return add(Int64(head.utf16.count) + 3, sum(tail?.values ?? []))
+            case .ident(let units):
+                return Int64(units.count)
+            default:
+                return Int64(text.utf16.count)
+            }
+        }
+
+        /// Whether a message that quotes this value can be built: the
+        /// curly quotes make it UTF-16, whose Java strings stop at
+        /// 1,073,741,823 characters (StringUTF16.MAX_LENGTH).
+        var messageThrows: Bool {
+            textThrows || textLength + 64 > Int64(Int32.max >> 1)
+        }
+
+        /// Whether Java's toString() of this value throws, as a number in it
+        /// can't be printed (Num.plainThrows) or the whole is past a Java
+        /// string's length: zero lengths, flexes and frequencies print as
+        /// "0" without printing the number.
+        var textThrows: Bool {
+            if textLength > Int64(Int32.max) - 2 {
+                return true
+            }
+            switch self {
+            case .number(let n, _, let special):
+                return nil == special && n.plainThrows
+            case .length(let n, _), .flex(let n), .frequency(let n, _):
+                return !n.isZero && n.plainThrows
+            case .percentage(let n), .angle(let n, _), .time(let n, _), .resolution(let n, _), .semitone(let n),
+                 .volume(let n):
+                return n.plainThrows
+            case .ratio(let w, let h):
+                return w.plainThrows || h.plainThrows
+            case .function(_, let args), .image(_, let args):
+                return args.values.contains { $0.textThrows }
+            case .color(let c):
+                return c.printedParts.contains { $0.textThrows } || (c.printedAlpha?.textThrows ?? false)
+                    || (c.printsExpression && (c.expression?.values.contains { $0.textThrows } ?? false))
+            case .calc(let c):
+                return c.val1.textThrows || (c.val2?.textThrows ?? false)
+            case .math(let m):
+                return m.values.contains { $0.textThrows }
+            case .variable(_, _, let tail), .env(_, _, let tail), .attr(_, _, let tail):
+                return tail?.values.contains { $0.textThrows } ?? false
+            default:
+                return false
+            }
+        }
+
+        /// A color or gradient the port takes on trust (hwb(), lab(),
+        /// light-dark(), color-mix(), a relative color, the gradients): its
+        /// arguments may well be ones upstream's parser throws on, which a
+        /// caller that swallows a ParseException (env()'s and var()'s
+        /// fallbacks) would then never see as a value at all.
+        var isOnTrust: Bool {
+            switch self {
+            case .color(let c):
+                return c.isOnTrust
+            case .image(let name, _):
+                return "image" != name.lowercased()
+            default:
+                return false
+            }
+        }
+
+        /// getCheckableValue().isZero() as each class answers it: a calc()
+        /// always is (CssCalc.java:315-318), a math function never is, and a
+        /// var() or env() is when its one fallback value is
+        /// (CssVariable.java:274-283, CssEnv.java:358-368).
+        var checkableIsZero: Bool {
+            switch self {
+            case .calc:
+                return true
+            case .math:
+                return false
+            case .variable(_, let type, let fallback), .env(_, let type, let fallback):
+                let checkable: Set<Int> = [CssType.angle, CssType.flex, CssType.frequency, CssType.length,
+                                           CssType.number, CssType.percentage, CssType.semitone, CssType.time,
+                                           CssType.volume]
+                guard checkable.contains(type), let f = fallback, 1 == f.count else {
+                    return false
+                }
+                return f.values[0].checkableIsZero
+            default:
+                return isZero
+            }
+        }
+
+        /// getCheckableValue().isZero() where a feature asks.
+        var isZero: Bool {
+            switch self {
+            case .number(let n, _, _), .percentage(let n), .length(let n, _), .flex(let n), .angle(let n, _),
+                 .time(let n, _), .frequency(let n, _), .resolution(let n, _), .semitone(let n), .volume(let n):
+                return n.isZero
+            case .calc:
+                // CssCalc.isZero() is always true (CssCalc.java:244-247)
+                return true
+            default:
+                return false
+            }
+        }
+    }
+
+    // MARK: - Control flow
+
+    /// How a Java throwable leaves a production.
+    private enum Interrupt: Error {
+        /// A ParseException (InvalidParamException and WarningParamException
+        /// are ones too): what media()'s catch records, after skipStatement.
+        case parse(Failure)
+        /// Any other RuntimeException (NullPointerException, ClassCastException,
+        /// NumberFormatException), with its message where the port knows it
+        /// (BigDecimal's): discarded by media()'s finally block, but
+        /// recorded by declaration()'s catch, which names the property
+        /// (Case 554591 review).
+        case runtime(String?)
+        /// TokenMgrError, which parserUnit, ruleSet and skipStatement catch
+        /// (besides media()'s finally): where the token began, and the
+        /// character the token manager's automaton died on.
+        case tokenMgr(start: Int, kill: Int)
+        /// JavaCC's LookaheadSuccess.
+        case lookaheadSuccess
+        /// The first error with a message has been recorded: it is the
+        /// reason, and nothing after it matters (MediaQuery.java:66-94).
+        case finished(String)
+        /// Nesting beyond depthLimit.
+        case tooDeep
+    }
+
+    /// A ParseException's message and whether its error type is
+    /// "generator.unrecognize" (any ParseException that isn't an
+    /// InvalidParamException, CssParseException.getErrorType).
+    private struct Failure {
+        var message: String?
+        var generic: Bool
+
+        /// A JavaCC syntax error: no message (CssParseException.getMessage
+        /// is null for one), so MediaQuery says "Parse Error".
+        static let syntax = Failure(message: nil, generic: true)
+
+        /// An InvalidParamException from Messages.properties.en's
+        /// "error." + key.
+        static func invalid(_ message: String?) -> Failure {
+            Failure(message: message, generic: false)
+        }
+
+        /// new ParseException(message).
+        static func plain(_ message: String) -> Failure {
+            Failure(message: message, generic: true)
+        }
+    }
+
+    /// The messages (util/Messages.properties.en), filled in as
+    /// InvalidParamException.processError does.
+    private enum Message {
+        static func value(_ v: String, _ f: String) -> String {
+            "“\(v)” is not a “\(f)” value"
+        }
+        static let unrecognize = "Too many values or values are not recognized"
+        static func fewValue(_ f: String) -> String {
+            "too few values for the property “\(f)”"
+        }
+        static let zero = "only “0” can be a “unit”. You must put a unit after your number"
+        static let integer = "This number should be an integer."
+        static func noModifierMedia(_ f: String) -> String {
+            "The media feature “\(f)” does not support prefixes"
+        }
+        static let noModifierRange = "No prefixes are allowed for range media features"
+        static let noModifierShort = "No prefixes are allowed for media features with no value"
+        static let grid = "Only “0” and “1” are acceptable values for grid"
+        static func deprecatedMedia(_ m: String) -> String {
+            "The media “\(m)” has been deprecated"
+        }
+        static func media(_ m: String) -> String {
+            "unrecognized media “\(m)”"
+        }
+        static func deprecatedFeature(_ f: String) -> String {
+            "Deprecated media feature “\(f)”. For guidance, see the Deprecated Media Features section in the current Media Queries specification."
+        }
+        static func comparator(_ a: String, _ b: String) -> String {
+            "The “\(a)” and “\(b)” comparators are not compatible in a media feature of type “range”"
+        }
+        static func unit(_ u: String) -> String {
+            "“\(u)” is an incorrect unit"
+        }
+        static func strictlyPositive(_ s: String) -> String {
+            "“\(s)” is not valid, only values greater than “0” allowed."
+        }
+        static let invalidNumber = "can't find the error message for invalid-number"
+        static let unknownDimension = "Unknown dimension"
+        static func semicolon(_ s: String) -> String {
+            "Missing a semicolon before the property name “\(s)”"
+        }
+        static let calcWhitespace = "Whitespace is required on both sides of the “+” or “-” operators"
+        static let divZero = "Division by zero"
+        static let divisorType = "The divisor must be a number"
+        static func typeValueMismatch(_ v: String, _ t: String) -> String {
+            "The value “\(v)” is incompatible with its type definition <“\(t)”>"
+        }
+        static let operandNumber = "One operand must be a number"
+        static let incompatibleTypes = "The types are incompatible"
+        static func invalidType(_ s: String) -> String {
+            "Invalid type: “\(s)”"
+        }
+        static let parseError = "Parse Error"
+        static let invalidColor = "Invalid RGB function"
+        /// error.colorfunc ("“%s1” is not a valid %s2 color"); RGBA's
+        /// function name is always "rgba", as parseModernRGBA sets it only
+        /// when it was given none.
+        static func colorFunction(_ s: String, _ f: String) -> String {
+            "“\(s)” is not a valid \(f) color"
+        }
+        static func rgb(_ s: String) -> String {
+            "“\(s)” is not a valid color 3 or 6 hexadecimals numbers"
+        }
+        static func incorrectOperator(_ s: String) -> String {
+            "“\(s)” is an incorrect operator"
+        }
+        static func url(_ s: String) -> String {
+            "“\(s)” is an incorrect URL"
+        }
+        static func onlyATSC(_ s: String) -> String {
+            "“\(s)” this function is only for the atsc-tv medium"
+        }
+        static let charset = "The @charset rule may only occur at the start of the style sheet. Please check that there are no spaces before it."
+        static let importNotAllowed = "@import are not allowed after any valid statement other than @charset and @import."
+        static func unrecognizedAtRule(_ s: String) -> String {
+            "Unrecognized at-rule “\(s)”"
+        }
+        static let dontMixHTML = "Parse Error. Style sheets should not include HTML syntax."
+        static func oldClass(_ name: String, _ escaped: String) -> String {
+            "In CSS1, a class name could start with a digit (\".55ft\"), unless it was a dimension (\".55in\"). "
+                + "In CSS2, such classes are parsed as unknown dimensions (to allow for future additions of new units) "
+                + "To make “\(name)” a valid class, CSS2 requires the first digit to be escaped: “\(escaped)”"
+        }
+    }
+
+    // MARK: - java.net.URL
+
+    /// The handlers a style sheet's url() can reach (JDK 27 java/net/URL
+    /// .java:1329-1352, DefaultFactory, by the protocol's exact lowercased
+    /// name; vnu.jar ships no URLStreamHandlerProvider). All but jar: and
+    /// mailto: parse with URLStreamHandler.parseURL itself.
+    private enum URLHandler {
+        case generic
+        case jar
+        case mailto
+    }
+
+    /// Whether new URL(context, spec) succeeds (JDK 27 java/net/URL.java:
+    /// 661-769), as CssURL.set builds it (values/CssURL.java:122-127, by
+    /// util/HTTPURL.java:148-152): the context is the style sheet's
+    /// file://localhost/StyleElement (MediaQuery.java:54 sets it as the
+    /// fake URL, StyleSheetParser.parseStyleSheet uses it), or, for the
+    /// address inside a jar: URL, none (jar/Handler.java:268-270). The
+    /// constructor wraps whatever the handler throws in a
+    /// MalformedURLException, and CssURL.set reports any of them as "url".
+    /// Case 554591 review: the port once checked only the scheme, so a bad
+    /// port, IPv6 literal or host character, and an empty mailto:, slipped
+    /// through.
+    private static func isJavaURL(_ spec: [UInt16], _ withContext: Bool) -> Bool {
+        // controls and spaces around the address don't count; neither does
+        // a leading "url:"
+        var limit = spec.count
+        while limit > 0 && spec[limit - 1] <= 0x20 {
+            limit -= 1
+        }
+        var start = 0
+        while start < limit && spec[start] <= 0x20 {
+            start += 1
+        }
+        if regionMatchesIgnoreCase(spec, start, "url:") {
+            start += 4
+        }
+        // the scheme: the text before the first ":", if no "/" comes
+        // first, lowercased (Locale.ROOT) and valid as isValidProtocol
+        // judges it; a leading "#" makes the whole address a fragment
+        let aRef = start < spec.count && 0x23 == spec[start]
+        var scheme: [UInt16]?
+        if !aRef {
+            var i = start
+            while i < limit && 0x2F != spec[i] {
+                if 0x3A == spec[i] {
+                    let candidate = javaLowercase(Array(spec[start..<i]))
+                    if isValidProtocol(candidate) {
+                        scheme = candidate
+                        start = i + 1
+                    }
+                    break
+                }
+                i += 1
+            }
+        }
+        // No scheme, or the context's own (equalsIgnoreCase, so "fıle"
+        // with a dotless i counts), resolves against the context with its
+        // file: handler; otherwise the scheme needs a handler of its own.
+        var relative = false
+        var handler = URLHandler.generic
+        if withContext && (nil == scheme || javaEqualsIgnoreCase(scheme ?? [], "file")) {
+            relative = true
+        } else {
+            // "no protocol" without a context, "unknown protocol" without
+            // a handler
+            guard let name = scheme else {
+                return false
+            }
+            switch string(name[...]) {
+            case "file", "ftp", "http", "https", "jmod", "jrt":
+                handler = .generic
+            case "jar":
+                handler = .jar
+            case "mailto":
+                handler = .mailto
+            default:
+                return false
+            }
+        }
+        // the fragment is cut off before the handler parses the rest
+        if let hash = spec[start...].firstIndex(of: 0x23), hash < limit {
+            limit = hash
+        }
+        switch handler {
+        case .generic:
+            return parseHierarchicalURL(spec, start, limit, relative)
+        case .jar:
+            return parseJarURL(spec, start, limit)
+        case .mailto:
+            // mailto/Handler.java:36-52: "No email address" when the
+            // address is empty or Character.isWhitespace throughout
+            // (String.isBlank), as for "mailto:#x" once "#x" is cut
+            for c in spec[start..<limit] where !isJavaWhitespace(c) {
+                return true
+            }
+            return false
+        }
+    }
+
+    /// URLStreamHandler.parseURL (JDK 27 java/net/URLStreamHandler.java:
+    /// 151-339), for what can throw: an authority after "//" (unless the
+    /// address starts "////") splits at a single "@" into user-info and
+    /// host; a host in brackets must be an IPv6 literal followed by nothing
+    /// or ":" and a port ("Invalid host", "Invalid authority field"); any
+    /// other host's port follows its first ":"; a port is read with
+    /// Integer.parseInt and must not be below -1. Then setURL (:534-556)
+    /// checks the host, the user-info and the authority under the JDK's
+    /// default early URL parsing (IPAddressUtil.checkHostString,
+    /// checkUserInfo, checkAuth). An address relative to the context keeps
+    /// the context's authority and host, "localhost", unless it has an
+    /// authority of its own.
+    private static func parseHierarchicalURL(_ spec: [UInt16], _ start: Int, _ limit: Int, _ relative: Bool) -> Bool {
+        var start = start
+        var limit = limit
+        // the query: from the address's first "?" (indexOf('?') over the
+        // whole spec, which in practice comes after the scheme)
+        if start < limit, let query = spec.firstIndex(of: 0x3F), query < limit {
+            limit = query
+        }
+        var authority: [UInt16]? = relative ? Array("localhost".utf16) : nil
+        var userInfo: [UInt16]?
+        var host: [UInt16]? = relative ? Array("localhost".utf16) : nil
+        let isUNCName = start <= limit - 4 && 0x2F == spec[start] && 0x2F == spec[start + 1]
+            && 0x2F == spec[start + 2] && 0x2F == spec[start + 3]
+        if !isUNCName && start <= limit - 2 && 0x2F == spec[start] && 0x2F == spec[start + 1] {
+            start += 2
+            let end = spec[start..<limit].firstIndex(of: 0x2F) ?? limit
+            let field = Array(spec[start..<end])
+            authority = field
+            userInfo = nil
+            host = field
+            if let at = field.firstIndex(of: 0x40) {
+                if at != field.lastIndex(of: 0x40) {
+                    // more than one "@": not server-based, no host or port
+                    host = nil
+                } else {
+                    userInfo = Array(field[..<at])
+                    host = Array(field[(at + 1)...])
+                }
+            }
+            if let name = host {
+                if let first = name.first, 0x5B == first {
+                    // RFC 2732: "[" IPv6 literal "]", then ":" port or
+                    // nothing; indexOf(']') must be past index 2
+                    guard let close = name.firstIndex(of: 0x5D), close > 2 else {
+                        return false
+                    }
+                    guard isIPv6LiteralAddress(Array(name[1..<close])) else {
+                        return false
+                    }
+                    host = Array(name[...close])
+                    if name.count > close + 1 {
+                        guard 0x3A == name[close + 1] else {
+                            return false
+                        }
+                        if name.count > close + 2 {
+                            guard let port = javaParseInt(Array(name[(close + 2)...])), port >= -1 else {
+                                return false
+                            }
+                        }
+                    }
+                } else if let colon = name.firstIndex(of: 0x3A) {
+                    // "port can be null according to RFC2396": a bare ":"
+                    // is fine
+                    if name.count > colon + 1 {
+                        guard let port = javaParseInt(Array(name[(colon + 1)...])), port >= -1 else {
+                            return false
+                        }
+                    }
+                    host = Array(name[..<colon])
+                }
+            } else {
+                host = []
+            }
+        }
+        // setURL's checks; the path itself is never rejected
+        if let name = host, !isAllowedHost(name) {
+            return false
+        }
+        if let info = userInfo, nil != scanMask(info, userInfoMask, nil) {
+            return false
+        }
+        if let field = authority, nil != scanMask(field, authorityMask, nil) {
+            return false
+        }
+        return true
+    }
+
+    /// jar/Handler.java:135-193 (parseURL, checkNestedProtocol,
+    /// parseAbsoluteSpec): the address after "jar:" mustn't start with
+    /// "jar:" again, needs a "!/" (the last one counts), and what comes
+    /// before that "!" must itself be a URL, made without a context. The
+    /// handler decides "absolute" from the spec's first four characters,
+    /// so after a leading "url:" the jar: URL is relative, and
+    /// parseContextSpec reads the new URL's still-null file: a
+    /// NullPointerException, unless the address is a bare fragment
+    /// ("url:jar:#x"), which skips that. Every NPE becomes "url".
+    private static func parseJarURL(_ spec: [UInt16], _ start: Int, _ limit: Int) -> Bool {
+        let refOnly = start == limit && limit < spec.count && 0x23 == spec[limit]
+        let absoluteSpec = regionMatchesIgnoreCase(spec, 0, "jar:")
+        let body = Array(spec[start..<limit])
+        if regionMatchesIgnoreCase(body, 0, "jar:") {
+            // "Nested JAR URLs are not supported"
+            return false
+        }
+        guard absoluteSpec else {
+            return refOnly
+        }
+        // indexOfBangSlash: the last "!" followed by "/"
+        var bang = body.count - 2
+        while bang >= 0 && !(0x21 == body[bang] && 0x2F == body[bang + 1]) {
+            bang -= 1
+        }
+        guard bang >= 0 else {
+            // "no !/ in spec"
+            return false
+        }
+        // the inner URL can't hold a "#" (the outer one cut it off), so an
+        // inner jar: URL is never a bare fragment, and it fails in turn
+        return isJavaURL(Array(body[..<bang]), false)
+    }
+
+    /// String.regionMatches(true, offset, literal, 0, literal.length):
+    /// false when the region runs past the end; otherwise unit by unit,
+    /// ignoring case as String.equalsIgnoreCase does.
+    private static func regionMatchesIgnoreCase(_ units: [UInt16], _ offset: Int, _ literal: String) -> Bool {
+        let other = Array(literal.utf16)
+        guard offset >= 0, offset + other.count <= units.count else {
+            return false
+        }
+        return javaEqualsIgnoreCase(Array(units[offset..<(offset + other.count)]), literal)
+    }
+
+    /// URL.isValidProtocol (java/net/URL.java:874-889): a letter, then
+    /// letters, digits, "." "+" or "-", as Character.isLetter and
+    /// isLetterOrDigit judge single UTF-16 units: any Unicode letter or
+    /// decimal digit, so "é:x" names a scheme, which no handler serves.
+    private static func isValidProtocol(_ s: [UInt16]) -> Bool {
+        guard let first = s.first, isJavaLetter(first) else {
+            return false
+        }
+        for c in s.dropFirst() where !(isJavaLetter(c) || isJavaDigit(c) || 0x2E == c || 0x2B == c || 0x2D == c) {
+            return false
+        }
+        return true
+    }
+
+    /// Character.isLetter(char): general categories Lu, Ll, Lt, Lm and Lo;
+    /// a surrogate (Cs) is none.
+    private static func isJavaLetter(_ c: UInt16) -> Bool {
+        if c < 0x80 {
+            return isASCIILetter(c)
+        }
+        guard let scalar = Unicode.Scalar(UInt32(c)) else {
+            return false
+        }
+        switch scalar.properties.generalCategory {
+        case .uppercaseLetter, .lowercaseLetter, .titlecaseLetter, .modifierLetter, .otherLetter:
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// Character.isDigit(char): general category Nd.
+    private static func isJavaDigit(_ c: UInt16) -> Bool {
+        if c < 0x80 {
+            return isDigit(c)
+        }
+        guard let scalar = Unicode.Scalar(UInt32(c)) else {
+            return false
+        }
+        return .decimalNumber == scalar.properties.generalCategory
+    }
+
+    /// Character.isWhitespace(char): the space, line and paragraph
+    /// separators but the no-break spaces U+00A0, U+2007 and U+202F, and
+    /// U+0009-U+000D and U+001C-U+001F. (No separator lies outside the
+    /// BMP, so a surrogate unit is never whitespace.)
+    private static func isJavaWhitespace(_ c: UInt16) -> Bool {
+        if (c >= 0x09 && c <= 0x0D) || (c >= 0x1C && c <= 0x1F) {
+            return true
+        }
+        if 0xA0 == c || 0x2007 == c || 0x202F == c {
+            return false
+        }
+        guard let scalar = Unicode.Scalar(UInt32(c)) else {
+            return false
+        }
+        switch scalar.properties.generalCategory {
+        case .spaceSeparator, .lineSeparator, .paragraphSeparator:
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// Integer.parseInt(CharSequence, begin, end, 10) for a port: an
+    /// optional "+" or "-" (not alone), then at least one decimal digit as
+    /// Character.digit(char, 10) reads it, any Unicode Nd digit of the BMP
+    /// included, within Int32's range; nil where it throws
+    /// NumberFormatException.
+    private static func javaParseInt(_ units: [UInt16]) -> Int64? {
+        guard let first = units.first else {
+            return nil
+        }
+        var i = 0
+        var negative = false
+        if first < 0x30 {
+            if 0x2D == first {
+                negative = true
+            } else if 0x2B != first {
+                return nil
+            }
+            i = 1
+            if i == units.count {
+                return nil
+            }
+        }
+        let bound: Int64 = negative ? 2_147_483_648 : 2_147_483_647
+        var result: Int64 = 0
+        while i < units.count {
+            guard let digit = javaDecimalDigit(units[i]) else {
+                return nil
+            }
+            result = result * 10 + digit
+            // stop at the first digit past the range, as parseInt does, so
+            // a long run of digits never overflows here
+            if result > bound {
+                return nil
+            }
+            i += 1
+        }
+        return negative ? -result : result
+    }
+
+    /// Character.digit(char, 10): an ASCII digit, or any other decimal
+    /// digit (Nd) of the BMP.
+    private static func javaDecimalDigit(_ c: UInt16) -> Int64? {
+        if isDigit(c) {
+            return Int64(c - 0x30)
+        }
+        guard c >= 0x80, let scalar = Unicode.Scalar(UInt32(c)), .decimal == scalar.properties.numericType,
+              let value = scalar.properties.numericValue, value >= 0 && value <= 9 else {
+            return nil
+        }
+        return Int64(value)
+    }
+
+    /// IPAddressUtil's ASCII-only hex digit (parseAsciiHexDigit, as
+    /// IPAddressUtil.digit reads digits unless
+    /// jdk.net.allowAmbiguousIPAddressLiterals is set).
+    private static func asciiHexValue(_ c: UInt16) -> Int {
+        if isDigit(c) {
+            return Int(c - 0x30)
+        }
+        if c >= 0x61 && c <= 0x66 {
+            return Int(c - 0x61) + 10
+        }
+        if c >= 0x41 && c <= 0x46 {
+            return Int(c - 0x41) + 10
+        }
+        return -1
+    }
+
+    /// IPAddressUtil.textToNumericFormatV6 (sun/net/util/IPAddressUtil
+    /// .java:180-291) as a yes or no: at least two characters; a "%" scope
+    /// must not end the text, and is not parsed here; eight groups of up
+    /// to four hex digits (none above 0xFFFF), or fewer with one "::", and
+    /// possibly a dotted IPv4 tail.
+    private static func isIPv6LiteralAddress(_ src: [UInt16]) -> Bool {
+        if src.count < 2 {
+            return false
+        }
+        var length = src.count
+        if let percent = src.firstIndex(of: 0x25) {
+            if src.count - 1 == percent {
+                return false
+            }
+            length = percent
+        }
+        var colonp = -1
+        var i = 0
+        var j = 0
+        // a leading "::" needs both colons
+        if 0x3A == src[i] {
+            i += 1
+            if 0x3A != src[i] {
+                return false
+            }
+        }
+        var curtok = i
+        var sawXDigit = false
+        var value = 0
+        while i < length {
+            let ch = src[i]
+            i += 1
+            let digit = asciiHexValue(ch)
+            if -1 != digit {
+                value = (value << 4) | digit
+                if value > 0xFFFF {
+                    return false
+                }
+                sawXDigit = true
+                continue
+            }
+            if 0x3A == ch {
+                curtok = i
+                if !sawXDigit {
+                    if -1 != colonp {
+                        return false
+                    }
+                    colonp = j
+                    continue
+                } else if i == length {
+                    return false
+                }
+                if j + 2 > 16 {
+                    return false
+                }
+                j += 2
+                sawXDigit = false
+                value = 0
+                continue
+            }
+            if 0x2E == ch && j + 4 <= 16 {
+                // a dotted IPv4 tail: exactly three dots, then
+                // textToNumericFormatV4
+                let tail = Array(src[curtok..<length])
+                guard 3 == tail.filter({ 0x2E == $0 }).count, isIPv4LiteralAddress(tail) else {
+                    return false
+                }
+                j += 4
+                sawXDigit = false
+                break
+            }
+            return false
+        }
+        if sawXDigit {
+            if j + 2 > 16 {
+                return false
+            }
+            j += 2
+        }
+        if -1 != colonp {
+            if 16 == j {
+                return false
+            }
+            j = 16
+        }
+        return 16 == j
+    }
+
+    /// IPAddressUtil.textToNumericFormatV4 (:56-140) as a yes or no: up to
+    /// 15 characters of ASCII digits and dots, no empty part, each part
+    /// before the last at most 255, and the last within the bytes left.
+    private static func isIPv4LiteralAddress(_ src: [UInt16]) -> Bool {
+        if src.isEmpty || src.count > 15 {
+            return false
+        }
+        var part: Int64 = 0
+        var currByte = 0
+        var newOctet = true
+        for c in src {
+            if 0x2E == c {
+                if newOctet || part > 0xFF || 3 == currByte {
+                    return false
+                }
+                currByte += 1
+                part = 0
+                newOctet = true
+            } else {
+                guard isDigit(c) else {
+                    return false
+                }
+                part = part * 10 + Int64(c - 0x30)
+                newOctet = false
+            }
+        }
+        return !newOctet && part < (Int64(1) << ((4 - currByte) * 8))
+    }
+
+    /// A pair of IPAddressUtil masks: bit n of `low` marks character n
+    /// below 64, bit n of `high` character 64 + n below 128; nothing past
+    /// ASCII (IPAddressUtil.match, :462-468).
+    private struct CharacterMask {
+        let low: UInt64
+        let high: UInt64
+    }
+
+    /// IPAddressUtil's masks (:423-455), as the JDK's default early URL
+    /// parsing combines them (MASKS, :929-955).
+    /// checkUserInfo: L_EXCLUDE & ~L_COLON, H_EXCLUDE & ~H_COLON.
+    private static let userInfoMask = CharacterMask(low: 0x8400_8008_FFFF_FFFF & ~0x0400_0000_0000_0000,
+                                                    high: 0x8000_0000_3800_0001)
+    /// checkAuth: L_EXCLUDE & ~L_AUTH_DELIMS, H_EXCLUDE & ~H_AUTH_DELIMS.
+    private static let authorityMask = CharacterMask(low: 0x8400_8008_FFFF_FFFF & ~0x0400_0000_0000_0000,
+                                                     high: 0x8000_0000_3800_0001 & ~0x2800_0001)
+    /// checkHost: L_EXCLUDE | L_NON_PRINTABLE | L_SLASH | L_UNWISE |
+    /// L_EXCLUDED_DELIMS, and the same for H_.
+    private static let hostMask = CharacterMask(low: 0x8400_8008_FFFF_FFFF | 0xFFFF_FFFF | 0x8000_0000_0000 | 0x5000_0005_0000_0000,
+                                                high: 0x8000_0000_3800_0001 | 0x8000_0000_0000_0000 | 0x3800_0001_7800_0000)
+    /// checkHost's scope: L_NON_PRINTABLE | L_IPV6_DELIMS | L_SLASH |
+    /// L_BACKSLASH | L_FRAGMENT | L_QUERY, and the same for H_.
+    private static let scopeMask = CharacterMask(low: 0xFFFF_FFFF | 0x8000_0000_0000 | 0x0000_0008_0000_0000 | 0x8000_0000_0000_0000,
+                                                 high: 0x8000_0000_0000_0000 | 0x2800_0000 | 0x1000_0000)
+    /// IPAddressUtil.OTHERS (:457-460): look-alikes of the delimiters
+    /// (⁇ ⁈ ⁉ ℀ ℁ ℅ ℆ ⩴ ﹕ ﹖ ﹟ ﹫ ＃ ／ ： ？ ＠), which a host mustn't hold.
+    private static let hostLookAlikes: Set<UInt16> = [8263, 8264, 8265, 8448, 8449, 8453, 8454, 10868,
+                                                      65109, 65110, 65119, 65131, 65283, 65295, 65306, 65311, 65312]
+
+    /// IPAddressUtil.scan (:470-496): the first character the mask (or the
+    /// look-alikes) marks, if any.
+    private static func scanMask(_ s: [UInt16], _ mask: CharacterMask, _ others: Set<UInt16>?) -> Int? {
+        for (index, c) in s.enumerated() {
+            if c < 64 {
+                if 0 != (mask.low & (UInt64(1) << UInt64(c))) {
+                    return index
+                }
+            } else if c < 128 {
+                if 0 != (mask.high & (UInt64(1) << UInt64(c - 64))) {
+                    return index
+                }
+            } else if let set = others, set.contains(c) {
+                return index
+            }
+        }
+        return nil
+    }
+
+    /// IPAddressUtil.checkHost (:523-549) under early parsing: a bracketed
+    /// host must be an IPv6 literal whose scope (from its "%") holds no
+    /// control, "#", "/", "?", "[", "\", "]" or DEL; any other host no
+    /// control, space, DEL or one of " # / : < > ? @ [ \ ] ^ ` { | }, nor a
+    /// look-alike of one.
+    private static func isAllowedHost(_ host: [UInt16]) -> Bool {
+        if let first = host.first, let last = host.last, 0x5B == first && 0x5D == last && host.count >= 2 {
+            let literal = Array(host[1..<(host.count - 1)])
+            guard isIPv6LiteralAddress(literal) else {
+                // "Unrecognized IPv6 address format"
+                return false
+            }
+            if let percent = literal.firstIndex(of: 0x25) {
+                return nil == scanMask(Array(literal[percent...]), scopeMask, nil)
+            }
+            return true
+        }
+        return nil == scanMask(host, hostMask, hostLookAlikes)
+    }
+
+    // MARK: - The parser
+
+    /// CssParser, as JavaCC generated it from CssParser.jj, for what a media
+    /// attribute can reach: the token chain, getToken, jj_ntk and
+    /// jj_consume_token; the lookahead scans (jj_2_*/jj_3_*), which try each
+    /// alternative in order and succeed once the k-th token has matched;
+    /// and the productions, which peek and consume tokens in the same order
+    /// as the generated code, since when a bad character's TokenMgrError
+    /// strikes decides which errors were recorded before it.
+    private final class Parser {
+        var skippingAtRule = false
+        let text: [UInt16]
+        let lexer: Lexer
+        /// The token chain; index 0 is the token JavaCC starts with.
+        var tokens = [Token(kind: -1, start: 0, end: 0)]
+        /// `token`: the last token consumed.
+        var current = 0
+        /// Where the token manager reads next.
+        var position = 0
+        /// The scan position and limit of the lookahead being evaluated.
+        var scanPosition = 0
+        var scanLimit = 0
+        var depth = 0
+
+        init(text: [UInt16]) {
+            self.text = text
+            lexer = Lexer(t: text)
+        }
+
+        func run() -> Outcome {
+            do {
+                try parserUnit()
+                return .valid
+            } catch Interrupt.finished(let message) {
+                return .error(message)
+            } catch Interrupt.runtime(let message) {
+                // A RuntimeException out of parserUnit: parseStyle wraps it
+                // in a RuntimeException of its message, which
+                // StyleSheetParser.parseStyleElement records (StyleSheetParser
+                // .java:363-367), dropping the errors before it (none had a
+                // message, or the parse would have finished); a null message
+                // is skipped (Case 554591 review).
+                if let m = message, !m.isEmpty {
+                    return .error(m + ".")
+                }
+                return .valid
+            } catch {
+                // Nesting beyond depthLimit, or what can't happen: nothing
+                // the port can't parse is called bad.
+                return .valid
+            }
+        }
+
+        // MARK: Recording errors
+
+        /// The values the features of the @media rule being parsed keep,
+        /// for media()'s getAtRule().toString().
+        var featureValues = [Value]()
+
+        /// The property of the declaration being parsed (CssParser
+        /// .currentProperty, CssParser.jj:2265-2460): the errors addError
+        /// records meanwhile name it.
+        var currentProperty: String?
+
+        /// addError for a ParseException (CssParser.jj:477-510): a
+        /// CssParseException, which MediaQuery.checkValid (MediaQuery.java:
+        /// 72-87) reports as its message with "." added, a generic one
+        /// without a message as "Parse Error.", after “property”: when a
+        /// declaration is being parsed; an empty message, or none on an
+        /// InvalidParamException, is skipped.
+        func record(_ failure: Failure) throws {
+            var text: String
+            if let message = failure.message {
+                text = message
+            } else if failure.generic {
+                text = Message.parseError
+            } else {
+                return
+            }
+            if text.isEmpty {
+                return
+            }
+            if let property = currentProperty {
+                text = "“\(property)”: " + text
+            }
+            throw Interrupt.finished(text + ".")
+        }
+
+        /// ac.getFrame().addError(new CssError(InvalidParamException)): a
+        /// plain error, reported as its message is, even a null one (as an
+        /// empty reason).
+        func recordPlain(_ message: String?) throws {
+            if let m = message, m.isEmpty {
+                return
+            }
+            throw Interrupt.finished(message ?? "")
+        }
+
+        // MARK: Tokens
+
+        func image(_ token: Token) -> ArraySlice<UInt16> {
+            text[token.start..<token.end]
+        }
+
+        func imageString(_ token: Token) -> String {
+            HTMLMediaQueryDatatype.string(image(token))
+        }
+
+        /// The token manager's getNextToken: special tokens skipped, a
+        /// TokenMgrError for a character nothing starts with.
+        func fetch() throws {
+            while true {
+                switch lexer.lex(position) {
+                case .eof:
+                    tokens.append(Token(kind: T.eof, start: text.count, end: text.count))
+                    return
+                case .comment(let end):
+                    position = end
+                case .token(let kind, let end):
+                    tokens.append(Token(kind: kind, start: position, end: end))
+                    position = end
+                    return
+                case .failure(let resume):
+                    let start = position
+                    position = resume
+                    throw Interrupt.tokenMgr(start: start, kill: resume)
+                }
+            }
+        }
+
+        /// The token at an index of the chain, fetching as needed.
+        func token(at index: Int) throws -> Token {
+            while tokens.count <= index {
+                try fetch()
+            }
+            return tokens[index]
+        }
+
+        /// jj_ntk: the next token's kind.
+        func next() throws -> Int {
+            try token(at: current + 1).kind
+        }
+
+        /// getToken(i).
+        func peek(_ i: Int) throws -> Token {
+            try token(at: current + i)
+        }
+
+        /// jj_consume_token: a syntax error, with nothing consumed, when the
+        /// next token isn't of the kind.
+        @discardableResult
+        func consume(_ kind: Int) throws -> Token {
+            let t = try token(at: current + 1)
+            guard t.kind == kind else {
+                throw Interrupt.parse(.syntax)
+            }
+            current += 1
+            return t
+        }
+
+        /// getNextToken.
+        @discardableResult
+        func advance() throws -> Token {
+            let t = try token(at: current + 1)
+            current += 1
+            return t
+        }
+
+        func skipSpaces() throws {
+            while T.s == (try next()) {
+                try consume(T.s)
+            }
+        }
+
+        // MARK: Lookahead
+
+        /// jj_2_*: scan from the current token, succeeding as soon as the
+        /// k-th token has matched (jj_scan_token throws LookaheadSuccess),
+        /// or when the expansion matched with fewer tokens.
+        func lookahead(_ k: Int, _ scan: () throws -> Bool) throws -> Bool {
+            let savedPosition = scanPosition
+            let savedLimit = scanLimit
+            defer {
+                scanPosition = savedPosition
+                scanLimit = savedLimit
+            }
+            scanPosition = current
+            scanLimit = current + k
+            do {
+                return try scan()
+            } catch Interrupt.lookaheadSuccess {
+                return true
+            }
+        }
+
+        /// jj_scan_token: whether the next scanned token is of the kind.
+        func scan(_ kind: Int) throws -> Bool {
+            scanPosition += 1
+            let t = try token(at: scanPosition)
+            guard t.kind == kind else {
+                return false
+            }
+            if scanPosition == scanLimit {
+                throw Interrupt.lookaheadSuccess
+            }
+            return true
+        }
+
+        /// One of several kinds, tried in order.
+        func scan(any kinds: [Int]) throws -> Bool {
+            let saved = scanPosition
+            for kind in kinds {
+                scanPosition = saved
+                if try scan(kind) {
+                    return true
+                }
+            }
+            scanPosition = saved
+            return false
+        }
+
+        /// ( <S> )*.
+        func scanSpaces() throws {
+            while true {
+                let saved = scanPosition
+                if !(try scan(T.s)) {
+                    scanPosition = saved
+                    return
+                }
+            }
+        }
+
+        /// An optional part.
+        func scanOptional(_ part: () throws -> Bool) throws {
+            let saved = scanPosition
+            if !(try part()) {
+                scanPosition = saved
+            }
+        }
+
+        /// Alternatives, the first that matches winning.
+        func scanFirst(_ alternatives: [() throws -> Bool]) throws -> Bool {
+            let saved = scanPosition
+            for alternative in alternatives {
+                scanPosition = saved
+                if try alternative() {
+                    return true
+                }
+            }
+            scanPosition = saved
+            return false
+        }
+
+        /// A level of nesting, weighted by the stack its productions take:
+        /// measured on a 512 KiB thread, a parenthesized condition takes
+        /// about 350 bytes a level, a calc() parenthesis 900, a function
+        /// 1,000 and a min() 1,100, so that at depthLimit no shape uses
+        /// more than about 190 KiB.
+        func enter(_ weight: Int) throws {
+            depth += weight
+            if depth > HTMLMediaQueryDatatype.depthLimit {
+                throw Interrupt.tooDeep
+            }
+        }
+
+        func leave(_ weight: Int) {
+            depth -= weight
+        }
+
+        // MARK: Style sheet level
+
+        /// parserUnit (CssParser.jj:851-872): the text begins "@media ", so
+        /// the HTML-tag, charset, import and namespace loops never run; a
+        /// TokenMgrError anywhere is recorded as "Parse Error".
+        func parserUnit() throws {
+            do {
+                while true {
+                    let k = try next()
+                    guard T.htmlStartTag == k || T.htmlEndTag == k else {
+                        break
+                    }
+                    try advance()
+                    try record(.plain(Message.dontMixHTML))
+                }
+                try afterImportDeclaration()
+                try consume(T.eof)
+            } catch Interrupt.tokenMgr {
+                try record(.plain(Message.parseError))
+            }
+        }
+
+        static let ruleSetStarts: Set<Int> = [
+            T.and, T.or, T.only, T.not, T.ident, T.hashIdent, T.hash, T.lbracket, T.any, T.dot, T.colon,
+            T.relFontLength, T.relViewLength, T.absolutLength, T.angle, T.time, T.freq, T.resolution, T.dimen,
+            T.pseudoElement, T.pipe
+        ]
+
+        static let atRuleStarts: Set<Int> = [
+            T.pageSym, T.fontFaceSym, T.fontFeatureValuesSym, T.fontPaletteValuesSym, T.mediaSym, T.keyframesSym,
+            T.prefSym, T.colorProfile, T.counterStyleSym, T.layerSym, T.phoneticAlphabetSym, T.supportsSym,
+            T.viewportSym, T.atKeyword
+        ]
+
+        /// afterImportDeclaration (CssParser.jj:923-960).
+        func afterImportDeclaration() throws {
+            while true {
+                let k = try next()
+                let before = current
+                if Parser.ruleSetStarts.contains(k) {
+                    try ruleSet()
+                    if before == current {
+                        // can't happen (a rule consumes its first token),
+                        // but never loop on it
+                        return
+                    }
+                } else if Parser.atRuleStarts.contains(k) {
+                    try nestedAtRules()
+                    if before == current {
+                        return
+                    }
+                } else {
+                    guard let ret = try skipStatement(), !ret.isEmpty else {
+                        return
+                    }
+                    if ret.hasPrefix("@charset") {
+                        try record(.plain(Message.charset))
+                    } else if ret.hasPrefix("@import") {
+                        try record(.plain(Message.importNotAllowed))
+                    } else if !ret.hasPrefix("/*") {
+                        try record(.plain(Message.parseError))
+                    } else {
+                        // an unterminated comment: read to the end
+                        while T.eof != (try peek(0)).kind {
+                            try advance()
+                        }
+                    }
+                }
+                try ignoreStatement()
+            }
+        }
+
+        /// ignoreStatement (CssParser.jj:962-966).
+        func ignoreStatement() throws {
+            while true {
+                let k = try next()
+                guard T.cdo == k || T.cdc == k else {
+                    return
+                }
+                try advance()
+                try skipSpaces()
+            }
+        }
+
+        /// skipStatement (CssParser.jj:4137-4196): the last token's image
+        /// and every token up to a block, a "}" or a ";" (a TokenMgrError
+        /// costs one character), or to the end after an unclosed comment;
+        /// nil when the text had already ended.
+        func skipStatement() throws -> String? {
+            var s = [UInt16]()
+            let first0 = tokens[current]
+            if first0.kind >= 0 {
+                s.append(contentsOf: image(first0))
+            }
+            var first = true
+            var tok = first0
+            loop: while true {
+                do {
+                    tok = try peek(1)
+                    if T.eof == tok.kind {
+                        if first {
+                            return nil
+                        }
+                        break loop
+                    }
+                    if T.lbrace == tok.kind {
+                        s.append(contentsOf: image(tok))
+                        try advance()
+                        s.append(contentsOf: try skipToMatchingBrace())
+                        try advance()
+                        tok = try peek(1)
+                        break loop
+                    } else if T.rbrace == tok.kind || T.semicolon == tok.kind {
+                        s.append(contentsOf: image(tok))
+                        try advance()
+                        tok = try peek(1)
+                        break loop
+                    } else if T.sco == tok.kind {
+                        repeat {
+                            tok = try advance()
+                        } while T.eof != tok.kind
+                        break loop
+                    } else {
+                        s.append(contentsOf: image(tok))
+                    }
+                    try advance()
+                } catch Interrupt.tokenMgr(let start, let kill) {
+                    if skippingAtRule {
+                        throw Interrupt.tokenMgr(start: start, kill: kill)
+                    }
+                    // jj_input_stream.readChar(): the character the token
+                    // manager stopped at
+                    guard position < text.count else {
+                        return trimmed(s)
+                    }
+                    s.append(text[position])
+                    position += 1
+                    continue loop
+                }
+                first = false
+            }
+            while T.s == tok.kind {
+                try advance()
+                tok = try peek(1)
+            }
+            return trimmed(s)
+        }
+
+        /// String.trim(): code units up to U+0020 off both ends.
+        func trimmed(_ s: [UInt16]) -> String {
+            var a = 0
+            var b = s.count
+            while a < b && s[a] <= 0x20 {
+                a += 1
+            }
+            while b > a && s[b - 1] <= 0x20 {
+                b -= 1
+            }
+            return HTMLMediaQueryDatatype.string(s[a..<b])
+        }
+
+        /// skip_to_matching_brace (CssParser.jj:4198-4231).
+        func skipToMatchingBrace() throws -> [UInt16] {
+            var s = [UInt16]()
+            var nesting = 1
+            while true {
+                let tok = try peek(1)
+                if T.eof == tok.kind {
+                    break
+                }
+                if T.lbrace == tok.kind {
+                    nesting += 1
+                } else if T.rbrace == tok.kind {
+                    nesting -= 1
+                    if 0 == nesting {
+                        s.append(contentsOf: image(tok))
+                        break
+                    }
+                }
+                s.append(contentsOf: image(tok))
+                try advance()
+            }
+            return s
+        }
+
+        /// nested_at_rules (CssParser.jj:951-956), for what can follow a
+        /// value that closed its @media rule early.
+        func nestedAtRules() throws {
+            let k = try next()
+            if T.mediaSym == k {
+                try media()
+            } else if T.atKeyword == k {
+                try atRuleDeclaration()
+            } else if T.viewportSym == k {
+                try viewport()
+            } else {
+                try otherAtRule()
+            }
+        }
+
+        // MARK: @media
+
+        /// media() (CssParser.jj:1115-1170). A ParseException is recorded
+        /// after skipStatement; anything else is discarded by the finally
+        /// block's `return newRule`, and parsing goes on from wherever it
+        /// stopped, at the style sheet level.
+        func media() throws {
+            // Case 554591 review: media() → blockContents() → nestedAtRules()
+            // → media() is a recursion of its own, as deep as the value
+            // nests "@media" blocks ("all{@media all{@media …"), about 224
+            // bytes of stack a level; counted against depthLimit like every
+            // other nesting, so a deeply nested value is given up on as
+            // valid instead of overflowing a 512 KiB stack. (Upstream's own
+            // StackOverflowError would be swallowed by this production's
+            // finally block too.) The count is outside the do/catch, so
+            // Interrupt.tooDeep reaches run().
+            try enter(1)
+            defer {
+                leave(1)
+            }
+            // each @media rule has its own features (newRule)
+            let outerFeatureValues = featureValues
+            featureValues = []
+            defer {
+                featureValues = outerFeatureValues
+            }
+            do {
+                try consume(T.mediaSym)
+                try skipSpaces()
+                let k = try next()
+                if T.only == k || T.not == k || T.ident == k || T.lparen == k {
+                    try mediaQueryList()
+                    // `String media = getAtRule().toString();` prints every
+                    // feature's values: a number Java can't print, or a
+                    // rule too long for a Java string, throws here, into
+                    // the finally
+                    var total: Int64 = 0
+                    for v in featureValues {
+                        if v.textThrows {
+                            throw Interrupt.runtime(nil)
+                        }
+                        total = min(Int64.max / 2, total + min(Int64.max / 4, v.textLength) + 2)
+                    }
+                    // and "@media (width: " and the like around them
+                    if total + 16 > Int64(Int32.max) - 2 {
+                        throw Interrupt.runtime(nil)
+                    }
+                }
+                try consume(T.lbrace)
+                try skipSpaces()
+                try blockContents()
+                try consume(T.rbrace)
+                try skipSpaces()
+            } catch Interrupt.parse(let failure) {
+                do {
+                    _ = try skipStatement()
+                } catch Interrupt.tokenMgr {
+                    // thrown from skipStatement's last loop, outside its
+                    // catch: out of media(), into the finally
+                    return
+                } catch Interrupt.runtime {
+                    return
+                }
+                try record(failure)
+            } catch Interrupt.runtime {
+                // finally { return newRule; }
+            } catch Interrupt.tokenMgr {
+                // finally { return newRule; }
+            }
+        }
+
+        /// ( ruleSet() | nested_at_rules() )* inside a block.
+        func blockContents() throws {
+            while true {
+                let k = try next()
+                let before = current
+                if Parser.ruleSetStarts.contains(k) {
+                    try ruleSet()
+                } else if Parser.atRuleStarts.contains(k) {
+                    try nestedAtRules()
+                } else {
+                    return
+                }
+                if before == current {
+                    // never loop on a rule that consumed nothing
+                    return
+                }
+            }
+        }
+
+        /// mediaquerylist (CssParser.jj:1186-1192).
+        func mediaQueryList() throws {
+            try mediaQuery()
+            while T.comma == (try next()) {
+                try consume(T.comma)
+                try skipSpaces()
+                try mediaQuery()
+            }
+        }
+
+        /// mediaquery (CssParser.jj:1194-1202).
+        func mediaQuery() throws {
+            if try lookahead(3, { try self.scanMediaCondition() }) {
+                try mediaCondition(defaultMedia: true)
+                return
+            }
+            let k = try next()
+            guard T.only == k || T.not == k || T.ident == k else {
+                throw Interrupt.parse(.syntax)
+            }
+            if T.only == k || T.not == k {
+                try advance()
+                try skipSpaces()
+            }
+            let n = try consume(T.ident)
+            try addMedia(convertIdent(Array(image(n))))
+            try skipSpaces()
+            if T.and == (try next()) {
+                try consume(T.and)
+                try skipSpaces()
+                try mediaConditionWithoutOr(defaultMedia: false)
+            }
+        }
+
+        /// AtRuleMedia.addMedia (atrules/css3/AtRuleMedia.java:36-74): the
+        /// type lowercased with Java's toLowerCase.
+        func addMedia(_ name: [UInt16]) throws {
+            let medium = HTMLMediaQueryDatatype.string(javaLowercase(name)[...])
+            if "all" == medium || "print" == medium || "screen" == medium {
+                return
+            }
+            let deprecated = ["aural", "braille", "embossed", "handheld", "projection", "speech", "tty", "tv"]
+            if deprecated.contains(medium) {
+                try recordPlain(Message.deprecatedMedia(medium))
+                return
+            }
+            throw Interrupt.parse(.invalid(Message.media(medium)))
+        }
+
+        /// mediacondition (CssParser.jj:1204-1212).
+        func mediaCondition(defaultMedia: Bool) throws {
+            let k = try next()
+            if T.not == k {
+                try consume(T.not)
+                try skipSpaces()
+                try mediaInParens(defaultMedia: defaultMedia)
+                return
+            }
+            guard T.lparen == k else {
+                throw Interrupt.parse(.syntax)
+            }
+            try mediaInParens(defaultMedia: defaultMedia)
+            let k2 = try next()
+            if T.and == k2 || T.or == k2 {
+                repeat {
+                    try consume(k2)
+                    try skipSpaces()
+                    try mediaInParens(defaultMedia: false)
+                } while k2 == (try next())
+            }
+        }
+
+        /// mediaconditionwithoutor (CssParser.jj:1214-1222).
+        func mediaConditionWithoutOr(defaultMedia: Bool) throws {
+            let k = try next()
+            if T.not == k {
+                try consume(T.not)
+                try skipSpaces()
+                try mediaInParens(defaultMedia: defaultMedia)
+                return
+            }
+            guard T.lparen == k else {
+                throw Interrupt.parse(.syntax)
+            }
+            try mediaInParens(defaultMedia: defaultMedia)
+            while T.and == (try next()) {
+                try consume(T.and)
+                try skipSpaces()
+                try mediaInParens(defaultMedia: defaultMedia)
+            }
+        }
+
+        /// mediainparens (CssParser.jj:1224-1232).
+        func mediaInParens(defaultMedia: Bool) throws {
+            try enter(1)
+            defer {
+                leave(1)
+            }
+            if try lookahead(4, { try self.scanParenthesizedCondition() }) {
+                try consume(T.lparen)
+                try skipSpaces()
+                try mediaCondition(defaultMedia: defaultMedia)
+                try consume(T.rparen)
+                try skipSpaces()
+            } else if try lookahead(5, { try self.scanMediaRange() }) {
+                try mediaRange(defaultMedia: defaultMedia)
+            } else {
+                guard T.lparen == (try next()) else {
+                    throw Interrupt.parse(.syntax)
+                }
+                try mediaExpression(defaultMedia: defaultMedia)
+            }
+        }
+
+        /// mediaexpression (CssParser.jj:1234-1259).
+        func mediaExpression(defaultMedia: Bool) throws {
+            try consume(T.lparen)
+            try skipSpaces()
+            let n = try consume(T.ident)
+            let name = convertIdent(Array(image(n)))
+            try skipSpaces()
+            var value: Expression?
+            if T.colon == (try next()) {
+                try consume(T.colon)
+                try skipSpaces()
+                value = try mediaExpr()
+            }
+            try consume(T.rparen)
+            try skipSpaces()
+            _ = try handleMediaFeature(name, value)
+        }
+
+        static let comparators: [Int] = [T.greater, T.greaterEq, T.eq, T.less, T.lessEq]
+
+        /// mediarange (CssParser.jj:3354-3399).
+        func mediaRange(defaultMedia: Bool) throws {
+            try consume(T.lparen)
+            try skipSpaces()
+            let n: Token
+            var c1: Token
+            var c2: Token?
+            var val1: Expression
+            var val2: Expression?
+            if try lookahead(3, { try self.scanNameFirstRange() }) {
+                n = try identToken()
+                try skipSpaces()
+                c1 = try comparatorToken()
+                try skipSpaces()
+                val1 = try mediaExpr()
+            } else {
+                val1 = try mediaExpr()
+                c1 = try comparatorToken()
+                try skipSpaces()
+                n = try identToken()
+                try skipSpaces()
+                if Parser.comparators.contains(try next()) {
+                    c2 = try advance()
+                    try skipSpaces()
+                    val2 = try mediaExpr()
+                }
+            }
+            try consume(T.rparen)
+            try skipSpaces()
+            // the action
+            let name = T.ident == n.kind ? convertIdent(Array(image(n))) : Array(image(n))
+            let expression = Expression()
+            expression.add(try comparator(c1, val1))
+            if let c = c2, let v = val2 {
+                expression.add(try comparator(c, v))
+            }
+            let feature = try handleMediaFeature(name, expression)
+            // ((MediaRangeFeature) mf).comparatorNameFirst = …: a null
+            // feature, or one that isn't a range feature, throws
+            if case .range = feature {
+                return
+            }
+            throw Interrupt.runtime(nil)
+        }
+
+        /// CssComparator.set (values/CssComparator.java:79-88): the image
+        /// trimmed must be a comparator; " /**/>=" isn't.
+        func comparator(_ c: Token, _ value: Expression) throws -> Value {
+            let symbol = trimmed(Array(image(c)))
+            guard [">=", "<=", ">", "<", "="].contains(symbol) else {
+                throw Interrupt.parse(.invalid("“\(imageString(c))” is not a “” value"))
+            }
+            return .comparator(symbol, value)
+        }
+
+        func comparatorToken() throws -> Token {
+            guard Parser.comparators.contains(try next()) else {
+                throw Interrupt.parse(.syntax)
+            }
+            return try advance()
+        }
+
+        /// ident() (CssParser.jj:876-882): IDENT and the keywords.
+        func identToken() throws -> Token {
+            let k = try next()
+            guard T.ident == k || T.and == k || T.or == k || T.not == k || T.only == k else {
+                throw Interrupt.parse(.syntax)
+            }
+            return try advance()
+        }
+
+        // MARK: Lookahead scans
+
+        /// jj_3R_mediacondition: NOT S* in-parens | in-parens ( (AND S*
+        /// in-parens)+ | (OR S* in-parens)+ )?.
+        func scanMediaCondition() throws -> Bool {
+            try scanFirst([
+                {
+                    guard try self.scan(T.not) else {
+                        return false
+                    }
+                    try self.scanSpaces()
+                    return try self.scanMediaInParens()
+                },
+                {
+                    guard try self.scanMediaInParens() else {
+                        return false
+                    }
+                    for keyword in [T.and, T.or] {
+                        let saved = self.scanPosition
+                        if try self.scan(keyword) {
+                            try self.scanSpaces()
+                            guard try self.scanMediaInParens() else {
+                                return false
+                            }
+                            while true {
+                                let again = self.scanPosition
+                                if !(try self.scan(keyword)) {
+                                    self.scanPosition = again
+                                    break
+                                }
+                                try self.scanSpaces()
+                                guard try self.scanMediaInParens() else {
+                                    return false
+                                }
+                            }
+                            return true
+                        }
+                        self.scanPosition = saved
+                    }
+                    return true
+                }
+            ])
+        }
+
+        /// jj_3_2: "(" S* mediacondition ")" S*.
+        func scanParenthesizedCondition() throws -> Bool {
+            guard try scan(T.lparen) else {
+                return false
+            }
+            try scanSpaces()
+            guard try scanMediaCondition() else {
+                return false
+            }
+            guard try scan(T.rparen) else {
+                return false
+            }
+            try scanSpaces()
+            return true
+        }
+
+        /// jj_3R_mediainparens: the three alternatives, the first two by
+        /// their lookahead expansions.
+        func scanMediaInParens() throws -> Bool {
+            try scanFirst([
+                { try self.scanParenthesizedCondition() },
+                { try self.scanMediaRange() },
+                { try self.scanMediaExpression() }
+            ])
+        }
+
+        /// jj_3R_mediaexpression: "(" S* IDENT S* ( ":" S* mediaexpr )? ")".
+        func scanMediaExpression() throws -> Bool {
+            guard try scan(T.lparen) else {
+                return false
+            }
+            try scanSpaces()
+            guard try scan(T.ident) else {
+                return false
+            }
+            try scanSpaces()
+            try scanOptional {
+                guard try self.scan(T.colon) else {
+                    return false
+                }
+                try self.scanSpaces()
+                return try self.scanMediaExpr()
+            }
+            return try scan(T.rparen)
+        }
+
+        /// jj_3R_mediarange: "(" S* ( name-first | value-first ) ")".
+        func scanMediaRange() throws -> Bool {
+            guard try scan(T.lparen) else {
+                return false
+            }
+            try scanSpaces()
+            let matched = try scanFirst([
+                { try self.scanNameFirstRange() },
+                {
+                    guard try self.scanMediaExpr() else {
+                        return false
+                    }
+                    guard try self.scan(any: Parser.comparators) else {
+                        return false
+                    }
+                    try self.scanSpaces()
+                    guard try self.scanIdent() else {
+                        return false
+                    }
+                    try self.scanSpaces()
+                    try self.scanOptional {
+                        guard try self.scan(any: Parser.comparators) else {
+                            return false
+                        }
+                        try self.scanSpaces()
+                        return try self.scanMediaExpr()
+                    }
+                    return true
+                }
+            ])
+            guard matched else {
+                return false
+            }
+            return try scan(T.rparen)
+        }
+
+        /// jj_3_21: ident S* comparator S* mediaexpr.
+        func scanNameFirstRange() throws -> Bool {
+            guard try scanIdent() else {
+                return false
+            }
+            try scanSpaces()
+            guard try scan(any: Parser.comparators) else {
+                return false
+            }
+            try scanSpaces()
+            return try scanMediaExpr()
+        }
+
+        func scanIdent() throws -> Bool {
+            try scan(any: [T.ident, T.and, T.or, T.not, T.only])
+        }
+
+        /// jj_3R_mediaexpr: mediaterm ( operator mediaterm )*.
+        func scanMediaExpr() throws -> Bool {
+            guard try scanMediaTerm() else {
+                return false
+            }
+            while true {
+                let saved = scanPosition
+                if !(try scanOperatorTerm()) {
+                    scanPosition = saved
+                    return true
+                }
+            }
+        }
+
+        /// jj_3_22: operator mediaterm.
+        func scanOperatorTerm() throws -> Bool {
+            try scanOptional {
+                guard try self.scan(T.comma) else {
+                    return false
+                }
+                try self.scanSpaces()
+                return true
+            }
+            return try scanMediaTerm()
+        }
+
+        static let unitKinds: [Int] = [
+            T.percentage, T.relFontLength, T.relViewLength, T.absolutLength, T.flex, T.angle, T.time, T.freq,
+            T.resolution, T.st, T.spl, T.dimen, T.importantNot, T.dimen9
+        ]
+
+        /// jj_3R_mediaterm (CssParser.jj:3517-3603).
+        func scanMediaTerm() throws -> Bool {
+            try scanFirst([
+                {
+                    try self.scanOptional { try self.scan(any: [T.minus, T.plus]) }
+                    let matched = try self.scanFirst([
+                        {
+                            // LOOKAHEAD( <NUMBER> ( <S> )* "/" ) ratio | NUMBER
+                            try self.scanFirst([
+                                {
+                                    guard try self.scan(T.number) else {
+                                        return false
+                                    }
+                                    try self.scanSpaces()
+                                    return try self.scan(T.div)
+                                },
+                                { try self.scan(T.number) }
+                            ])
+                        },
+                        { try self.scan(any: Parser.unitKinds) },
+                        { try self.scanFunction() },
+                        { try self.scanMathCalc() },
+                        { try self.scanMathFunction() },
+                        { try self.scanMathClamp() }
+                    ])
+                    guard matched else {
+                        return false
+                    }
+                    try self.scanSpaces()
+                    return true
+                },
+                {
+                    guard try self.scan(any: [T.string, T.ident, T.and, T.or, T.not, T.only, T.hashIdent, T.hash,
+                                              T.url, T.unicodeRange]) else {
+                        return false
+                    }
+                    try self.scanSpaces()
+                    return true
+                }
+            ])
+        }
+
+        /// The function productions' scans, far enough for the budgets of
+        /// 3 to 5 tokens that reach them: the opening token and what can
+        /// follow it.
+        func scanFunction() throws -> Bool {
+            guard try scan(T.function) else {
+                return false
+            }
+            try scanSpaces()
+            return try scanFirst([
+                {
+                    try self.scanOptional { try self.scanExpr() }
+                    return try self.scan(T.rparen)
+                },
+                {
+                    guard try self.scanIdent() else {
+                        return false
+                    }
+                    guard try self.scan(T.eq) else {
+                        return false
+                    }
+                    guard try self.scan(T.number) else {
+                        return false
+                    }
+                    return try self.scan(T.rparen)
+                }
+            ])
+        }
+
+        func scanMathCalc() throws -> Bool {
+            guard try scan(T.functionCalc) else {
+                return false
+            }
+            try scanSpaces()
+            guard try scanMathSum() else {
+                return false
+            }
+            try scanSpaces()
+            return try scan(T.rparen)
+        }
+
+        func scanMathFunction() throws -> Bool {
+            try scanFirst([
+                {
+                    guard try self.scan(T.functionMath1) else {
+                        return false
+                    }
+                    try self.scanSpaces()
+                    guard try self.scanMathSum() else {
+                        return false
+                    }
+                    try self.scanSpaces()
+                    return try self.scan(T.rparen)
+                },
+                {
+                    guard try self.scan(T.functionMath2) else {
+                        return false
+                    }
+                    try self.scanSpaces()
+                    guard try self.scanMathSum() else {
+                        return false
+                    }
+                    try self.scanSpaces()
+                    try self.scanOptional {
+                        guard try self.scan(T.comma) else {
+                            return false
+                        }
+                        try self.scanSpaces()
+                        guard try self.scanMathSum() else {
+                            return false
+                        }
+                        try self.scanSpaces()
+                        return true
+                    }
+                    return try self.scan(T.rparen)
+                },
+                {
+                    guard try self.scan(T.functionMathN) else {
+                        return false
+                    }
+                    try self.scanSpaces()
+                    guard try self.scanMathSum() else {
+                        return false
+                    }
+                    try self.scanSpaces()
+                    while true {
+                        let saved = self.scanPosition
+                        let more = try self.scanFirst([{
+                            guard try self.scan(T.comma) else {
+                                return false
+                            }
+                            try self.scanSpaces()
+                            guard try self.scanMathSum() else {
+                                return false
+                            }
+                            try self.scanSpaces()
+                            return true
+                        }])
+                        if !more {
+                            self.scanPosition = saved
+                            break
+                        }
+                    }
+                    return try self.scan(T.rparen)
+                },
+                {
+                    guard try self.scan(T.functionRound) else {
+                        return false
+                    }
+                    try self.scanSpaces()
+                    let first = try self.scanFirst([
+                        {
+                            guard try self.scan(T.ident) else {
+                                return false
+                            }
+                            return true
+                        },
+                        { try self.scanMathSum() }
+                    ])
+                    guard first else {
+                        return false
+                    }
+                    try self.scanSpaces()
+                    while true {
+                        let saved = self.scanPosition
+                        let more = try self.scanFirst([{
+                            guard try self.scan(T.comma) else {
+                                return false
+                            }
+                            try self.scanSpaces()
+                            guard try self.scanMathSum() else {
+                                return false
+                            }
+                            try self.scanSpaces()
+                            return true
+                        }])
+                        if !more {
+                            self.scanPosition = saved
+                            break
+                        }
+                    }
+                    return try self.scan(T.rparen)
+                }
+            ])
+        }
+
+        func scanMathClamp() throws -> Bool {
+            guard try scan(T.functionClamp) else {
+                return false
+            }
+            try scanSpaces()
+            for index in 0..<3 {
+                guard try scanMathSum() else {
+                    return false
+                }
+                try scanSpaces()
+                if index < 2 {
+                    guard try scan(T.comma) else {
+                        return false
+                    }
+                    try scanSpaces()
+                }
+            }
+            return try scan(T.rparen)
+        }
+
+        /// mathsum's scan: product ( (PLUS | S* MINUS) S+ product )*.
+        func scanMathSum() throws -> Bool {
+            guard try scanMathProduct() else {
+                return false
+            }
+            while true {
+                let saved = scanPosition
+                let more = try scanFirst([{
+                    let op = try self.scanFirst([
+                        { try self.scan(T.plus) },
+                        {
+                            try self.scanSpaces()
+                            return try self.scan(T.minus)
+                        }
+                    ])
+                    guard op else {
+                        return false
+                    }
+                    guard try self.scan(T.s) else {
+                        return false
+                    }
+                    try self.scanSpaces()
+                    return try self.scanMathProduct()
+                }])
+                if !more {
+                    scanPosition = saved
+                    return true
+                }
+            }
+        }
+
+        func scanMathProduct() throws -> Bool {
+            guard try scanMathUnit() else {
+                return false
+            }
+            while true {
+                let saved = scanPosition
+                let more = try scanFirst([{
+                    try self.scanSpaces()
+                    return try self.scanFirst([
+                        {
+                            guard try self.scan(T.any) else {
+                                return false
+                            }
+                            try self.scanSpaces()
+                            return try self.scanMathUnit()
+                        },
+                        {
+                            guard try self.scan(T.div) else {
+                                return false
+                            }
+                            try self.scanSpaces()
+                            return try self.scanFirst([
+                                { try self.scanCalcNumberValue() },
+                                { try self.scanVar() },
+                                { try self.scanEnv() }
+                            ])
+                        }
+                    ])
+                }])
+                if !more {
+                    scanPosition = saved
+                    return true
+                }
+            }
+        }
+
+        func scanCalcNumberValue() throws -> Bool {
+            try scanFirst([
+                {
+                    try self.scanOptional { try self.scan(any: [T.minus, T.plus]) }
+                    return try self.scan(any: [T.number, T.ident])
+                },
+                {
+                    guard try self.scan(T.lparen) else {
+                        return false
+                    }
+                    try self.scanSpaces()
+                    guard try self.scanMathSum() else {
+                        return false
+                    }
+                    try self.scanSpaces()
+                    return try self.scan(T.rparen)
+                }
+            ])
+        }
+
+        func scanMathUnit() throws -> Bool {
+            try scanFirst([
+                {
+                    try self.scanOptional { try self.scan(any: [T.minus, T.plus]) }
+                    return try self.scan(any: [T.number, T.ident, T.percentage, T.relFontLength, T.relViewLength,
+                                               T.absolutLength, T.flex, T.angle, T.time, T.freq])
+                },
+                {
+                    guard try self.scan(T.lparen) else {
+                        return false
+                    }
+                    try self.scanSpaces()
+                    guard try self.scanMathSum() else {
+                        return false
+                    }
+                    try self.scanSpaces()
+                    return try self.scan(T.rparen)
+                },
+                { try self.scanMathCalc() },
+                { try self.scanMathFunction() },
+                { try self.scanMathClamp() },
+                { try self.scanAttr() },
+                { try self.scanVar() },
+                { try self.scanEnv() }
+            ])
+        }
+
+        /// jj_3R_attr_3925_5_424: attr( ident S* ( ident | "%" )? ","? ")".
+        /// The scans of attr(), var() and env() are JavaCC's, truncated
+        /// where the lookahead budgets that reach them run out; they must
+        /// go on past the name (Case 554591 review), or the comma of
+        /// "(calc(var(--bp, 768px)) <= width)" fails a range upstream takes.
+        func scanAttr() throws -> Bool {
+            guard try scan(T.functionAttr) else {
+                return false
+            }
+            try scanSpaces()
+            guard try scanIdent() else {
+                return false
+            }
+            try scanSpaces()
+            try scanOptional { try self.scan(any: [T.ident, T.and, T.or, T.not, T.only, T.percent]) }
+            try scanOptional { try self.scan(T.comma) }
+            return try scan(T.rparen)
+        }
+
+        /// jj_3R_functionvar_3977_3_404: var( S* --name ","* S* ")".
+        func scanVar() throws -> Bool {
+            guard try scan(T.functionVar) else {
+                return false
+            }
+            try scanSpaces()
+            guard try scan(T.dashedIdent) else {
+                return false
+            }
+            while true {
+                let saved = scanPosition
+                if !(try scan(T.comma)) {
+                    scanPosition = saved
+                    break
+                }
+            }
+            try scanSpaces()
+            return try scan(T.rparen)
+        }
+
+        /// jj_3R_functionenv_3946_3_405: env( S* name S* term* ","? ")".
+        func scanEnv() throws -> Bool {
+            guard try scan(T.functionEnv) else {
+                return false
+            }
+            try scanSpaces()
+            guard try scan(T.ident) else {
+                return false
+            }
+            try scanSpaces()
+            while true {
+                let saved = scanPosition
+                if !(try scanTerm()) {
+                    scanPosition = saved
+                    break
+                }
+            }
+            try scanOptional { try self.scan(T.comma) }
+            return try scan(T.rparen)
+        }
+
+        /// expr's scan: term ( operator term )*.
+        func scanExpr() throws -> Bool {
+            guard try scanTerm() else {
+                return false
+            }
+            while true {
+                let saved = scanPosition
+                let more = try scanFirst([{
+                    try self.scanOptional {
+                        guard try self.scan(T.comma) else {
+                            return false
+                        }
+                        try self.scanSpaces()
+                        return true
+                    }
+                    return try self.scanTerm()
+                }])
+                if !more {
+                    scanPosition = saved
+                    return true
+                }
+            }
+        }
+
+        /// term's scan (CssParser.jj:3416-3512).
+        func scanTerm() throws -> Bool {
+            let matched = try scanFirst([
+                {
+                    try self.scanOptional { try self.scan(any: [T.minus, T.plus]) }
+                    return try self.scan(any: [T.number, T.percentage, T.relFontLength, T.relViewLength,
+                                               T.absolutLength, T.flex, T.angle, T.time, T.freq, T.resolution,
+                                               T.st, T.spl, T.dimen, T.progid, T.importantNot, T.dimen9])
+                },
+                { try self.scanMathCalc() },
+                { try self.scanMathFunction() },
+                { try self.scanMathClamp() },
+                { try self.scanAttr() },
+                { try self.scanVar() },
+                { try self.scanEnv() },
+                { try self.scanFunction() },
+                {
+                    try self.scan(any: [T.string, T.div, T.rbracket, T.lbracket, T.ident, T.and, T.or, T.not, T.only,
+                                        T.dashedIdent, T.hashIdent, T.hash, T.url, T.unicodeRange])
+                }
+            ])
+            guard matched else {
+                return false
+            }
+            try scanSpaces()
+            return true
+        }
+
+        // MARK: Media features
+
+        enum FeatureResult {
+            case none
+            case range
+            case plain
+        }
+
+        /// CssFouffa.handleMediaFeature (parser/CssFouffa.java:637-667)
+        /// with CssPropertyFactory.createMediaFeature
+        /// (parser/CssPropertyFactory.java:109-174): the name's escapes
+        /// decoded (convertIdent, already), its first "-" found, then
+        /// lowercased; a "-" first is a vendor feature, and "min"/"max"
+        /// before the first "-" a prefix; a name CSS3Properties doesn't list
+        /// is only a warning (vendor extensions are warnings), so no feature
+        /// at all.
+        func handleMediaFeature(_ name: [UInt16], _ expression: Expression?) throws -> FeatureResult {
+            let dash = name.firstIndex(of: 0x2D)
+            var feature = javaLowercase(name)
+            var modifier: String?
+            if let dashpos = dash {
+                if 0 == dashpos {
+                    return .none
+                }
+                // substrings of the lowercased name at the original index
+                guard dashpos < feature.count else {
+                    throw Interrupt.parse(.invalid(nil))
+                }
+                let candidate = HTMLMediaQueryDatatype.string(feature[0..<dashpos])
+                if "min" == candidate || "max" == candidate {
+                    modifier = candidate
+                    feature = Array(feature[(dashpos + 1)...])
+                }
+            }
+            let featureName = HTMLMediaQueryDatatype.string(javaLowercase(feature)[...])
+            guard let kind = HTMLMediaQueryDatatype.features[featureName] else {
+                return .none
+            }
+            let checker = FeatureCheck(name: featureName, modifier: modifier, expression: expression)
+            switch checker.run(kind) {
+            case .valid(let isRange, let stored):
+                featureValues.append(contentsOf: stored)
+                return isRange ? .range : .plain
+            case .error(let message):
+                try recordPlain(message)
+                return .none
+            case .exception:
+                // a ClassCastException out of the constructor:
+                // handleMediaFeature throws InvalidParamException with a
+                // null message, which media() records (skipped) after
+                // skipStatement
+                throw Interrupt.parse(.invalid(nil))
+            }
+        }
+
+        // MARK: Values
+
+        /// mediaexpr (CssParser.jj:3404-3410).
+        func mediaExpr() throws -> Expression {
+            let values = Expression()
+            try mediaTerm(values)
+            while try lookahead(2, { try self.scanOperatorTerm() }) {
+                try operatorProduction(values)
+                try mediaTerm(values)
+            }
+            return values
+        }
+
+        /// operator (CssParser.jj:2182-2187).
+        func operatorProduction(_ expression: Expression) throws {
+            if T.comma == (try next()) {
+                try consume(T.comma)
+                if expression.count > 0 {
+                    expression.setOperator(0x2C)
+                }
+                try skipSpaces()
+            }
+        }
+
+        /// unaryOperator: '-' or '+', or a space when there's none.
+        func unaryOperator() throws -> UInt16 {
+            let k = try next()
+            if T.minus == k {
+                try advance()
+                return 0x2D
+            }
+            if T.plus == k {
+                try advance()
+                return 0x2B
+            }
+            return 0x20
+        }
+
+        /// addOperator: the sign before the image.
+        func signed(_ op: UInt16, _ token: Token) -> [UInt16] {
+            0x20 == op ? Array(image(token)) : [op] + Array(image(token))
+        }
+
+        /// mediaterm (CssParser.jj:3517-3603).
+        func mediaTerm(_ exp: Expression) throws {
+            let k = try next()
+            if [T.string, T.ident, T.and, T.or, T.not, T.only, T.hashIdent, T.hash, T.url, T.unicodeRange].contains(k) {
+                try plainTerm(exp, k)
+                try skipSpaces()
+                return
+            }
+            let op = try unaryOperator()
+            let k2 = try next()
+            switch k2 {
+            case T.number:
+                if try lookahead(Int.max / 4, { try self.scanRatioStart() }) {
+                    try ratio(exp, op)
+                } else {
+                    let n = try advance()
+                    exp.add(try numberValue(signed(op, n)))
+                }
+            case T.dimen:
+                let n = try advance()
+                if "0\\0" == trimmed(Array(image(n))) {
+                    // a CSS hack warning: no value
+                } else {
+                    try record(.plain(Message.unknownDimension))
+                }
+            case T.importantNot:
+                try advance()
+                // WarningParamException("css-hack", …): getMessage() is
+                // the bare key
+                throw Interrupt.parse(Failure(message: "css-hack", generic: false))
+            case T.dimen9:
+                try advance()
+            case T.function:
+                exp.add(try function())
+            case T.functionCalc:
+                exp.add(try mathCalc())
+            case T.functionMath1, T.functionMath2, T.functionMathN, T.functionRound:
+                exp.add(.math(try mathFunction()))
+            case T.functionClamp:
+                exp.add(.math(try mathClamp()))
+            default:
+                guard let value = try unitValue(k2, op) else {
+                    throw Interrupt.parse(.syntax)
+                }
+                exp.add(value)
+            }
+            try skipSpaces()
+        }
+
+        /// The ident-and-friends alternative of mediaterm and term:
+        /// STRING, ident() (with the missing-semicolon check), a hash, a
+        /// url() or a unicode range.
+        func plainTerm(_ exp: Expression, _ k: Int) throws {
+            let n = try advance()
+            switch k {
+            case T.string:
+                exp.add(.string(imageString(n)))
+            case T.hashIdent, T.hash:
+                exp.add(.hashIdent(imageString(n)))
+            case T.url:
+                exp.add(.url(try url(n)))
+            case T.unicodeRange:
+                exp.add(.unicodeRange(imageString(n)))
+            default:
+                if T.colon == (try peek(1)).kind {
+                    try record(.plain(Message.semicolon(imageString(n))))
+                }
+                let units = T.ident == n.kind ? convertIdent(Array(image(n))) : Array(image(n))
+                exp.add(.ident(units))
+            }
+        }
+
+        /// CssURL.set and toString (values/CssURL.java:90-131, 175-186):
+        /// the address trimmed, its quotes noted and dropped, < and >
+        /// percent-escaped; and, unless it holds "data:", made into a
+        /// java.net.URL against the style sheet's file: URL, whose
+        /// MalformedURLException is "url" (isJavaURL has what throws).
+        func url(_ n: Token) throws -> String {
+            let units = Array(image(n))
+            guard let open = units.firstIndex(of: 0x28), units.count >= open + 2 else {
+                return imageString(n)
+            }
+            var inner = Array(units[(open + 1)..<(units.count - 1)])
+            var a = 0
+            var b = inner.count
+            while a < b && inner[a] <= 0x20 {
+                a += 1
+            }
+            while b > a && inner[b - 1] <= 0x20 {
+                b -= 1
+            }
+            inner = Array(inner[a..<b])
+            var quoted = false
+            if let first = inner.first, 0x22 == first || 0x27 == first {
+                guard inner.count >= 2, first == inner[inner.count - 1] else {
+                    throw Interrupt.parse(.invalid(Message.url(imageString(n))))
+                }
+                inner = Array(inner[1..<(inner.count - 1)])
+                quoted = true
+            }
+            var value = [UInt16]()
+            for c in inner {
+                if 0x3C == c {
+                    value.append(contentsOf: "%3c".utf16)
+                } else if 0x3E == c {
+                    value.append(contentsOf: "%3e".utf16)
+                } else {
+                    value.append(c)
+                }
+            }
+            let text = HTMLMediaQueryDatatype.string(value[...])
+            // CssURL.set skips a URL holding "data:" (in the unescaped name),
+            // and otherwise makes java.net.URL from the escaped value, so
+            // "http://a<b/" (host "a%3cb") passes (Case 554591 review)
+            if !HTMLMediaQueryDatatype.string(inner[...]).contains("data:") && !HTMLMediaQueryDatatype.isJavaURL(value, true) {
+                throw Interrupt.parse(.invalid(Message.url(imageString(n))))
+            }
+            return quoted ? "url(\"" + text + "\")" : "url(" + text + ")"
+        }
+
+        /// LOOKAHEAD( <NUMBER> ( <S> )* "/" ).
+        func scanRatioStart() throws -> Bool {
+            guard try scan(T.number) else {
+                return false
+            }
+            try scanSpaces()
+            return try scan(T.div)
+        }
+
+        /// ratio (CssParser.jj:1172-1184) and CssRatio.set
+        /// (values/CssRatio.java): both numbers strictly positive.
+        func ratio(_ exp: Expression, _ op: UInt16) throws {
+            let w = try consume(T.number)
+            try skipSpaces()
+            try consume(T.div)
+            try skipSpaces()
+            let h = try consume(T.number)
+            var s = Array(image(w)) + [0x2F] + Array(image(h))
+            if 0x20 != op {
+                s.insert(op, at: 0)
+            }
+            let text = HTMLMediaQueryDatatype.string(s[...])
+            let wn = signedNumber(op, w)
+            guard let wv = wn else {
+                throw Interrupt.parse(.invalid(Message.value(text, "")))
+            }
+            if 1 != wv.signum {
+                throw Interrupt.parse(.invalid(Message.strictlyPositive(text)))
+            }
+            guard let hv = Num.parse(Array(image(h))) else {
+                throw Interrupt.parse(.invalid(Message.value(text, "")))
+            }
+            if 1 != hv.signum {
+                throw Interrupt.parse(.invalid(Message.strictlyPositive(text)))
+            }
+            exp.add(.ratio(wv, hv))
+        }
+
+        func signedNumber(_ op: UInt16, _ token: Token) -> Num? {
+            Num.parse(signed(op, token))
+        }
+
+        /// CssNumber.set (values/CssNumber.java): a NumberFormatException
+        /// is a RuntimeException (media()'s finally swallows it).
+        func numberValue(_ s: [UInt16]) throws -> Value {
+            guard let n = Num.parse(s) else {
+                throw Interrupt.runtime(Num.failure(s))
+            }
+            var body = s[...]
+            if let first = body.first, 0x2D == first || 0x2B == first {
+                body = body.dropFirst()
+            }
+            return .number(n, isInt: !body.contains(0x2E), special: nil)
+        }
+
+        /// The unit tokens' values and their set() checks (CssLength,
+        /// CssAngle, CssTime, CssFrequency, CssResolution,
+        /// CssFlexibleLength, CssSemitone, CssVolume, CssPercentage): the
+        /// unit is the trailing run of [a-z] of the lowercased image, which
+        /// must be in CssUnitsCSS3's table (where dvmin is misspelled
+        /// "dvnim", CssUnitsCSS3.java:25), and the number before it must
+        /// parse.
+        func unitValue(_ kind: Int, _ op: UInt16) throws -> Value? {
+            switch kind {
+            case T.percentage, T.relFontLength, T.relViewLength, T.absolutLength, T.flex, T.angle, T.time, T.freq,
+                 T.resolution, T.st, T.spl:
+                break
+            default:
+                return nil
+            }
+            let n = try advance()
+            let s = signed(op, n)
+            if T.percentage == kind {
+                guard let v = Num.parse(Array(s.dropLast())) else {
+                    throw Interrupt.runtime(Num.failure(Array(s.dropLast())))
+                }
+                return .percentage(v)
+            }
+            let lower = s.map(asciiLower)
+            var unitIndex = lower.count - 1
+            var c = lower[unitIndex]
+            while unitIndex > 0 && c <= 0x7A && c >= 0x61 {
+                unitIndex -= 1
+                c = lower[unitIndex]
+            }
+            unitIndex += 1
+            let unit = HTMLMediaQueryDatatype.string(lower[unitIndex...])
+            let numberText = Array(lower[0..<unitIndex])
+            let table: [String]
+            switch kind {
+            case T.relFontLength, T.relViewLength, T.absolutLength:
+                table = HTMLMediaQueryDatatype.lengthUnits
+            case T.flex:
+                table = ["fr"]
+            case T.angle:
+                table = ["deg", "grad", "rad", "turn"]
+            case T.time:
+                table = ["ms", "s"]
+            case T.freq:
+                table = ["khz", "hz"]
+            case T.resolution:
+                table = ["dpi", "dpcm", "dppx", "x"]
+            case T.st:
+                table = ["st"]
+            default:
+                table = ["db"]
+            }
+            guard table.contains(unit) else {
+                throw Interrupt.parse(.invalid(Message.unit(unit)))
+            }
+            guard let v = Num.parse(numberText) else {
+                throw Interrupt.parse(.invalid(Message.invalidNumber))
+            }
+            switch kind {
+            case T.relFontLength, T.relViewLength, T.absolutLength:
+                return .length(v, unit)
+            case T.flex:
+                return .flex(v)
+            case T.angle:
+                return .angle(v, unit)
+            case T.time:
+                return .time(v, unit)
+            case T.freq:
+                return .frequency(v, unit)
+            case T.resolution:
+                return .resolution(v, unit)
+            case T.st:
+                return .semitone(v)
+            default:
+                return .volume(v)
+            }
+        }
+
+        // MARK: Functions
+
+        /// function() (CssParser.jj:4013-4117): FUNCTION S* ( expr? ")" |
+        /// ident "=" NUMBER ")" ), then the color and image functions'
+        /// checks, or a CssFunction.
+        func function() throws -> Value {
+            try enter(3)
+            defer {
+                leave(3)
+            }
+            let n = try consume(T.function)
+            try skipSpaces()
+            let nameUnits = Array(image(n).dropLast())
+            let name = HTMLMediaQueryDatatype.string(nameUnits[...])
+            if try lookahead(2, {
+                try self.scanOptional { try self.scanExpr() }
+                return try self.scan(T.rparen)
+            }) {
+                var exp = Expression()
+                if T.rparen != (try next()) {
+                    exp = try expr()
+                }
+                try consume(T.rparen)
+                let funcname = HTMLMediaQueryDatatype.string(javaLowercase(Array(image(n)))[...])
+                return try colorOrFunction(funcname, name, exp)
+            }
+            // ident "=" NUMBER, a vendor extension such as alpha(opacity=50)
+            let p = try identToken()
+            try consume(T.eq)
+            let q = try consume(T.number)
+            try consume(T.rparen)
+            let exp = Expression()
+            exp.add(.ident(T.ident == p.kind ? convertIdent(Array(image(p))) : Array(image(p))))
+            exp.setOperator(0x3D)
+            exp.add(try numberValue(Array(image(q))))
+            return .function(name, exp)
+        }
+
+        /// The color and image functions of function() (CssParser.jj:
+        /// 4021-4094). rgb()/rgba() and hsl()/hsla() are checked as RGBA
+        /// .parseModernRGBA and HSL.parseHSL do, and image() as CssImage
+        /// .setImageList; the other color functions, the relative colors
+        /// ("from …") and the gradients, whose classes are far outside media
+        /// queries, are taken on trust, but for a gradient of a single value
+        /// (too few values).
+        func colorOrFunction(_ funcname: String, _ name: String, _ exp: Expression) throws -> Value {
+            switch funcname {
+            case "rgb(", "rgba(":
+                return try rgbColor(name, exp)
+            case "hsl(", "hsla(":
+                return try hslColor(String(funcname.dropLast()), name, exp)
+            case "hwb(", "lab(", "lch(", "oklab(", "oklch(", "device-cmyk(", "light-dark(", "color-mix(":
+                return .color(ColorText(.asWritten(name), [], alpha: nil, expression: exp))
+            case "image(":
+                try imageList(exp)
+                return .image(name, exp)
+            case "linear-gradient(", "repeating-linear-gradient(", "radial-gradient(", "repeating-radial-gradient(",
+                 "conic-gradient(", "repeating-conic-gradient(":
+                if 0 == exp.count {
+                    // the gradient code reads a value that isn't there
+                    throw Interrupt.runtime(nil)
+                }
+                if exp.count < 2 && !exp.hasVariable {
+                    throw Interrupt.parse(.invalid(Message.fewValue(String(funcname.dropLast()))))
+                }
+                return .image(name, exp)
+            case "atsc-rgba(":
+                // @media atsc-tv can't be (atsc-tv is an unknown type),
+                // so always the error, recorded with addError
+                try record(.invalid(Message.onlyATSC("")))
+                return .function(name, exp)
+            default:
+                return .function(name, exp)
+            }
+        }
+
+        /// Whether a value is the identifier `keyword` (CssIdent's hash
+        /// equality).
+        func isIdent(_ value: Value?, _ keyword: String) -> Bool {
+            if case .ident(let units)? = value {
+                return identEquals(units, keyword)
+            }
+            return false
+        }
+
+        /// A CssNumber of a small integer, as the color filters make.
+        func smallNumber(_ v: UInt8) -> Value {
+            .number(Num(negative: false, digits: 0 == v ? [] : String(v).utf8.map { $0 - 0x30 }, scale: 0,
+                        source: String(v)), isInt: true, special: nil)
+        }
+
+        /// A warning that prints the value (toString()): it's thrown away,
+        /// but printing a number Java can't print throws.
+        func printForWarning(_ v: Value) throws {
+            if v.textThrows {
+                throw Interrupt.runtime(nil)
+            }
+        }
+
+        /// RGB.filterValue (values/color/RGB.java:28-75): a negative channel
+        /// warns (printing it) and is 0, a number over 255 is 255, a
+        /// percentage over 100 is 100%.
+        func rgbFilter(_ v: Value) throws -> Value {
+            switch v {
+            case .number(let n, _, nil):
+                if n.negative {
+                    try printForWarning(v)
+                    return smallNumber(0)
+                }
+                if n.floatOverflows || Num.greaterThan(n, 255) {
+                    return smallNumber(255)
+                }
+                return v
+            case .percentage(let n):
+                if n.negative {
+                    try printForWarning(v)
+                    return smallNumber(0)
+                }
+                if n.floatOverflows || Num.greaterThan(n, 100) {
+                    return .percentage(Num(negative: false, digits: [1, 0, 0], scale: 0, source: "100"))
+                }
+                return v
+            default:
+                return v
+            }
+        }
+
+        /// RGBA.filterAlpha (values/color/RGBA.java:63-105): out of 0 to 1
+        /// (0% to 100%) warns, printing the value, and is clamped; a math
+        /// function isn't positive, so it warns and is 0.
+        func alphaFilter(_ v: Value) throws -> Value {
+            switch v {
+            case .number(let n, _, nil):
+                if n.negative {
+                    try printForWarning(v)
+                    return smallNumber(0)
+                }
+                if Num.greaterThan(n, 1) {
+                    try printForWarning(v)
+                    return smallNumber(1)
+                }
+                return v
+            case .percentage(let n):
+                if n.negative {
+                    try printForWarning(v)
+                    return smallNumber(0)
+                }
+                if n.floatOverflows || Num.greaterThan(n, 100) {
+                    try printForWarning(v)
+                    return .percentage(Num(negative: false, digits: [1, 0, 0], scale: 0, source: "100"))
+                }
+                return v
+            case .math:
+                if CssType.number == v.type || CssType.percentage == v.type {
+                    try printForWarning(v)
+                    return smallNumber(0)
+                }
+                return v
+            default:
+                return v
+            }
+        }
+
+        /// HSL.filterHue (values/color/HSL.java:325-375) for a number: a
+        /// negative one warns, printing it; one a float can't hold is
+        /// normalized to NaN, which BigDecimal refuses (a
+        /// NumberFormatException media() swallows).
+        func hueFilter(_ v: Value) throws -> Value {
+            if case .number(let n, _, nil) = v {
+                if n.negative {
+                    try printForWarning(v)
+                }
+                if n.floatOverflows {
+                    throw Interrupt.runtime(nil)
+                }
+            }
+            return v
+        }
+
+        /// HSL.filterValue (values/color/HSL.java:295-323) for saturation
+        /// and lightness: a negative value warns (printing it) and is 0, a
+        /// percentage over 100 is 100%, a number over 100 warns, printing
+        /// it.
+        func hslFilter(_ v: Value) throws -> Value {
+            switch v {
+            case .number(let n, _, nil):
+                if n.negative {
+                    try printForWarning(v)
+                    return smallNumber(0)
+                }
+                if n.floatOverflows || Num.greaterThan(n, 100) {
+                    try printForWarning(v)
+                }
+                return v
+            case .percentage(let n):
+                if n.negative {
+                    try printForWarning(v)
+                    return smallNumber(0)
+                }
+                if n.floatOverflows || Num.greaterThan(n, 100) {
+                    return .percentage(Num(negative: false, digits: [1, 0, 0], scale: 0, source: "100"))
+                }
+                return v
+            default:
+                return v
+            }
+        }
+
+        /// RGBA.parseModernRGBA (values/color/RGBA.java:192-412): three
+        /// numbers or three percentages, separated by spaces (modern: the
+        /// first separator decides) or commas (legacy), "none" allowed in
+        /// the modern syntax; then an optional alpha, after " / " or ",".
+        /// Values after the alpha aren't looked at. With a var() in it the
+        /// checks are off, and a missing value is a NullPointerException,
+        /// which media() swallows (so rgb(var(--x)) is a Parse Error).
+        func rgbColor(_ name: String, _ exp: Expression) throws -> Value {
+            let variable = exp.hasVariable
+            func value(_ i: Int) -> Value? {
+                i < exp.count ? exp.values[i] : nil
+            }
+            func op(_ i: Int) -> UInt16 {
+                i < exp.count ? exp.operators[i] : 0x20
+            }
+            guard let first = value(0) else {
+                // val == null: invalid-color, or with a variable the
+                // getType() on null
+                throw variable ? Interrupt.runtime(nil) : Interrupt.parse(.invalid(Message.invalidColor))
+            }
+            if isIdent(first, "from") {
+                // a relative color: taken on trust
+                return .color(ColorText(.relative("rgb"), [], alpha: nil, expression: exp))
+            }
+            let modern = 0x20 == op(0)
+            var gotNumber = false
+            var gotPercentage = false
+            func channel(_ v: Value) throws {
+                switch v.type {
+                case CssType.variable, CssType.number:
+                    if gotPercentage {
+                        throw v.messageThrows ? Interrupt.runtime(nil) : Interrupt.parse(.invalid(Message.colorFunction(v.text, "rgba")))
+                    }
+                    gotNumber = true
+                case CssType.percentage:
+                    if gotNumber {
+                        throw v.messageThrows ? Interrupt.runtime(nil) : Interrupt.parse(.invalid(Message.colorFunction(v.text, "rgba")))
+                    }
+                    gotPercentage = true
+                case CssType.ident where modern && isIdent(v, "none"):
+                    break
+                default:
+                    if !variable {
+                        throw v.messageThrows ? Interrupt.runtime(nil) : Interrupt.parse(.invalid(Message.colorFunction(v.text, "rgba")))
+                    }
+                }
+            }
+            // R: the first value's own separator only sets the style
+            try channel(first)
+            let red = try rgbFilter(first)
+            // G
+            let green = value(1)
+            if (nil == green || (modern && 0x20 != op(1)) || (!modern && 0x2C != op(1))) && !variable {
+                throw Interrupt.parse(.invalid(Message.invalidColor))
+            }
+            guard let g = green else {
+                throw Interrupt.runtime(nil)
+            }
+            try channel(g)
+            let greenValue = try rgbFilter(g)
+            // B: only the value
+            let blue = value(2)
+            if nil == blue && !variable {
+                throw Interrupt.parse(.invalid(Message.invalidColor))
+            }
+            guard let b = blue else {
+                throw Interrupt.runtime(nil)
+            }
+            try channel(b)
+            let blueValue = try rgbFilter(b)
+            var alpha: Value?
+            if exp.count > 3 {
+                if ((modern && 0x20 != op(2)) || (!modern && 0x2C != op(2))) && !variable {
+                    throw Interrupt.parse(.invalid(Message.invalidColor))
+                }
+                var index = 3
+                if modern {
+                    let slash = exp.values[3]
+                    if CssType.switchValue != slash.type && !variable {
+                        // RGBA.java:372 names LCH
+                        throw slash.messageThrows ? Interrupt.runtime(nil)
+                            : Interrupt.parse(.invalid(Message.colorFunction(slash.text, "LCH")))
+                    }
+                    if 0x20 != op(3) && !variable {
+                        throw Interrupt.parse(.invalid(Message.invalidColor))
+                    }
+                    index = 4
+                }
+                guard let a = value(index) else {
+                    throw Interrupt.runtime(nil)
+                }
+                switch a.type {
+                case CssType.variable, CssType.number, CssType.percentage:
+                    break
+                case CssType.ident where modern && isIdent(a, "none"):
+                    break
+                default:
+                    if !variable {
+                        throw a.messageThrows ? Interrupt.runtime(nil)
+                            : Interrupt.parse(.invalid(Message.colorFunction(a.text, "rgba")))
+                    }
+                }
+                alpha = try alphaFilter(a)
+            }
+            let parts = [red, greenValue, blueValue]
+            return .color(ColorText(modern ? .modernRGB : .legacyRGB, parts, alpha: alpha, expression: exp))
+        }
+
+        /// HSL.parseHSL (values/color/HSL.java:75-290), with its cursor: a
+        /// hue (number or angle, or "none" in the modern syntax), then
+        /// saturation and lightness (percentages, or numbers in the modern
+        /// syntax), then an optional alpha after "," (legacy) or " / ", and
+        /// nothing more. With a var() and fewer than three values it gives
+        /// up quietly; with a var(), a saturation, lightness or legacy alpha
+        /// it doesn't take is tolerated after exp.starts(), which rewinds
+        /// the cursor, so the reads after it start again at the second value
+        /// (Case 554591 review: "hsl(var(--x) 1 / 1)" is valid that way).
+        func hslColor(_ function: String, _ name: String, _ exp: Expression) throws -> Value {
+            let variable = exp.hasVariable
+            var index = 0
+            // getValue(), getOperator() and next() of CssExpression
+            func value() -> Value? {
+                index < exp.count ? exp.values[index] : nil
+            }
+            func op() -> UInt16 {
+                index < exp.count ? exp.operators[index] : 0x20
+            }
+            func advanceCursor() {
+                if index < exp.count {
+                    index += 1
+                }
+            }
+            func colorError(_ v: Value?) -> Interrupt {
+                (v?.messageThrows ?? false) ? Interrupt.runtime(nil)
+                    : Interrupt.parse(.invalid(Message.colorFunction(v?.text ?? "null", "HSL")))
+            }
+            let invalid = Interrupt.parse(.invalid(Message.invalidColor))
+            if variable && exp.count < 3 {
+                return .color(ColorText(.asWritten(name), [], alpha: nil, expression: exp))
+            }
+            // what the color keeps, "null" where nothing was set
+            let unset = Value.ident(Array("null".utf16))
+            var parts = [unset, unset, unset]
+            var val = value()
+            var o = op()
+            let space = 0x20 == o
+            if nil == val || (!space && 0x2C != o) {
+                if !variable {
+                    throw invalid
+                }
+            }
+            guard let hue = val else {
+                // val.getType() on null
+                throw Interrupt.runtime(nil)
+            }
+            if isIdent(hue, "from") {
+                return .color(ColorText(.relative(function), [], alpha: nil, expression: exp))
+            }
+            // the hue's default branch doesn't rewind
+            switch hue.type {
+            case CssType.angle, CssType.number, CssType.variable:
+                parts[0] = try hueFilter(hue)
+            case CssType.ident where space && isIdent(hue, "none"):
+                parts[0] = hue
+            default:
+                if !variable {
+                    throw colorError(hue)
+                }
+            }
+            advanceCursor()
+            // saturation and lightness
+            func component(_ v: Value, _ part: Int) throws {
+                switch v.type {
+                case CssType.number:
+                    // checked even with a var()
+                    if !space {
+                        throw colorError(v)
+                    }
+                    parts[part] = try hslFilter(v)
+                case CssType.percentage, CssType.variable:
+                    parts[part] = try hslFilter(v)
+                case CssType.ident where space && isIdent(v, "none"):
+                    parts[part] = v
+                default:
+                    index = 0
+                    if !variable {
+                        throw colorError(v)
+                    }
+                }
+            }
+            val = value()
+            o = op()
+            if nil == val || (space && 0x20 != o) || (!space && 0x2C != o) {
+                if !variable {
+                    throw invalid
+                }
+            }
+            guard let saturation = val else {
+                throw Interrupt.runtime(nil)
+            }
+            try component(saturation, 1)
+            advanceCursor()
+            val = value()
+            o = op()
+            if nil == val && !variable {
+                throw invalid
+            }
+            guard let lightness = val else {
+                throw Interrupt.runtime(nil)
+            }
+            try component(lightness, 2)
+            advanceCursor()
+            var alpha: Value?
+            if index < exp.count {
+                if 0x2C == o && !space {
+                    // the legacy alpha
+                    if let a = value() {
+                        switch a.type {
+                        case CssType.number, CssType.percentage, CssType.variable:
+                            alpha = try alphaFilter(a)
+                        default:
+                            index = 0
+                            if !variable {
+                                throw colorError(a)
+                            }
+                        }
+                    }
+                } else {
+                    if 0x20 != o && !variable {
+                        throw invalid
+                    }
+                    let slash = value()
+                    o = op()
+                    if CssType.switchValue != slash?.type && !variable {
+                        throw colorError(slash)
+                    }
+                    if 0x20 != o && !variable {
+                        throw invalid
+                    }
+                    advanceCursor()
+                    if index >= exp.count && !variable {
+                        throw colorError(nil)
+                    }
+                    guard let a = value() else {
+                        throw Interrupt.runtime(nil)
+                    }
+                    switch a.type {
+                    case CssType.number, CssType.percentage, CssType.variable:
+                        alpha = try alphaFilter(a)
+                    case CssType.ident where 0x2C != o && isIdent(a, "none"):
+                        alpha = a
+                    default:
+                        if !variable {
+                            throw colorError(a)
+                        }
+                    }
+                }
+                advanceCursor()
+                if index < exp.count && !variable {
+                    throw colorError(value())
+                }
+            }
+            return .color(ColorText(.hsl(function), parts, alpha: alpha, expression: exp))
+        }
+
+        /// CssImage.setImageList (values/CssImage.java:137-208): URLs and
+        /// strings, then at most one color, last, comma-separated.
+        func imageList(_ exp: Expression) throws {
+            let variable = exp.hasVariable
+            var gotColor = false
+            for (index, v) in exp.values.enumerated() {
+                if gotColor && !variable {
+                    throw v.messageThrows ? Interrupt.runtime(nil) : Interrupt.parse(.invalid(Message.value(v.text, "image()")))
+                }
+                switch v.type {
+                case CssType.url, CssType.string:
+                    break
+                case CssType.hashIdent:
+                    // RGBA.parseShortRGBColor: # and 3, 4, 6 or 8 hex digits
+                    let units = Array(v.text.utf16)
+                    let digits = units.dropFirst()
+                    if ![3, 4, 6, 8].contains(digits.count) || !digits.allSatisfy(HTMLMediaQueryDatatype.isHex) {
+                        throw Interrupt.parse(.invalid(Message.rgb(v.text)))
+                    }
+                    gotColor = true
+                case CssType.color:
+                    gotColor = true
+                case CssType.ident:
+                    // currentColor.equals(val.getIdent()), else
+                    // setIdentColor(val.getIdent().toString()): a var() or
+                    // env() answers with its identifier fallback, which must
+                    // be a color too; a value of identifier type without
+                    // getIdent() throws ClassCastException (Case 554591
+                    // review: the port once checked plain identifiers alone)
+                    guard let ident = v.javaIdentValue, case .ident(let units) = ident else {
+                        throw Interrupt.runtime(nil)
+                    }
+                    if !HTMLMediaQueryDatatype.isColorIdent(units) {
+                        throw Interrupt.parse(.invalid(Message.value(ident.text, "color")))
+                    }
+                    gotColor = true
+                default:
+                    if !variable {
+                        throw v.messageThrows ? Interrupt.runtime(nil) : Interrupt.parse(.invalid(Message.value(v.text, "image()")))
+                    }
+                }
+                if index + 1 < exp.count && 0x2C != exp.operators[index] && !variable {
+                    throw Interrupt.parse(.invalid(Message.incorrectOperator(String(Character(Unicode.Scalar(exp.operators[index]) ?? " ")))))
+                }
+            }
+        }
+
+        /// expr (CssParser.jj:3337-3349), whose catch turns a
+        /// WarningParamException into a warning, ending the expression.
+        func expr() throws -> Expression {
+            let values = Expression()
+            do {
+                try term(values)
+                while try lookahead(2, {
+                    try self.scanOptional {
+                        guard try self.scan(T.comma) else {
+                            return false
+                        }
+                        try self.scanSpaces()
+                        return true
+                    }
+                    return try self.scanTerm()
+                }) {
+                    try operatorProduction(values)
+                    try term(values)
+                }
+            } catch Interrupt.parse(let failure) where isWarning(failure) {
+                // a warning
+            }
+            return values
+        }
+
+        func isWarning(_ failure: Failure) -> Bool {
+            !failure.generic && ("css-hack" == failure.message || "vendor-extension" == failure.message)
+        }
+
+        /// term (CssParser.jj:3416-3512).
+        func term(_ exp: Expression) throws {
+            let k = try next()
+            switch k {
+            case T.string, T.ident, T.and, T.or, T.not, T.only, T.hashIdent, T.hash, T.url, T.unicodeRange:
+                try plainTerm(exp, k)
+            case T.div:
+                try advance()
+                exp.add(.switchValue)
+            case T.rbracket, T.lbracket:
+                let n = try advance()
+                exp.add(.bracket(imageString(n)))
+            case T.dashedIdent:
+                let n = try advance()
+                exp.add(.dashedIdent(imageString(n)))
+            case T.functionCalc:
+                exp.add(try mathCalc())
+            case T.functionMath1, T.functionMath2, T.functionMathN, T.functionRound:
+                exp.add(.math(try mathFunction()))
+            case T.functionClamp:
+                exp.add(.math(try mathClamp()))
+            case T.functionAttr:
+                let a = try attr()
+                // setValue's FUNCTION branch casts a CSS_COLOR value to
+                // CssColor (CssParser.jj:426-430): a ClassCastException for
+                // an attr() of color type
+                if CssType.color == a.type {
+                    throw Interrupt.runtime(nil)
+                }
+                exp.add(a)
+            case T.functionVar:
+                exp.add(try functionVar())
+            case T.functionEnv:
+                exp.add(try functionEnv())
+            case T.function:
+                exp.add(try function())
+            default:
+                let op = try unaryOperator()
+                let k2 = try next()
+                switch k2 {
+                case T.number:
+                    let n = try advance()
+                    exp.add(try numberValue(signed(op, n)))
+                case T.dimen:
+                    let n = try advance()
+                    if "0\\0" != trimmed(Array(image(n))) {
+                        try record(.plain(Message.unknownDimension))
+                    }
+                case T.progid:
+                    try advance()
+                    throw Interrupt.parse(Failure(message: "vendor-extension", generic: false))
+                case T.importantNot:
+                    try advance()
+                    throw Interrupt.parse(Failure(message: "css-hack", generic: false))
+                case T.dimen9:
+                    try advance()
+                default:
+                    guard let value = try unitValue(k2, op) else {
+                        throw Interrupt.parse(.syntax)
+                    }
+                    exp.add(value)
+                }
+            }
+            // ( LOOKAHEAD(2) <S> )*
+            while T.s == (try next()) {
+                try consume(T.s)
+            }
+        }
+
+        /// attr() (CssParser.jj:3912-3931): attr( ident ( ident | "%" )? (
+        /// "," term )? ), then CssAttr.setValue (values/CssAttr.java:100-
+        /// 179), ported for the Case 554591 review: the type is string, or
+        /// what typeMap gives the type-or-unit identifier (CssIdent
+        /// equality, so any case), and a fallback must fit it. An unknown
+        /// identifier makes _checkType build its exception with CssAttr's
+        /// own ac field, which is never set: a NullPointerException, which
+        /// media() swallows (so "Parse Error.").
+        func attr() throws -> Value {
+            try enter(2)
+            defer {
+                leave(2)
+            }
+            try consume(T.functionAttr)
+            try skipSpaces()
+            let n = try identToken()
+            try skipSpaces()
+            let name = T.ident == n.kind ? convertIdent(Array(image(n))) : Array(image(n))
+            var text = "attr(" + HTMLMediaQueryDatatype.string(name[...])
+            var typeName: [UInt16]?
+            let k = try next()
+            if [T.ident, T.and, T.or, T.not, T.only, T.percent].contains(k) {
+                let u = try advance()
+                let units = T.ident == u.kind ? convertIdent(Array(image(u))) : Array(image(u))
+                typeName = units
+                text += " " + HTMLMediaQueryDatatype.string(units[...])
+                try skipSpaces()
+            }
+            var fallback: Expression?
+            if T.comma == (try next()) {
+                try consume(T.comma)
+                try skipSpaces()
+                let e = Expression()
+                try term(e)
+                fallback = e
+            }
+            try consume(T.rparen)
+            var computed = CssType.string
+            if let t = typeName {
+                guard let mapped = Parser.attrTypes.first(where: { identEquals(t, $0.0) })?.1 else {
+                    throw Interrupt.runtime(nil)
+                }
+                computed = mapped
+            }
+            if let fb = fallback?.values.first, fb.type != computed {
+                let fbType = fb.type
+                if CssType.number == fbType {
+                    // checkEqualsZero(ac, ""): a CssNumber prints itself into
+                    // the message's arguments, then must be zero; a calc() is
+                    // zero; a math function only warns
+                    switch fb {
+                    case .number(let num, _, _):
+                        if fb.textThrows {
+                            throw Interrupt.runtime(nil)
+                        }
+                        if !num.isZero {
+                            throw Interrupt.parse(.invalid(Message.zero))
+                        }
+                    case .calc:
+                        if fb.textThrows {
+                            throw Interrupt.runtime(nil)
+                        }
+                    case .variable(_, _, let f), .env(_, _, let f):
+                        if let v = f?.values.first, 1 == f?.count, !v.isZero {
+                            throw Interrupt.parse(.invalid(Message.zero))
+                        }
+                    default:
+                        break
+                    }
+                }
+                let numeric = [CssType.length, CssType.angle, CssType.frequency, CssType.number, CssType.time]
+                if !((CssType.percentage == fbType || CssType.number == fbType) && numeric.contains(computed)) {
+                    if fb.messageThrows {
+                        throw Interrupt.runtime(nil)
+                    }
+                    let definition = typeName.map { HTMLMediaQueryDatatype.string($0[...]) } ?? "null"
+                    throw Interrupt.parse(.invalid(Message.typeValueMismatch(fb.text, definition)))
+                }
+            }
+            return .attr(text, computed, fallback)
+        }
+
+        /// CssAttr.typeMap (values/CssAttr.java:27-60).
+        static let attrTypes: [(String, Int)] = {
+            var table: [(String, Int)] = [("color", CssType.color), ("string", CssType.string), ("url", CssType.url),
+                                          ("integer", CssType.number), ("number", CssType.number),
+                                          ("%", CssType.percentage)]
+            for s in ["length", "em", "ex", "ch", "rem", "vw", "vh", "vmin", "vmax", "mm", "cm", "q", "in", "pt", "pc", "px"] {
+                table.append((s, CssType.length))
+            }
+            for s in ["angle", "deg", "rad", "grad", "turn"] {
+                table.append((s, CssType.angle))
+            }
+            for s in ["time", "ms", "s"] {
+                table.append((s, CssType.time))
+            }
+            for s in ["frequency", "hz", "khz"] {
+                table.append((s, CssType.frequency))
+            }
+            return table
+        }()
+
+        /// functionvar (CssParser.jj:3971-4006): var( --name ( "," expr )* );
+        /// its type is its fallback's when that's one value.
+        func functionVar() throws -> Value {
+            try enter(2)
+            defer {
+                leave(2)
+            }
+            try consume(T.functionVar)
+            try skipSpaces()
+            let n = try consume(T.dashedIdent)
+            let text = "var(" + HTMLMediaQueryDatatype.string(convertIdent(Array(image(n)))[...])
+            var fallback: Expression?
+            while T.comma == (try next()) {
+                try consume(T.comma)
+                try skipSpaces()
+                do {
+                    let e = try expr()
+                    if let f = fallback {
+                        for v in e.values {
+                            f.add(v)
+                        }
+                    } else {
+                        fallback = e
+                    }
+                } catch Interrupt.parse {
+                    try skipToMatchingParen()
+                }
+            }
+            try skipSpaces()
+            try consume(T.rparen)
+            var type = CssType.variable
+            if let f = fallback, 1 == f.count {
+                type = f.values[0].type
+            }
+            return .variable(text, type, fallback)
+        }
+
+        /// functionenv (CssParser.jj:3940-3969): env( name term* ( "," expr )? ).
+        func functionEnv() throws -> Value {
+            try enter(2)
+            defer {
+                leave(2)
+            }
+            try consume(T.functionEnv)
+            try skipSpaces()
+            let n = try consume(T.ident)
+            try skipSpaces()
+            let name = HTMLMediaQueryDatatype.string(convertIdent(Array(image(n)))[...])
+            let numbers = Expression()
+            while try lookahead(1, { try self.scanTerm() }) {
+                try term(numbers)
+            }
+            var declaration: Expression?
+            if T.comma == (try next()) {
+                try consume(T.comma)
+                try skipSpaces()
+                do {
+                    declaration = try expr()
+                } catch Interrupt.parse {
+                    try skipToMatchingParen()
+                }
+            }
+            try consume(T.rparen)
+            // env.setNumberExp(e) (CssParser.jj:3960, values/CssEnv.java:
+            // 138-154): every term after the name must be a number (Case
+            // 554591 review), an InvalidParamException printing the value
+            for v in numbers.values where CssType.number != v.type {
+                throw v.messageThrows ? Interrupt.runtime(nil) : Interrupt.parse(.invalid(Message.value(v.text, "env()")))
+            }
+            var type = CssType.env
+            if HTMLMediaQueryDatatype.envLengths.contains(name) {
+                type = CssType.length
+                // CssEnv.getType() (values/CssEnv.java:50-87), which the
+                // caller asks at once (setValue, CssCalc's constructor, the
+                // divisor test): a known length variable's one-value
+                // fallback of another type is a plain error, unless it is a
+                // number that is zero. Not for a color or gradient taken on
+                // trust: upstream's parser may have thrown on it, and the
+                // catch above would then have left no fallback to check
+                // ("env(safe-area-inset-top, light-dark())" is valid in a
+                // custom property; Case 554591 review)
+                if let d = declaration, 1 == d.count {
+                    let v = d.values[0]
+                    if CssType.length != v.type && !(CssType.number == v.type && v.checkableIsZero) && !v.isOnTrust {
+                        if v.messageThrows {
+                            throw Interrupt.runtime(nil)
+                        }
+                        try recordPlain(Message.value(v.text, "env(" + name + ")"))
+                    }
+                }
+            } else if let d = declaration, 1 == d.count {
+                type = d.values[0].type
+            }
+            var text = "env(" + name
+            if numbers.count > 0 {
+                text += " " + numbers.text
+            }
+            return .env(text, type, declaration)
+        }
+
+        /// skip_to_matching_paren (CssParser.jj:4233-4292).
+        func skipToMatchingParen() throws {
+            var nesting = 1
+            while nesting > 0 {
+                let tok = try peek(1)
+                if T.eof == tok.kind {
+                    break
+                }
+                if T.lparen == tok.kind || T.function == tok.kind || (tok.kind >= 130 && tok.kind <= T.functionEnv) {
+                    nesting += 1
+                } else if T.rparen == tok.kind {
+                    nesting -= 1
+                    if 0 == nesting {
+                        break
+                    }
+                }
+                try advance()
+            }
+        }
+
+        // MARK: calc() and the math functions
+
+        /// mathcalc (CssParser.jj:3707-3731).
+        func mathCalc() throws -> Value {
+            try consume(T.functionCalc)
+            try skipSpaces()
+            let v = try mathSum()
+            try skipSpaces()
+            try consume(T.rparen)
+            let c: Calc
+            if case .calc(let inner) = v {
+                c = inner
+            } else {
+                c = Calc(v)
+            }
+            try validate(c)
+            c.implicitFunction = false
+            return .calc(c)
+        }
+
+        /// mathsum (CssParser.jj:3733-3766).
+        func mathSum() throws -> Value {
+            var levels = 0
+            defer {
+                depth -= levels
+            }
+            try enter(2)
+            defer {
+                leave(2)
+            }
+            let v1 = try mathProduct()
+            var c = Calc(v1)
+            var concat = false
+            while try lookahead(2, { try self.scanSumOperator() }) {
+                var spaces = 0
+                var o: Token
+                if T.plus == (try next()) {
+                    o = try advance()
+                } else {
+                    while T.s == (try next()) {
+                        try consume(T.s)
+                        spaces += 1
+                    }
+                    o = try consume(T.minus)
+                }
+                if o.end - o.start < 2 && 0 == spaces {
+                    throw Interrupt.parse(.plain(Message.calcWhitespace))
+                }
+                try consume(T.s)
+                try skipSpaces()
+                let v2 = try mathProduct()
+                let symbol = UInt16(text[o.end - 1])
+                if concat {
+                    // a level deeper, as CssCalc(ac, c) nests the sum so far
+                    try enter(1)
+                    levels += 1
+                    let nc = Calc(.calc(c))
+                    try addRightSide(nc, symbol, v2)
+                    c = nc
+                } else {
+                    try addRightSide(c, symbol, v2)
+                    concat = true
+                }
+            }
+            return .calc(c)
+        }
+
+        /// The LOOKAHEAD(2) of mathsum's and calcnumbersum's loops: (
+        /// <PLUS> | ( <S> )* <MINUS> ) ( <S> )+ — "-" can't carry its
+        /// whitespace as "+" does. So "calc(100px+2em)", whose "+" has no
+        /// space after it, ends the sum there, and calc() then fails on
+        /// the "+" with a plain syntax error.
+        func scanSumOperator() throws -> Bool {
+            let op = try scanFirst([
+                { try self.scan(T.plus) },
+                {
+                    try self.scanSpaces()
+                    return try self.scan(T.minus)
+                }
+            ])
+            guard op else {
+                return false
+            }
+            guard try scan(T.s) else {
+                return false
+            }
+            try scanSpaces()
+            return try scanMathProduct()
+        }
+
+        /// mathproduct (CssParser.jj:3769-3818).
+        func mathProduct() throws -> Value {
+            var levels = 0
+            defer {
+                depth -= levels
+            }
+            let v1 = try mathUnit()
+            var c = Calc(v1)
+            var concat = false
+            // jj_3_27: ( <S> )* then "*" S* mathunit or DIV S* (calcnumbervalue
+            // | functionvar | functionenv), on into the operand (Case 554591
+            // review): with no space around the operator its operand is the
+            // second token, so "1s/1px" ends the product at "1s" and the
+            // enclosing sum or list reports its type clash first
+            while try lookahead(2, {
+                try self.scanSpaces()
+                return try self.scanFirst([
+                    {
+                        guard try self.scan(T.any) else {
+                            return false
+                        }
+                        try self.scanSpaces()
+                        return try self.scanMathUnit()
+                    },
+                    {
+                        guard try self.scan(T.div) else {
+                            return false
+                        }
+                        try self.scanSpaces()
+                        return try self.scanFirst([
+                            { try self.scanCalcNumberValue() },
+                            { try self.scanVar() },
+                            { try self.scanEnv() }
+                        ])
+                    }
+                ])
+            }) {
+                try skipSpaces()
+                let o = try advance()
+                try skipSpaces()
+                let v2: Value
+                if T.any == o.kind {
+                    v2 = try mathUnit()
+                } else {
+                    let k = try next()
+                    if T.functionVar == k {
+                        v2 = try functionVar()
+                        if CssType.variable == v2.type {
+                            c.containsVariable = true
+                        }
+                    } else if T.functionEnv == k {
+                        v2 = try functionEnv()
+                        if CssType.env == v2.type {
+                            c.containsVariable = true
+                        }
+                    } else {
+                        v2 = try calcNumberValue()
+                    }
+                }
+                let symbol: UInt16 = T.any == o.kind ? 0x2A : 0x2F
+                if concat {
+                    // a level deeper, as CssCalc(ac, c) nests the sum so far
+                    try enter(1)
+                    levels += 1
+                    let nc = Calc(.calc(c))
+                    if c.containsVariable {
+                        nc.containsVariable = true
+                    }
+                    try addRightSide(nc, symbol, v2)
+                    c = nc
+                } else {
+                    try addRightSide(c, symbol, v2)
+                    concat = true
+                }
+            }
+            return .calc(c)
+        }
+
+        /// calcnumbervalue (CssParser.jj:3820-3833).
+        func calcNumberValue() throws -> Value {
+            if T.lparen == (try next()) {
+                try consume(T.lparen)
+                try skipSpaces()
+                let v = try calcNumberSum()
+                try skipSpaces()
+                try consume(T.rparen)
+                if case .calc(let c) = v {
+                    c.hasParen = true
+                }
+                return v
+            }
+            let op = try unaryOperator()
+            let k = try next()
+            guard T.number == k || T.ident == k else {
+                throw Interrupt.parse(.syntax)
+            }
+            let n = try advance()
+            return try calcNumber(signed(op, n))
+        }
+
+        /// calcnumbersum (CssParser.jj:3835-3865).
+        func calcNumberSum() throws -> Value {
+            var levels = 0
+            defer {
+                depth -= levels
+            }
+            try enter(2)
+            defer {
+                leave(2)
+            }
+            let v1 = try calcNumberProduct()
+            var c = Calc(v1)
+            var concat = false
+            while try lookahead(2, { try self.scanSumOperator() }) {
+                var spaces = 0
+                var o: Token
+                if T.plus == (try next()) {
+                    o = try advance()
+                } else {
+                    while T.s == (try next()) {
+                        try consume(T.s)
+                        spaces += 1
+                    }
+                    o = try consume(T.minus)
+                }
+                if o.end - o.start < 2 && 0 == spaces {
+                    throw Interrupt.parse(.plain(Message.calcWhitespace))
+                }
+                try consume(T.s)
+                try skipSpaces()
+                let v2 = try calcNumberProduct()
+                let symbol = UInt16(text[o.end - 1])
+                if concat {
+                    // a level deeper, as CssCalc(ac, c) nests the sum so far
+                    try enter(1)
+                    levels += 1
+                    let nc = Calc(.calc(c))
+                    try addRightSide(nc, symbol, v2)
+                    c = nc
+                } else {
+                    try addRightSide(c, symbol, v2)
+                    concat = true
+                }
+            }
+            return .calc(c)
+        }
+
+        /// calcnumberproduct (CssParser.jj:3867-3885).
+        func calcNumberProduct() throws -> Value {
+            var levels = 0
+            defer {
+                depth -= levels
+            }
+            let v1 = try calcNumberValue()
+            var c = Calc(v1)
+            var concat = false
+            // jj_3_29: ( <S> )* ( DIV | "*" ) ( <S> )* calcnumbervalue
+            while try lookahead(2, {
+                try self.scanSpaces()
+                guard try self.scan(any: [T.div, T.any]) else {
+                    return false
+                }
+                try self.scanSpaces()
+                return try self.scanCalcNumberValue()
+            }) {
+                try skipSpaces()
+                let o = try advance()
+                try skipSpaces()
+                let v2 = try calcNumberValue()
+                let symbol: UInt16 = T.any == o.kind ? 0x2A : 0x2F
+                if concat {
+                    // a level deeper, as CssCalc(ac, c) nests the sum so far
+                    try enter(1)
+                    levels += 1
+                    let nc = Calc(.calc(c))
+                    try addRightSide(nc, symbol, v2)
+                    c = nc
+                } else {
+                    try addRightSide(c, symbol, v2)
+                    concat = true
+                }
+            }
+            return .calc(c)
+        }
+
+        /// CssNumber.set on a NUMBER or an IDENT in calc(): the constants,
+        /// the relative-color channels, and otherwise BigDecimal (whose
+        /// NumberFormatException is swallowed by media()).
+        func calcNumber(_ s: [UInt16]) throws -> Value {
+            var body = s[...]
+            var negative = false
+            if let first = body.first, 0x2D == first || 0x2B == first {
+                negative = 0x2D == first
+                body = body.dropFirst()
+            }
+            let lower = HTMLMediaQueryDatatype.string(javaLowercase(Array(body))[...])
+            let one = Num(negative: negative, digits: [1], scale: 0, source: "1")
+            let sign = negative ? "-" : ""
+            switch lower {
+            case "pi", "e":
+                return .number(one, isInt: false, special: sign + lower)
+            case "infinity":
+                return .number(one, isInt: true, special: sign + "infinity")
+            case "a", "alpha", "b", "c", "g", "h", "l", "r", "s", "w":
+                return .number(one, isInt: true, special: sign + lower)
+            case "nan":
+                return .number(one, isInt: false, special: sign + "NaN")
+            default:
+                // new BigDecimal(val) on the rest, then negated: BigDecimal
+                // reads any BMP decimal digit through Character.digit, so
+                // "٣" is 3 (Case 554591 review); it prints in ASCII
+                let digits = HTMLMediaQueryDatatype.asciiDigits(Array(body))
+                guard var n = Num.parse(digits) else {
+                    throw Interrupt.runtime(Num.failure(digits))
+                }
+                if negative && !n.digits.isEmpty {
+                    n.negative.toggle()
+                }
+                n.source = (negative ? "-" : "") + HTMLMediaQueryDatatype.string(digits[...])
+                return .number(n, isInt: !digits.contains(0x2E), special: nil)
+            }
+        }
+
+        /// mathunit (CssParser.jj:3887-3910).
+        func mathUnit() throws -> Value {
+            let k = try next()
+            switch k {
+            case T.lparen:
+                try consume(T.lparen)
+                try skipSpaces()
+                let v = try mathSum()
+                try skipSpaces()
+                try consume(T.rparen)
+                if case .calc(let c) = v {
+                    c.hasParen = true
+                }
+                return v
+            case T.functionCalc:
+                return try mathCalc()
+            case T.functionMath1, T.functionMath2, T.functionMathN, T.functionRound:
+                return .math(try mathFunction())
+            case T.functionClamp:
+                return .math(try mathClamp())
+            case T.functionAttr:
+                return try attr()
+            case T.functionVar:
+                return try functionVar()
+            case T.functionEnv:
+                return try functionEnv()
+            default:
+                let op = try unaryOperator()
+                let k2 = try next()
+                switch k2 {
+                case T.number, T.ident:
+                    let n = try advance()
+                    return try calcNumber(signed(op, n))
+                case T.percentage, T.relFontLength, T.relViewLength, T.absolutLength, T.flex, T.angle, T.time, T.freq:
+                    guard let v = try unitValue(k2, op) else {
+                        throw Interrupt.parse(.syntax)
+                    }
+                    return v
+                default:
+                    throw Interrupt.parse(.syntax)
+                }
+            }
+        }
+
+        /// CssCalc.addRightSide (values/CssCalc.java:96-129).
+        func addRightSide(_ c: Calc, _ op: UInt16, _ value: Value) throws {
+            c.op = op
+            c.val2 = value
+            if CssType.variable == value.type {
+                c.containsVariable = true
+            }
+            try computeType(c)
+        }
+
+        func validate(_ c: Calc) throws {
+            try computeType(c)
+        }
+
+        /// A CssCalc error: every one prints the calc() into its message
+        /// (toStringUnprefixed()), and when a number in it can't be printed
+        /// that throws first, a RuntimeException media() swallows.
+        func calcError(_ c: Calc, _ message: String) -> Interrupt {
+            if c.val1.textThrows || (c.val2?.textThrows ?? false) {
+                return Interrupt.runtime(nil)
+            }
+            return Interrupt.parse(.invalid(message))
+        }
+
+        /// _checkAcceptableType (CssCalc.java:150-162).
+        func checkAcceptable(_ type: Int, _ c: Calc) throws {
+            if CssType.percentage != type && CssType.length != type && CssType.number != type
+                && CssType.angle != type && CssType.frequency != type && CssType.time != type {
+                // "Invalid type: “…”" quotes the calc(), so the message's
+                // own length counts too
+                if c.val1.messageThrows || (c.val2?.messageThrows ?? false) {
+                    throw Interrupt.runtime(nil)
+                }
+                throw calcError(c, Message.invalidType(c.unprefixed))
+            }
+        }
+
+        /// The number a value stands for, as getNumber() finds it.
+        func numberIsZero(_ value: Value) throws -> Bool {
+            switch value {
+            case .number(let n, _, _):
+                return n.isZero
+            case .calc(let c):
+                // CssCalc.getNumber: val1's or val2's number
+                if CssType.number == c.computedType {
+                    if CssType.number == c.val1.type {
+                        return try numberIsZero(c.val1)
+                    }
+                    if let v2 = c.val2, CssType.number == v2.type {
+                        return try numberIsZero(v2)
+                    }
+                }
+                throw Interrupt.runtime(nil)
+            case .math(let m):
+                if CssType.number == m.computedType {
+                    for v in m.values where CssType.number == v.type {
+                        return try numberIsZero(v)
+                    }
+                }
+                throw Interrupt.runtime(nil)
+            case .variable(_, let type, let fallback), .env(_, let type, let fallback):
+                // CssVariable.getNumber() and CssEnv.getNumber() give their
+                // one fallback (declaration) value's number when their type
+                // is number, and throw ClassCastException otherwise (Case
+                // 554591 review): so var(--x, 0) is a zero that may be added
+                // to a length, and dividing by it is a division by zero
+                if CssType.number == type, let f = fallback, 1 == f.count {
+                    return try numberIsZero(f.values[0])
+                }
+                throw Interrupt.runtime(nil)
+            case .attr:
+                // CssAttr.getNumber() always throws ClassCastException
+                throw Interrupt.runtime(nil)
+            default:
+                throw Interrupt.runtime(nil)
+            }
+        }
+
+        /// _computeResultingType (CssCalc.java:164-238).
+        func computeType(_ c: Calc) throws {
+            if c.containsVariable {
+                return
+            }
+            guard let v2 = c.val2 else {
+                let t = c.val1.type
+                try checkAcceptable(t, c)
+                c.computedType = t
+                return
+            }
+            let t1 = c.val1.type
+            let t2 = v2.type
+            switch c.op {
+            case 0x2A:
+                if CssType.number == t1 {
+                    try checkAcceptable(t2, c)
+                    c.computedType = t2
+                } else if CssType.number == t2 {
+                    try checkAcceptable(t1, c)
+                    c.computedType = t1
+                } else {
+                    throw calcError(c, Message.operandNumber)
+                }
+            case 0x2F:
+                if CssType.number != t2 {
+                    throw calcError(c, Message.divisorType)
+                }
+                if try numberIsZero(v2) {
+                    throw calcError(c, Message.divZero)
+                }
+                try checkAcceptable(t1, c)
+                c.computedType = t1
+            default:
+                if t1 == t2 {
+                    try checkAcceptable(t1, c)
+                    c.computedType = t1
+                } else if CssType.percentage == t1 {
+                    try checkAcceptable(t2, c)
+                    c.computedType = t2
+                } else if CssType.percentage == t2 {
+                    try checkAcceptable(t1, c)
+                    c.computedType = t1
+                } else if CssType.number == t1, try numberIsZero(c.val1) {
+                    try checkAcceptable(t2, c)
+                    c.computedType = t2
+                } else if CssType.number == t2, try numberIsZero(v2) {
+                    try checkAcceptable(t1, c)
+                    c.computedType = t1
+                } else {
+                    throw calcError(c, Message.incompatibleTypes)
+                }
+            }
+        }
+
+        /// mathfunction (CssParser.jj:3605-3613) and its four forms.
+        func mathFunction() throws -> MathFunction {
+            try enter(1)
+            defer {
+                leave(1)
+            }
+            let n = try advance()
+            let prefix = HTMLMediaQueryDatatype.string(image(n)).lowercased()
+            let m = MathFunction(prefix: prefix)
+            try skipSpaces()
+            switch n.kind {
+            case T.functionRound:
+                // LOOKAHEAD(2) n=<IDENT> (CssParser.jj:3642): the generated
+                // jj_3_25 scans the IDENT alone, so any identifier first
+                // takes this branch, and "round(pi*1px, 1px)" then fails at
+                // the "*" (Case 554591 review)
+                if try lookahead(2, { try self.scan(T.ident) }) {
+                    let id = try consume(T.ident)
+                    m.values.append(.ident(convertIdent(Array(image(id)))))
+                    try mathComputeType(m, final: false)
+                } else {
+                    try mathAdd(m, try mathSum(), first: true)
+                }
+                try skipSpaces()
+                while T.comma == (try next()) {
+                    try consume(T.comma)
+                    try skipSpaces()
+                    try mathAdd(m, try mathSum(), first: false)
+                    try skipSpaces()
+                }
+            case T.functionMath1:
+                try mathAdd(m, try mathSum(), first: true)
+                try skipSpaces()
+            case T.functionMath2:
+                try mathAdd(m, try mathSum(), first: true)
+                try skipSpaces()
+                if T.comma == (try next()) {
+                    try consume(T.comma)
+                    try skipSpaces()
+                    try mathAdd(m, try mathSum(), first: false)
+                    try skipSpaces()
+                }
+            default:
+                try mathAdd(m, try mathSum(), first: true)
+                try skipSpaces()
+                while T.comma == (try next()) {
+                    try consume(T.comma)
+                    try skipSpaces()
+                    try mathAdd(m, try mathSum(), first: false)
+                    try skipSpaces()
+                }
+            }
+            try consume(T.rparen)
+            try mathComputeType(m, final: true)
+            return m
+        }
+
+        /// mathclamp (CssParser.jj:3681-3705).
+        func mathClamp() throws -> MathFunction {
+            try enter(1)
+            defer {
+                leave(1)
+            }
+            try consume(T.functionClamp)
+            try skipSpaces()
+            var values = [Value]()
+            for index in 0..<3 {
+                values.append(try mathSum())
+                try skipSpaces()
+                if index < 2 {
+                    try consume(T.comma)
+                    try skipSpaces()
+                }
+            }
+            try consume(T.rparen)
+            let m = MathFunction(prefix: "clamp(")
+            for v in values {
+                m.values.append(v)
+                try mathComputeType(m, final: false)
+            }
+            try mathComputeType(m, final: true)
+            return m
+        }
+
+        /// The CssMathFunction constructor with its first value (its type
+        /// check's exception ignored), or addValue.
+        func mathAdd(_ m: MathFunction, _ value: Value, first: Bool) throws {
+            m.values.append(value)
+            if first && 1 == m.values.count {
+                m.computedType = value.type
+                return
+            }
+            try mathComputeType(m, final: false)
+        }
+
+        func mathAcceptable(_ type: Int, _ m: MathFunction) throws -> Int {
+            if CssType.percentage != type && CssType.length != type && CssType.number != type
+                && CssType.angle != type && CssType.frequency != type && CssType.time != type {
+                throw m.values.contains(where: { $0.messageThrows }) ? Interrupt.runtime(nil)
+                    : Interrupt.parse(.invalid(Message.invalidType(m.unprefixed)))
+            }
+            return type
+        }
+
+        /// _computeResultingType (CssMathFunction.java:118-190) and its
+        /// helpers.
+        func mathComputeType(_ m: MathFunction, final: Bool) throws {
+            // incompatibletypes prints the function (toString()), which
+            // throws first for a number Java can't print; looked at only
+            // when it's thrown, as this runs at every value of a list
+            var incompatible: Interrupt {
+                m.values.contains(where: { $0.textThrows }) ? Interrupt.runtime(nil)
+                    : Interrupt.parse(.invalid(Message.incompatibleTypes))
+            }
+            let unrecognized = Interrupt.parse(.invalid(Message.unrecognize))
+            func type(_ i: Int) -> Int {
+                m.values[i].type
+            }
+            let lengthy: Set<Int> = [CssType.percentage, CssType.length, CssType.number]
+            switch m.prefix {
+            case "clamp(", "min(", "max(", "hypot(":
+                // _computeResultingTypeList (CssMathFunction.java:420-462),
+                // folding only the values not folded yet
+                while m.listFolded < m.values.count {
+                    let v = m.values[m.listFolded]
+                    m.listFolded += 1
+                    if m.listFirst {
+                        m.listType = v.type
+                        if CssType.variable == m.listType {
+                            m.hasVariable = true
+                            continue
+                        }
+                        _ = try mathAcceptable(m.listType, m)
+                        m.computedType = m.listType
+                        m.listFirst = false
+                        m.listPrevious = v
+                        continue
+                    }
+                    if m.listType == v.type {
+                        m.listPrevious = v
+                        continue
+                    }
+                    if CssType.percentage == m.listType {
+                        m.listType = try mathAcceptable(v.type, m)
+                        m.listPrevious = v
+                        continue
+                    }
+                    if CssType.percentage == v.type {
+                        continue
+                    }
+                    if CssType.number == m.listType, let p = m.listPrevious, try numberIsZero(p) {
+                        m.listType = try mathAcceptable(v.type, m)
+                        m.listPrevious = v
+                        continue
+                    }
+                    if CssType.number == v.type, try numberIsZero(v) {
+                        continue
+                    }
+                    if CssType.variable == v.type || CssType.variable == v.rawType {
+                        m.hasVariable = true
+                        continue
+                    }
+                    throw incompatible
+                }
+                m.computedType = m.listType
+            case "sin(", "cos(", "tan(", "asin(", "acos(", "atan(":
+                guard final else {
+                    return
+                }
+                if m.values.count > 1 {
+                    throw unrecognized
+                }
+                let t = type(0)
+                if CssType.variable == t || CssType.number == t || CssType.angle == t {
+                    m.computedType = m.prefix.hasPrefix("a") ? CssType.angle : CssType.number
+                } else {
+                    throw incompatible
+                }
+            case "exp(", "sqrt(":
+                if m.values.count > 1 {
+                    throw unrecognized
+                }
+                let t = type(0)
+                if CssType.number == t || CssType.variable == t {
+                    m.computedType = t
+                } else {
+                    throw incompatible
+                }
+            case "pow(":
+                guard final else {
+                    return
+                }
+                if 2 != m.values.count {
+                    throw unrecognized
+                }
+                let t1 = type(0)
+                let t2 = type(1)
+                if CssType.number == t1 && CssType.number == t2 {
+                    m.computedType = CssType.number
+                } else if CssType.variable == t1 && (CssType.number == t2 || CssType.variable == t2) {
+                    m.computedType = t2
+                } else if CssType.variable == t2 && CssType.number == t1 {
+                    m.computedType = t1
+                } else {
+                    throw incompatible
+                }
+            case "log(":
+                guard final else {
+                    return
+                }
+                if m.values.count > 2 {
+                    throw unrecognized
+                }
+                let t = type(0)
+                if CssType.number == t || CssType.variable == t {
+                    m.computedType = t
+                } else {
+                    throw incompatible
+                }
+                if m.values.count > 1 {
+                    let t2 = type(1)
+                    if CssType.number != t2 && CssType.variable != t2 {
+                        throw incompatible
+                    }
+                }
+            case "mod(", "rem(":
+                guard final else {
+                    return
+                }
+                if 2 != m.values.count {
+                    throw unrecognized
+                }
+                let t1 = type(0)
+                let t2 = type(1)
+                if CssType.variable == t1 || CssType.variable == t2 {
+                    m.computedType = CssType.variable != t1 ? t1 : t2
+                } else if t1 == t2 {
+                    m.computedType = t1
+                } else {
+                    throw incompatible
+                }
+            case "abs(":
+                if m.values.count > 1 {
+                    throw unrecognized
+                }
+                m.computedType = type(0)
+            case "atan2(":
+                guard final else {
+                    return
+                }
+                if 2 != m.values.count {
+                    throw unrecognized
+                }
+                let t1 = type(0)
+                let t2 = type(1)
+                if CssType.variable == t1 || CssType.variable == t2 {
+                    if CssType.variable != t1 && !lengthy.contains(t1) {
+                        throw incompatible
+                    } else if CssType.variable == t1 && CssType.variable != t2 && !lengthy.contains(t2) {
+                        throw incompatible
+                    }
+                    m.computedType = CssType.angle
+                    return
+                }
+                if !lengthy.contains(t1) || t1 != t2 {
+                    throw incompatible
+                }
+                m.computedType = CssType.angle
+            case "sign(":
+                guard final else {
+                    return
+                }
+                if m.values.count > 1 {
+                    throw unrecognized
+                }
+                m.computedType = CssType.number
+            case "round(":
+                guard final else {
+                    return
+                }
+                let count = m.values.count
+                if count < 2 || count > 3 {
+                    throw unrecognized
+                }
+                var t1: Int
+                var t2: Int
+                if 2 == count {
+                    t1 = type(0)
+                    if CssType.ident == t1 {
+                        // "parsing artefact" (CssMathFunction.java:337-344):
+                        // an identifier counts as a number when CssNumber.set
+                        // takes it, with its sign stripped and BigDecimal's
+                        // digits, as calcNumber does it (so -pi and \31 do,
+                        // Case 554591 review); its exception is ignored
+                        // values.get(0).getIdent(), whose ClassCastException
+                        // the catch ignores too; a var() with an identifier
+                        // fallback answers with that ("round(var(--x, pi),
+                        // 1)")
+                        if let units = m.values[0].javaIdent, nil != (try? calcNumber(units)) {
+                            t1 = CssType.number
+                        }
+                    } else if CssType.variable == t1 {
+                        t2 = type(1)
+                        if CssType.variable == t2 {
+                            m.computedType = t1
+                            return
+                        }
+                        if !lengthy.contains(t2) {
+                            throw incompatible
+                        }
+                        m.computedType = t2
+                        return
+                    } else if !lengthy.contains(t1) {
+                        throw incompatible
+                    }
+                    t2 = type(1)
+                } else {
+                    // v.getType() != CSS_IDENT, then isAllowedRounding(v
+                    // .getIdent()) (CssMathFunction.java:368-375): a var()
+                    // with an identifier fallback names its strategy, and a
+                    // value of identifier type without getIdent() throws
+                    // ClassCastException
+                    guard CssType.ident == m.values[0].type else {
+                        throw incompatible
+                    }
+                    guard let units = m.values[0].javaIdent else {
+                        throw Interrupt.runtime(nil)
+                    }
+                    let strategies = ["nearest", "up", "down", "to-zero"]
+                    if !strategies.contains(where: { identEquals(units, $0) }) {
+                        throw incompatible
+                    }
+                    t1 = type(1)
+                    t2 = type(2)
+                }
+                if CssType.variable == t1 {
+                    if CssType.variable == t2 {
+                        m.computedType = t1
+                        return
+                    }
+                    if !lengthy.contains(t2) {
+                        throw incompatible
+                    }
+                    m.computedType = t2
+                    return
+                } else if CssType.variable == t2 {
+                    if !lengthy.contains(t1) {
+                        throw incompatible
+                    }
+                    m.computedType = t1
+                    return
+                }
+                if t1 == t2 && lengthy.contains(t1) {
+                    m.computedType = t1
+                } else {
+                    throw incompatible
+                }
+            default:
+                throw unrecognized
+            }
+        }
+
+        // MARK: What a value can inject after closing its rule
+
+        /// ruleSet (CssParser.jj:2334-2420), for a rule that follows a
+        /// value that closed its @media rule early: selectors, then a
+        /// block of declarations, whose syntax is checked (declaration())
+        /// but whose properties aren't, since that needs the CSS property
+        /// database: a bad property there goes unreported. A ParseException
+        /// is recorded after skipStatement; a TokenMgrError too, with its
+        /// own message (CssParser.java's ruleSet ends in `catch
+        /// (TokenMgrError e) { addError(new ParseException(e.getMessage()),
+        /// skipStatement()); }`).
+        func ruleSet() throws {
+            do {
+                do {
+                    try selectorList()
+                    try consume(T.lbrace)
+                    try skipSpaces()
+                    try declarations()
+                    try consume(T.rbrace)
+                    try skipSpaces()
+                } catch Interrupt.parse(let failure) {
+                    _ = try skipStatement()
+                    try record(failure)
+                }
+            } catch Interrupt.tokenMgr(let start, let kill) {
+                let message = lexicalError(start: start, kill: kill)
+                _ = try skipStatement()
+                try record(.plain(message))
+            }
+        }
+
+        /// TokenMgrError.LexicalErr (TokenMgrError.java:106-113), with
+        /// SimpleCharStream's line and column (a tab counts as one).
+        func lexicalError(start: Int, kill: Int) -> String {
+            var line = 1
+            var column = 0
+            var previousLF = false
+            var previousCR = false
+            var index = 0
+            while index <= kill && index < text.count {
+                let c = text[index]
+                column += 1
+                if previousLF {
+                    previousLF = false
+                    line += 1
+                    column = 1
+                } else if previousCR {
+                    previousCR = false
+                    if 0x0A == c {
+                        previousLF = true
+                    } else {
+                        line += 1
+                        column = 1
+                    }
+                }
+                if 0x0D == c {
+                    previousCR = true
+                } else if 0x0A == c {
+                    previousLF = true
+                }
+                index += 1
+            }
+            func escapes(_ units: ArraySlice<UInt16>) -> String {
+                var out = ""
+                for ch in units {
+                    switch ch {
+                    case 0x08:
+                        out += "\\b"
+                    case 0x09:
+                        out += "\\t"
+                    case 0x0A:
+                        out += "\\n"
+                    case 0x0C:
+                        out += "\\f"
+                    case 0x0D:
+                        out += "\\r"
+                    case 0x22:
+                        out += "\\\""
+                    case 0x27:
+                        out += "\\'"
+                    case 0x5C:
+                        out += "\\\\"
+                    default:
+                        if ch < 0x20 || ch > 0x7E {
+                            let hex = String(ch, radix: 16)
+                            out += "\\u" + String(repeating: "0", count: max(0, 4 - hex.count)) + hex
+                        } else {
+                            out.append(Character(Unicode.Scalar(UInt8(ch))))
+                        }
+                    }
+                }
+                return out
+            }
+            guard kill < text.count else {
+                return "Lexical error at line \(line), column \(column).  Encountered: <EOF>"
+            }
+            let current = text[kill]
+            var message = "Lexical error at line \(line), column \(column).  Encountered: '"
+                + escapes(text[kill...kill]) + "' (\(current)),"
+            if kill > start {
+                message += " after prefix \"" + escapes(text[start..<kill]) + "\""
+            }
+            return message
+        }
+
+        /// selector_list: a lenient reading of CSS selectors, enough for
+        /// what a media attribute might hold: compound selectors of
+        /// identifiers, "*", "#id", ".class", "[...]", ":pseudo" and
+        /// "::pseudo", joined by combinators and commas.
+        func selectorList() throws {
+            try selector()
+            while T.comma == (try next()) {
+                try consume(T.comma)
+                try skipSpaces()
+                try selector()
+            }
+        }
+
+        /// complex_selector (CssParser.jj:2574-2620): compound_selector (
+        /// LOOKAHEAD(2) ( combinator() )? compound_selector )*. The
+        /// combinator is optional, so "a*" and "a/**/b" are two compounds
+        /// with none (a comment is a special token); and the loop's
+        /// two-token lookahead takes an S only when a compound selector
+        /// follows it, so an S before "{" is left for ruleSet to fail on, as
+        /// after "not ^" (Case 554591 review).
+        func selector() throws {
+            try compoundSelector()
+            while try selectorContinues() {
+                let k = try next()
+                if T.plus == k || T.greater == k || T.tilde == k || T.twoPipes == k {
+                    // combinator(): ( PLUS | GREATER | TILDE | TWOPIPES ) S*
+                    try advance()
+                    try skipSpaces()
+                } else if T.s == k {
+                    // or S+
+                    try skipSpaces()
+                }
+                try compoundSelector()
+            }
+        }
+
+        /// The loop's LOOKAHEAD(2): an optional combinator, then the first
+        /// token of a compound selector (or, after a combinator token, an S).
+        func selectorContinues() throws -> Bool {
+            let k1 = try peek(1).kind
+            if T.plus == k1 || T.greater == k1 || T.tilde == k1 || T.twoPipes == k1 {
+                let k2 = try peek(2).kind
+                return T.s == k2 || Parser.compoundStarts.contains(k2)
+            }
+            if T.s == k1 {
+                // S+: a second S (after a bad character's resume) uses up the
+                // two-token budget too
+                let k2 = try peek(2).kind
+                return T.s == k2 || Parser.compoundStarts.contains(k2)
+            }
+            return Parser.compoundStarts.contains(k1)
+        }
+
+        /// What can continue a compound selector, for the tokens
+        /// compound_selector's LOOKAHEAD(4) fetches.
+        static let selectorParts: Set<Int> = [
+            T.ident, T.and, T.or, T.not, T.only, T.any, T.hashIdent, T.hash, T.dot, T.lbracket, T.colon,
+            T.pseudoElement, T.pipe, T.relFontLength, T.relViewLength, T.absolutLength, T.angle, T.time, T.freq,
+            T.resolution, T.dimen, T.function
+        ]
+
+        /// What can begin a compound selector.
+        static let compoundStarts: Set<Int> = selectorParts.subtracting([T.function])
+
+        func compoundSelector() throws {
+            // compound_selector begins with LOOKAHEAD(4) (CssParser.jj:
+            // 2668), whose scan fetches up to four tokens of the selector,
+            // and so meets a bad character among them before anything is
+            // checked
+            var ahead = 1
+            while ahead <= 4 {
+                let t = try peek(ahead)
+                if !Parser.selectorParts.contains(t.kind) {
+                    break
+                }
+                ahead += 1
+            }
+            var any = false
+            // type_selector's namespace prefix, ( LOOKAHEAD(2) ( ident() |
+            // "*" )? "|" )? (CssParser.jj:2774-2830): "|a" and "*|a" need
+            // no @namespace, and a named prefix can never be declared in a
+            // media value, so it is upstream's "Undefined namespace" (Case
+            // 554591 review)
+            let k0 = try next()
+            var prefixed = false
+            if T.pipe == k0 {
+                try advance()
+                prefixed = true
+            } else if [T.ident, T.and, T.or, T.not, T.only, T.any].contains(k0), T.pipe == (try peek(2)).kind {
+                let prefix = try advance()
+                try advance()
+                if T.any != prefix.kind {
+                    try record(.plain("Undefined namespace"))
+                }
+                prefixed = true
+            }
+            if prefixed {
+                let k = try next()
+                guard [T.ident, T.and, T.or, T.not, T.only, T.any].contains(k) else {
+                    throw Interrupt.parse(.syntax)
+                }
+                try advance()
+                any = true
+            }
+            while true {
+                let k = try next()
+                switch k {
+                case T.ident, T.and, T.or, T.not, T.only, T.any:
+                    guard !any else {
+                        return
+                    }
+                    try advance()
+                case T.hashIdent:
+                    try advance()
+                case T.hash:
+                    // hash() (CssParser.jj, after id_dim): a HASH that isn't
+                    // a HASHIDENT ("#1", "#-1") is new ParseException(
+                    // "Invalid ID selector"), which ruleSet records (Case
+                    // 554591 review: the port once took it as an id)
+                    throw Interrupt.parse(.plain("Invalid ID selector"))
+                case T.relFontLength, T.relViewLength, T.absolutLength, T.angle, T.time, T.freq, T.resolution,
+                     T.dimen:
+                    // class_selector's deprecated_class (CssParser.jj:
+                    // 2693-2757): a dimension as a class, the CSS1 way
+                    let n = try advance()
+                    let units = Array(image(n))
+                    guard 0x2E == units.first, units.count >= 3 else {
+                        throw Interrupt.parse(.plain("Unrecognized "))
+                    }
+                    let name = Array(units.dropFirst())
+                    var escaped = "\\" + String(name[0], radix: 16)
+                    if HTMLMediaQueryDatatype.isHex(name[1]) {
+                        escaped += " "
+                    }
+                    escaped += HTMLMediaQueryDatatype.string(name[1...])
+                    throw Interrupt.parse(.plain(Message.oldClass(HTMLMediaQueryDatatype.string(name[...]), "." + escaped)))
+                case T.dot:
+                    try advance()
+                    _ = try identToken()
+                case T.lbracket:
+                    try advance()
+                    var nesting = 1
+                    while nesting > 0 {
+                        let t = try advance()
+                        if T.lbracket == t.kind {
+                            nesting += 1
+                        } else if T.rbracket == t.kind {
+                            nesting -= 1
+                        } else if T.eof == t.kind {
+                            throw Interrupt.parse(.syntax)
+                        }
+                    }
+                case T.colon, T.pseudoElement:
+                    let colon = try advance()
+                    let k2 = try next()
+                    if T.pseudoElement == colon.kind && (T.function == k2 || (k2 >= 130 && k2 <= 156)) {
+                        // pseudo_element_selector takes an identifier or
+                        // slotted( only (CssParser.jj, pseudo_element_selector)
+                        guard 135 == k2 else {
+                            throw Interrupt.parse(.syntax)
+                        }
+                        try advance()
+                        try skipToMatchingParen()
+                        try consume(T.rparen)
+                    } else if T.function == k2 {
+                        // ":" FUNCTION S* expression() ")": expression is one
+                        // or more of + - NUMBER PERCENTAGE DIMEN STRING ident,
+                        // each with S*; then setPseudoFun knows no such
+                        // function (the named ones are tokens of their own),
+                        // a plain error (Case 554591 review)
+                        let f = try advance()
+                        try skipSpaces()
+                        var terms = 0
+                        while [T.plus, T.minus, T.number, T.percentage, T.dimen, T.string, T.ident, T.and, T.or, T.not,
+                               T.only].contains(try next()) {
+                            try advance()
+                            try skipSpaces()
+                            terms += 1
+                        }
+                        if 0 == terms {
+                            throw Interrupt.parse(.syntax)
+                        }
+                        try consume(T.rparen)
+                        let fname = javaLowercase(convertIdent(Array(image(f).dropLast())))
+                        try recordPlain("Unknown pseudo-element or pseudo-class “:\(HTMLMediaQueryDatatype.string(fname[...]))”")
+                    } else if k2 >= 130 && k2 <= 156 {
+                        // the functional pseudo-classes with tokens of their
+                        // own (:not(, :is(, :nth-child(, ...), read leniently
+                        try advance()
+                        try skipToMatchingParen()
+                        try consume(T.rparen)
+                    } else {
+                        let n = try identToken()
+                        let name = HTMLMediaQueryDatatype.string(
+                            javaLowercase(T.ident == n.kind ? convertIdent(Array(image(n))) : Array(image(n)))[...])
+                        try checkPseudo(name, element: T.pseudoElement == colon.kind)
+                    }
+                default:
+                    if !any {
+                        throw Interrupt.parse(.syntax)
+                    }
+                    return
+                }
+                any = true
+            }
+        }
+
+        /// CssSelectors.addPseudoClass and addPseudoElement (parser/
+        /// CssSelectors.java:172-235), with PseudoFactory's CSS3 lists: a
+        /// vendor name ("-" first) is only a warning; an unknown
+        /// pseudo-class is a plain error, an unknown pseudo-element a
+        /// ParseException (pseudo_element_selector rethrows it).
+        func checkPseudo(_ name: String, element: Bool) throws {
+            if name.hasPrefix("-") {
+                return
+            }
+            if element {
+                if !HTMLMediaQueryDatatype.pseudoElements.contains(name) {
+                    throw Interrupt.parse(.plain("Unknown pseudo-element or pseudo-class “::\(name)”"))
+                }
+                return
+            }
+            if !HTMLMediaQueryDatatype.pseudoClasses.contains(name)
+                && !["first-line", "first-letter", "before", "after"].contains(name) {
+                try recordPlain("Unknown pseudo-element or pseudo-class “:\(name)”")
+            }
+        }
+
+        /// declarations (CssParser.jj:3165-3240): declaration? ( ";" S*
+        /// declaration? )*.
+        func declarations() throws {
+            while true {
+                let k = try next()
+                if T.rbrace == k || T.eof == k {
+                    return
+                }
+                if T.semicolon == k {
+                    try advance()
+                    try skipSpaces()
+                    continue
+                }
+                try declaration()
+                currentProperty = nil
+            }
+        }
+
+        /// declaration (CssParser.jj:3242-3330): property ":" S* expr?
+        /// prio?, with errors meanwhile naming the property (property()
+        /// sets currentProperty, CssParser.jj:2263; declarations() clears
+        /// it, 2449-2460). A missing value is a plain syntax error; a
+        /// ParseException goes to skipAfterExpression, which records it.
+        /// The property and its value aren't checked any further: that
+        /// would be the CSS property database (handleDeclaration).
+        func declaration() throws {
+            // a CSS-hack property name (property(), CssParser.jj:2258-2284):
+            // one of these tokens right before the name, or a #name, .name
+            // or @name; hacks are warnings, so property() returns null and
+            // declaration() parses the value and records nothing more, not
+            // even a missing value (Case 554591 review)
+            var hack = false
+            do {
+                let k = try next()
+                let n: Token
+                if Parser.propertyHacks.contains(k) {
+                    try advance()
+                    n = try identToken()
+                    hack = true
+                    currentProperty = HTMLMediaQueryDatatype.string(convertIdent(Array(image(n)))[...])
+                    try skipSpaces()
+                } else if T.hashIdent == k || T.atKeyword == k || T.dot == k {
+                    // convertIdent(n.image).substring(1), and no S* after:
+                    // the action returns before it
+                    if T.dot == k {
+                        try advance()
+                        n = try identToken()
+                    } else {
+                        n = try advance()
+                    }
+                    hack = true
+                    currentProperty = HTMLMediaQueryDatatype.string(convertIdent(Array(image(n))).dropFirst())
+                } else {
+                    if T.dashedIdent == k {
+                        n = try advance()
+                    } else {
+                        n = try identToken()
+                    }
+                    currentProperty = HTMLMediaQueryDatatype.string(convertIdent(Array(image(n)))[...])
+                    try skipSpaces()
+                }
+                let property = currentProperty ?? ""
+                try consume(T.colon)
+                try skipSpaces()
+                // ( values=expr() )?: no value at all (values == null) is a
+                // syntax error, but an expression that came out empty (as
+                // "!ie" leaves it, a warning) isn't
+                var parsedValue = false
+                let first = try next()
+                if T.importantSym != first && T.semicolon != first && T.rbrace != first {
+                    _ = try expr()
+                    parsedValue = true
+                }
+                if T.importantSym == (try next()) {
+                    try advance()
+                    try skipSpaces()
+                }
+                if !parsedValue && !hack && !property.hasPrefix("--") {
+                    throw Interrupt.parse(.syntax)
+                }
+            } catch Interrupt.parse(let failure) {
+                // skipAfterExpression (CssParser.jj:4305-4335): to the next
+                // ";" or "}", then the error
+                try skipAfterExpression()
+                try record(failure)
+            } catch Interrupt.runtime(let message) {
+                // declaration() catches NumberFormatException and
+                // NullPointerException for skipAfterExpression, which records
+                // them with their own messages and the property (Case 554591
+                // review); the port knows BigDecimal's messages, not the
+                // JDK's NullPointerException texts
+                try skipAfterExpression()
+                try record(.invalid(message ?? "null"))
+            }
+        }
+
+        /// The tokens property() takes before a hacked name.
+        static let propertyHacks: Set<Int> = [
+            T.bang, T.dollar, T.percent, T.ampersand, T.backquote, T.question, T.less, T.pipe, T.any, T.eq,
+            T.rbracket, T.lbracket, T.rparen, T.lparen, T.colon, T.tilde, T.plus, T.comma, T.greater, T.div
+        ]
+
+        /// skipAfterExpression's skipping: tokens up to ";", "}" or the
+        /// end, a block skipped whole, a TokenMgrError costing a character.
+        func skipAfterExpression() throws {
+            while true {
+                do {
+                    let t = try peek(1)
+                    if T.lbrace == t.kind {
+                        try advance()
+                        _ = try skipToMatchingBrace()
+                        try advance()
+                        continue
+                    }
+                    if T.semicolon == t.kind || T.rbrace == t.kind || T.eof == t.kind {
+                        return
+                    }
+                    try advance()
+                } catch Interrupt.tokenMgr {
+                    guard position < text.count else {
+                        return
+                    }
+                    position += 1
+                }
+            }
+        }
+
+        /// atRuleDeclaration (CssParser.jj:2156-2180): an at-rule the
+        /// validator doesn't know is an error, but a vendor one ("@-webkit-
+        /// …") only a warning.
+        func atRuleDeclaration() throws {
+            let n = try consume(T.atKeyword)
+            let name = imageString(n)
+            if !name.hasPrefix("@-") {
+                try recordPlain(Message.unrecognizedAtRule(name))
+            }
+            _ = try skipStatement()
+        }
+
+        /// viewport() (CssParser.jj:1930-1972): VIEWPORT_SYM S* "{" S*
+        /// declarations() "}" S*. Under css3svg its catch swallows a
+        /// ParseException and leaves the token where it failed (only below
+        /// CSS3 does it record the error and skip the statement), so in
+        /// "all{@viewport}a" the "}" closes @media's block and "a" starts a
+        /// rule. A TokenMgrError isn't caught (Case 554591 review: the port
+        /// once skipped @viewport like the other at-rules, which ate that
+        /// "}" and failed the value).
+        func viewport() throws {
+            try consume(T.viewportSym)
+            do {
+                try skipSpaces()
+                try consume(T.lbrace)
+                try skipSpaces()
+                // declarations() as generated (CssParser.java:5305-5400):
+                // declaration()? ( ";" S* declaration()? )*, entering a
+                // declaration only at a token that can start one, and
+                // returning at any other, which the "}" then fails on (so
+                // "@viewport{@media x{}}" leaves "@media" to the block
+                // around it)
+                if Parser.declarationStarts.contains(try next()) {
+                    try declaration()
+                    currentProperty = nil
+                }
+                while T.semicolon == (try next()) {
+                    try advance()
+                    try skipSpaces()
+                    if Parser.declarationStarts.contains(try next()) {
+                        try declaration()
+                        currentProperty = nil
+                    }
+                }
+                try consume(T.rbrace)
+                try skipSpaces()
+            } catch Interrupt.parse {
+                return
+            }
+        }
+
+        /// The tokens a declaration can start with (the generated
+        /// declarations()' cases): a property hack's token, an identifier,
+        /// a #name, .name or @name.
+        static let declarationStarts: Set<Int> = propertyHacks.union([
+            T.and, T.or, T.only, T.not, T.ident, T.hashIdent, T.dashedIdent, T.dot, T.atKeyword
+        ])
+
+        /// The other at-rules (@page, @font-face, ...): their blocks are
+        /// skipped unchecked.
+        func otherAtRule() throws {
+            try advance()
+            skippingAtRule = true
+            defer {
+                skippingAtRule = false
+            }
+            _ = try skipStatement()
+        }
+    }
+
+    // MARK: - The media features
+
+    /// The media features of CSS3Properties.properties:571-605, by family.
+    private enum FeatureKind {
+        case keywords([String])
+        case viewMode
+        case grid
+        case width
+        case height
+        case aspectRatio
+        case integer(Int)
+        case resolution
+        case deprecated
+    }
+
+    private static let features: [String: FeatureKind] = [
+        "any-hover": .keywords(["none", "hover"]),
+        "hover": .keywords(["none", "hover"]),
+        "any-pointer": .keywords(["none", "coarse", "fine"]),
+        "pointer": .keywords(["none", "coarse", "fine"]),
+        "color-gamut": .keywords(["srgb", "p3", "rec2020"]),
+        "video-color-gamut": .keywords(["srgb", "p3", "rec2020"]),
+        "dynamic-range": .keywords(["standard", "high"]),
+        "video-dynamic-range": .keywords(["standard", "high"]),
+        "environment-blending": .keywords(["opaque", "additive", "subtractive"]),
+        "forced-colors": .keywords(["none", "active"]),
+        "inverted-colors": .keywords(["none", "inverted"]),
+        "orientation": .keywords(["portrait", "landscape"]),
+        "overflow-block": .keywords(["none", "scroll", "paged"]),
+        "overflow-inline": .keywords(["none", "scroll"]),
+        "prefers-color-scheme": .keywords(["light", "dark"]),
+        "prefers-contrast": .keywords(["no-preference", "less", "more", "custom"]),
+        "prefers-reduced-motion": .keywords(["no-preference", "reduce"]),
+        "prefers-reduced-transparency": .keywords(["no-preference", "reduce"]),
+        "scan": .keywords(["interlace", "progressive"]),
+        "scripting": .keywords(["none", "initial-only", "enabled"]),
+        "update": .keywords(["none", "slow", "fast"]),
+        "view-mode": .viewMode,
+        "grid": .grid,
+        "width": .width,
+        "height": .height,
+        "aspect-ratio": .aspectRatio,
+        "color": .integer(1),
+        "monochrome": .integer(1),
+        "horizontal-viewport-segments": .integer(1),
+        "vertical-viewport-segments": .integer(1),
+        "color-index": .integer(2),
+        "resolution": .resolution,
+        "device-width": .deprecated,
+        "device-height": .deprecated,
+        "device-aspect-ratio": .deprecated
+    ]
+
+    private static let lengthUnits = [
+        "em", "rem", "ex", "rex", "cap", "rcap", "ch", "rch", "ic", "ric", "lh", "rlh",
+        "vw", "svw", "lvw", "dvw", "vh", "svh", "lvh", "dvh",
+        "vi", "svi", "lvi", "dvi", "vb", "svb", "lvb", "dvb",
+        "vmin", "svmin", "lvmin", "dvnim", "vmax", "svmax", "lvmax", "dvmax",
+        "in", "cm", "mm", "pt", "pc", "px", "q"
+    ]
+
+    /// The names CssNumber.set takes as numbers.
+    private static let calcConstants: Set<String> = [
+        "pi", "e", "infinity", "nan", "a", "alpha", "b", "c", "g", "h", "l", "r", "s", "w"
+    ]
+
+    /// PseudoFactory's CSS3 pseudo-classes and pseudo-elements
+    /// (selectors/PseudoFactory.java:32-95).
+    private static let pseudoClasses: Set<String> = [
+        "any-link", "link", "visited", "local-link", "target", "target-within", "scope", "hover", "active", "focus",
+        "focus-visible", "focus-within", "current", "past", "future", "playing", "paused", "enabled", "disabled",
+        "read-only", "read-write", "placeholder-shown", "default", "checked", "indeterminate", "blank", "valid",
+        "invalid", "in-range", "out-of-range", "required", "optional", "user-invalid", "root", "empty",
+        "first-child", "last-child", "only-child", "first-of-type", "last-of-type", "only-of-type", "left", "right",
+        "first", "host", "fullscreen", "autofill", "defined"
+    ]
+
+    private static let pseudoElements: Set<String> = [
+        "first-line", "first-letter", "selection", "target-text", "spelling-error", "grammar-error", "before",
+        "after", "marker", "placeholder", "file-selector-button", "backdrop", "cue", "cue-region", "content", "shadow"
+    ]
+
+    /// CssEnv's environment variables with a length type.
+    private static let envLengths: Set<String> = [
+        "safe-area-inset-top", "safe-area-inset-left", "safe-area-inset-bottom", "safe-area-inset-right",
+        "viewport-segment-width", "viewport-segment-height", "viewport-segment-top", "viewport-segment-left",
+        "viewport-segment-bottom", "viewport-segment-right"
+    ]
+
+    /// Whether CssImage.setImageList takes an identifier as a color: its
+    /// own CssColorCSS3.currentColor.equals (CssImage.java:184, CssIdent
+    /// equality), then CssColor.setIdentColor (CssColor.java:280-338) on
+    /// the name lowercased with toLowerCase(Locale.ENGLISH), so the Kelvin
+    /// sign is a k: getRGBA ("transparent".equalsIgnoreCase, then the named
+    /// colors), the system and deprecated system colors, and getIdentColor
+    /// ("currentColor".equalsIgnoreCase).
+    private static func isColorIdent(_ units: [UInt16]) -> Bool {
+        if identEquals(units, "currentcolor") {
+            return true
+        }
+        let lowered = javaLowercase(units)
+        if javaEqualsIgnoreCase(lowered, "transparent") || javaEqualsIgnoreCase(lowered, "currentcolor") {
+            return true
+        }
+        return colorKeywords.contains(string(lowered[...]))
+    }
+
+    /// The color keywords CssColor.setIdentColor takes in CSS3 (values/
+    /// color/CssColorCSS3.java:47-230): the named colors, transparent, and
+    /// the system and deprecated system colors (currentColor is checked
+    /// apart, by CssIdent's equality).
+    private static let colorKeywords: Set<String> = [
+        "aliceblue", "antiquewhite", "aqua", "aquamarine", "azure", "beige", "bisque", "black", "blanchedalmond",
+        "blue", "blueviolet", "brown", "burlywood", "cadetblue", "chartreuse", "chocolate", "coral",
+        "cornflowerblue", "cornsilk", "crimson", "cyan", "darkblue", "darkcyan", "darkgoldenrod", "darkgray",
+        "darkgreen", "darkgrey", "darkkhaki", "darkmagenta", "darkolivegreen", "darkorange", "darkorchid",
+        "darkred", "darksalmon", "darkseagreen", "darkslateblue", "darkslategray", "darkslategrey",
+        "darkturquoise", "darkviolet", "deeppink", "deepskyblue", "dimgray", "dimgrey", "dodgerblue",
+        "firebrick", "floralwhite", "forestgreen", "fuchsia", "gainsboro", "ghostwhite", "gold", "goldenrod",
+        "gray", "green", "greenyellow", "grey", "honeydew", "hotpink", "indianred", "indigo", "ivory", "khaki",
+        "lavender", "lavenderblush", "lawngreen", "lemonchiffon", "lightblue", "lightcoral", "lightcyan",
+        "lightgoldenrodyellow", "lightgray", "lightgreen", "lightgrey", "lightpink", "lightsalmon",
+        "lightseagreen", "lightskyblue", "lightslategray", "lightslategrey", "lightsteelblue", "lightyellow",
+        "lime", "limegreen", "linen", "magenta", "maroon", "mediumaquamarine", "mediumblue", "mediumorchid",
+        "mediumpurple", "mediumseagreen", "mediumslateblue", "mediumspringgreen", "mediumturquoise",
+        "mediumvioletred", "midnightblue", "mintcream", "mistyrose", "moccasin", "navajowhite", "navy",
+        "oldlace", "olive", "olivedrab", "orange", "orangered", "orchid", "palegoldenrod", "palegreen",
+        "paleturquoise", "palevioletred", "papayawhip", "peachpuff", "peru", "pink", "plum", "powderblue",
+        "purple", "rebeccapurple", "red", "rosybrown", "royalblue", "saddlebrown", "salmon", "sandybrown",
+        "seagreen", "seashell", "sienna", "silver", "skyblue", "slateblue", "slategray", "slategrey", "snow",
+        "springgreen", "steelblue", "tan", "teal", "thistle", "tomato", "turquoise", "violet", "wheat", "white",
+        "whitesmoke", "yellow", "yellowgreen", "transparent",
+        "accentcolor", "accentcolortext", "activetext", "buttonborder", "buttonface", "buttontext", "canvas",
+        "canvastext", "field", "fieldtext", "graytext", "highlight", "highlighttext", "linktext", "mark",
+        "marktext", "selecteditem", "selecteditemtext", "visitedtext",
+        "activeborder", "activecaption", "appworkspace", "background", "buttonhighlight", "buttonshadow",
+        "captiontext", "inactiveborder", "inactivecaption", "inactivecaptiontext", "infobackground", "infotext",
+        "menu", "menutext", "scrollbar", "threeddarkshadow", "threedface", "threedhighlight",
+        "threedlightshadow", "threedshadow", "window", "windowframe", "windowtext"
+    ]
+
+    /// A media feature class's constructor (atrules/css3/media/*.java).
+    private struct FeatureCheck {
+        enum Result {
+            /// The feature, whether it's a MediaRangeFeature, and the values
+            /// it keeps (which media() prints, MediaRangeFeature.toString).
+            case valid(Bool, [Value])
+            /// An InvalidParamException, recorded as a plain error.
+            case error(String?)
+            /// Any other exception out of the constructor (a
+            /// ClassCastException, or building a message around a number
+            /// Java can't print): handleMediaFeature throws an
+            /// InvalidParamException with a null message, which is skipped.
+            case exception
+        }
+
+        /// A checkValue's verdict on one value.
+        enum Check {
+            case ok
+            case error(String)
+            case exception
+        }
+
+        let name: String
+        let modifier: String?
+        let expression: Expression?
+
+        func run(_ kind: FeatureKind) -> Result {
+            switch kind {
+            case .keywords(let allowed):
+                return keywords(allowed)
+            case .viewMode:
+                return keywords(["windowed", "floating", "fullscreen", "maximized", "minimized"])
+            case .grid:
+                return grid()
+            case .width:
+                return range(limit: nil, accepts: lengthValue)
+            case .height:
+                return range(limit: 2, accepts: lengthValue)
+            case .aspectRatio:
+                return range(limit: 2, accepts: ratioValue)
+            case .integer(let limit):
+                return range(limit: limit, accepts: integerValue)
+            case .resolution:
+                return resolution()
+            case .deprecated:
+                // MediaFeature.reportDeprecatedMediaFeature
+                // (atrules/css/media/MediaFeature.java:60-70), whatever the
+                // value
+                let full = modifier.map { "\($0)-\(name)" } ?? name
+                return .error(Message.deprecatedFeature(full))
+            }
+        }
+
+        /// The "value" error ("“V” is not a “F” value"), whose arguments
+        /// print the value: when that can't be done, the exception instead.
+        func valueError(_ val: Value, _ caller: String) -> Check {
+            val.messageThrows ? .exception : .error(Message.value(val.text, caller))
+        }
+
+        func result(_ check: Check) -> Result? {
+            switch check {
+            case .ok:
+                return nil
+            case .error(let message):
+                return .error(message)
+            case .exception:
+                return .exception
+            }
+        }
+
+        /// MediaHover and its 20 siblings, and ViewMode (whose deprecation
+        /// is only a warning): no prefix, at most one value, an allowed
+        /// keyword by CssIdent's hash equality.
+        func keywords(_ allowed: [String]) -> Result {
+            if nil != modifier {
+                return .error(Message.noModifierMedia(name))
+            }
+            guard let exp = expression else {
+                return .valid(false, [])
+            }
+            if exp.count > 1 {
+                return .error(Message.unrecognize)
+            }
+            if 0 == exp.count {
+                return .error(Message.fewValue(name))
+            }
+            let val = exp.values[0]
+            // switch (val.getType()), case CSS_IDENT: getAllowedIdent(val
+            // .getIdent()). Any value of identifier type takes that case, so
+            // an abs() or mod() of a var() with an identifier fallback has
+            // no getIdent() and fails with a ClassCastException, which
+            // MediaQuery skips (Case 554591 review: the port once matched
+            // identifiers alone, a false error for those)
+            if CssType.ident == val.type {
+                guard let units = val.javaIdent else {
+                    return .exception
+                }
+                if allowed.contains(where: { HTMLMediaQueryDatatype.identEquals(units, $0) }) {
+                    return .valid(false, [val])
+                }
+            }
+            return result(valueError(val, name)) ?? .valid(false, [val])
+        }
+
+        /// MediaGrid (MediaGrid.java:33-69).
+        func grid() -> Result {
+            if nil != modifier {
+                return .error(Message.noModifierMedia(name))
+            }
+            guard let exp = expression else {
+                return .valid(false, [])
+            }
+            if exp.count > 1 {
+                return .error(Message.unrecognize)
+            }
+            if 0 == exp.count {
+                return .error(Message.fewValue(name))
+            }
+            let val = exp.values[0]
+            guard CssType.number == val.type else {
+                return .error(Message.unrecognize)
+            }
+            if case .number(let n, let isInt, _) = val {
+                if !isInt {
+                    // checkInteger prints the number into the message
+                    return val.textThrows ? .exception : .error(Message.integer)
+                }
+                // getInt(): out of a Java int's range is "out-of-range",
+                // a key Messages.properties.en lacks: a null message
+                guard let v = n.intValueExact else {
+                    return .error(nil)
+                }
+                if 0 != v && 1 != v {
+                    return .error(Message.grid)
+                }
+            }
+            return .valid(false, [val])
+        }
+
+        /// What MediaWidth's and MediaHeight's checkValue accept.
+        func lengthValue(_ val: Value, _ caller: String) -> Check {
+            switch val.type {
+            case CssType.number:
+                // checkEqualsZero: a number must be zero (a calc() always
+                // is; a math function only warns). CssNumber's builds its
+                // message's arguments, the number printed, before it looks,
+                // and CssCalc's prints the calc().
+                if case .math = val {
+                    return .ok
+                }
+                if val.textThrows {
+                    return .exception
+                }
+                return val.isZero ? .ok : .error(Message.zero)
+            case CssType.length:
+                return .ok
+            default:
+                return valueError(val, caller)
+            }
+        }
+
+        /// MediaAspectRatio's checkValue.
+        func ratioValue(_ val: Value, _ caller: String) -> Check {
+            CssType.ratio == val.type ? .ok : valueError(val, caller)
+        }
+
+        /// The integer features' checkValue (MediaColor.java:91-108).
+        func integerValue(_ val: Value, _ caller: String) -> Check {
+            guard CssType.number == val.type else {
+                return valueError(val, caller)
+            }
+            if case .number(_, let isInt, _) = val, !isInt {
+                return val.textThrows ? .exception : .error(Message.integer)
+            }
+            return .ok
+        }
+
+        /// The range features' shared constructor shape (MediaWidth.java:
+        /// 34-86 and siblings): the count limit, then the first value: a
+        /// plain value checked, or a comparator (no prefix) whose side is
+        /// checked, a second comparator's too, and "=" not allowed in a
+        /// two-sided range; then setModifier. No value: no prefix.
+        func range(limit: Int?, accepts: (Value, String) -> Check) -> Result {
+            guard let exp = expression else {
+                return nil != modifier ? .error(Message.noModifierShort) : .valid(true, [])
+            }
+            if let l = limit, exp.count > l {
+                return .error(Message.unrecognize)
+            }
+            if 0 == exp.count {
+                return .error(Message.fewValue(name))
+            }
+            let val = exp.values[0]
+            if case .comparator(let symbol, let side) = val {
+                if nil != modifier {
+                    return .error(Message.noModifierRange)
+                }
+                if 0 == side.count {
+                    return .error(Message.fewValue(name))
+                }
+                if let r = result(accepts(side.values[0], name)) {
+                    return r
+                }
+                var stored = [side.values[0]]
+                if exp.count > 1 {
+                    guard case .comparator(let symbol2, let side2) = exp.values[1] else {
+                        return .error(Message.unrecognize)
+                    }
+                    if 0 == side2.count {
+                        return .error(Message.fewValue(name))
+                    }
+                    if let r = result(accepts(side2.values[0], name)) {
+                        return r
+                    }
+                    if "=" == symbol || "=" == symbol2 {
+                        return .error(Message.comparator(symbol, symbol2))
+                    }
+                    stored.append(side2.values[0])
+                }
+                return .valid(true, stored)
+            }
+            // a value of a type the switch doesn't take is the same
+            // "value" error checkValue gives
+            if let r = result(accepts(val, name)) {
+                return r
+            }
+            return .valid(true, [val])
+        }
+
+        /// MediaResolution (MediaResolution.java:38-109): an identifier
+        /// other than infinite falls into the comparator case and fails
+        /// its cast (a ClassCastException, skipped by MediaQuery).
+        func resolution() -> Result {
+            guard let exp = expression else {
+                return nil != modifier ? .error(Message.noModifierShort) : .valid(true, [])
+            }
+            if exp.count > 2 {
+                return .error(Message.unrecognize)
+            }
+            if 0 == exp.count {
+                return .error(Message.fewValue(name))
+            }
+            let val = exp.values[0]
+            // case CSS_IDENT takes any value of identifier type, whose
+            // getIdent() may throw (see keywords())
+            if CssType.ident == val.type {
+                guard let units = val.javaIdent else {
+                    return .exception
+                }
+                if HTMLMediaQueryDatatype.identEquals(units, "infinite") {
+                    return .valid(true, [val])
+                }
+                if nil != modifier {
+                    return .error(Message.noModifierRange)
+                }
+                return .exception
+            }
+            switch val {
+            case .comparator(let symbol, let side):
+                if nil != modifier {
+                    return .error(Message.noModifierRange)
+                }
+                if 0 == side.count {
+                    return .error(Message.fewValue(name))
+                }
+                if CssType.resolution != side.values[0].type {
+                    return .error(Message.unrecognize)
+                }
+                var stored = [side.values[0]]
+                if exp.count > 1 {
+                    guard case .comparator(let symbol2, let side2) = exp.values[1] else {
+                        return .error(Message.unrecognize)
+                    }
+                    if 0 == side2.count {
+                        return .error(Message.fewValue(name))
+                    }
+                    if CssType.resolution != side2.values[0].type {
+                        return .error(Message.unrecognize)
+                    }
+                    if "=" == symbol || "=" == symbol2 {
+                        return .error(Message.comparator(symbol, symbol2))
+                    }
+                    stored.append(side2.values[0])
+                }
+                return .valid(true, stored)
+            default:
+                if CssType.resolution == val.type {
+                    return .valid(true, [val])
+                }
+                return .error(Message.unrecognize)
+            }
         }
     }
 }

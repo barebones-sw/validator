@@ -316,13 +316,9 @@
       "category" : "invalid",
       "failure" : "Expected “Element “object” is missing required attribute “data”.” but instead encountered “Element “p” not allowed as child of “object” in this context. Note: The “object” element has a transparent content model; its allowed content is inherited from its parent element.”."
     },
-    "html/elements/picture/always-matching-source-media-spaces-with-following-source-srcset-novalid.html" : {
-      "category" : "invalid",
-      "failure" : "Expected “Value of “media” attribute here must not be empty.” but instead encountered “Bad value “ \n\t” for attribute “media” on element “source”.”."
-    },
     "html/elements/picture/picture-isvalid.html" : {
       "category" : "valid",
-      "failure" : "Expected no errors or warnings but encountered error “A “source” element that has a following sibling “source” element or “img” element with a “srcset” attribute must have a “media” attribute and/or “type” attribute.”."
+      "failure" : "Expected no errors or warnings but encountered error “Bad value “1rem” for attribute “sizes” on element “img”.”."
     },
     "html/elements/picture/sizes-microsyntax-clamp-function-isvalid.html" : {
       "category" : "valid",
@@ -344,21 +340,9 @@
       "category" : "invalid",
       "failure" : "Expected “Element “source” not allowed as child of “picture” in this context.” but instead encountered “A “source” element that has a following sibling “source” element or “img” element with a “srcset” attribute must have a “media” attribute and/or “type” attribute.”."
     },
-    "html/elements/picture/source-sizes-auto-with-img-loading-lazy-isvalid.html" : {
-      "category" : "valid",
-      "failure" : "Expected no errors or warnings but encountered error “Bad value “(min-width: 600px)” for attribute “media” on element “source”.”."
-    },
-    "html/elements/picture/source-sizes-auto-without-img-loading-lazy-novalid.html" : {
-      "category" : "invalid",
-      "failure" : "Expected “The “sizes” attribute value starting with “auto” is only valid for lazy-loaded images. The “img” element must have a “loading” attribute set to “lazy”.” but instead encountered “Bad value “(min-width: 600px)” for attribute “media” on element “source”.”."
-    },
     "html/elements/picture/source-src-novalid.html" : {
       "category" : "invalid",
       "failure" : "Expected “Attribute “src” not allowed on element “source” at this point.” but instead encountered “Element “source” is missing required attribute “srcset”.”."
-    },
-    "html/elements/picture/source-srcset-width-loading-lazy-no-sizes-isvalid.html" : {
-      "category" : "valid",
-      "failure" : "Expected no errors or warnings but encountered error “Bad value “(min-width: 600px)” for attribute “media” on element “source”.”."
     },
     "html/elements/q/cite/scheme-data-contains-fragment-haswarn.html" : {
       "category" : "haswarn",
@@ -399,10 +383,6 @@
     "html/elements/source/src/scheme-data-contains-fragment-haswarn.html" : {
       "category" : "haswarn",
       "failure" : "Expected a warning only but encountered error “Bad value “data:text/html,test#test” for attribute “src” on element “source”.”."
-    },
-    "html/elements/source/width-srcset-without-sizes-novalid.html" : {
-      "category" : "invalid",
-      "failure" : "Expected “When the “srcset” attribute has any image candidate string with a width descriptor, the “sizes” attribute must also be specified.” but instead encountered “Bad value “(min-width: 800px)” for attribute “media” on element “source”.”."
     },
     "html/elements/style/html-spec-comms-isvalid.html" : {
       "category" : "valid",
@@ -494,8 +474,8 @@
   "passCounts" : {
     "hasinfo" : 5,
     "haswarn" : 157,
-    "invalid" : 3587,
-    "valid" : 1750
+    "invalid" : 3590,
+    "valid" : 1752
   },
   "version" : 2
 }

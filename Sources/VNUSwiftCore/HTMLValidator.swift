@@ -2004,9 +2004,10 @@ struct HTMLMetaChecker {
             if element.hasAttribute("itemprop"), element.hasAttribute("name") {
                 appendError("Attribute \u{201c}itemprop\u{201d} not allowed on element \u{201c}meta\u{201d} at this point.", for: element, locations: locations, messages: &messages)
             }
-            if element.hasAttribute("media"), name != "theme-color" {
-                appendError("A \u{201c}meta\u{201d} element with a \u{201c}media\u{201d} attribute must have a \u{201c}name\u{201d} attribute whose value is \u{201c}theme-color\u{201d}.", for: element, locations: locations, messages: &messages)
-            }
+            // (Case 554591, A5: the theme-color rule for a meta with media is
+            // HTMLGeneralAttributeChecker's now, after the media value's own
+            // check, as upstream orders them; see its
+            // appendMetaMediaNameMessages.)
 
             appendHTTPEquivMessages(httpEquiv: httpEquiv, content: content, element: element, locations: locations, messages: &messages)
             appendViewportMessages(name: name, content: content, element: element, locations: locations, messages: &messages)
