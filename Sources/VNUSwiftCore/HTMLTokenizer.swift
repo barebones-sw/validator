@@ -43,8 +43,12 @@ enum HTMLCharacterReferences {
     }
 
     private static func decode(_ value: String, formFeedReferenceIsSpace: Bool) -> String {
-        // The usual case: nothing to decode, and no copy made.
-        guard value.contains("&") else {
+        // The usual case: nothing to decode, and no copy made. (Case 554591,
+        // A14 review: looked for in the UTF-8 bytes, where an "&" can only
+        // be itself; contains("&") was Foundation's substring search, which
+        // took a good part of the time the ARIA rules added once they decoded
+        // every role value.)
+        guard value.utf8.contains(UInt8(ascii: "&")) else {
             return value
         }
         let scalars = Array(value.unicodeScalars)
@@ -195,7 +199,7 @@ final class HTMLTokenizer {
     /// because the namespace of each start tag's element, and whether
     /// "<![CDATA[" starts a CDATA section, depend on its current node (see
     /// HTMLTreeEventBuilder).
-    func tokenizeAndBuildTree() -> (tokens: [HTMLToken], events: [HTMLDocumentEvent], impliedColgroupEnds: [Int], impliedTablePartEnds: [HTMLImpliedTablePartEnd], implicitEndCauses: [HTMLImplicitEndCause]) {
+    func tokenizeAndBuildTree() -> (tokens: [HTMLToken], events: [HTMLDocumentEvent], impliedColgroupEnds: [Int], impliedTablePartEnds: [HTMLImpliedTablePartEnd], implicitEndCauses: [HTMLImplicitEndCause], attributesEndedByTag: Set<Int>, bodyStartEvent: Int?) {
         // Case 554591: the whole-source diagnostics (character references and
         // forbidden code points) are now computed after the main loop, which
         // collects the ranges where the HTML tokenizer never parses character
@@ -203,6 +207,9 @@ final class HTMLTokenizer {
         // sections. "&#" in JavaScript or "&nbsp" in CSS used to be errors.
         var tokens: [HTMLToken] = []
         var noCharacterReferenceRanges: [Range<String.Index>] = []
+        // Case 554591 (A14's third review): see
+        // HTMLParsedDocument.attributesEndedByTag.
+        var attributesEndedByTag: Set<Int> = []
         // Review item A2: the tree builder, and how many of `tokens` it has
         // consumed. It's caught up just before each question it's asked, so it
         // consumes every token, in order, exactly as it did when it ran after
@@ -465,6 +472,15 @@ final class HTMLTokenizer {
                     // value always ends at whitespace or ">", so it can't run
                     // into the next attribute.
                     afterQuotedValue = index < source.endIndex && ("\"" == source[index] || "'" == source[index])
+                    // (Case 554591, A14's second and third reviews, the notes'
+                    // item 89: an "=" and then the tag's end, as in <div
+                    // aria-checked=>, is an attribute without a value to
+                    // upstream's tokenizer, as <div aria-checked> is: its
+                    // "before attribute value" state calls
+                    // addAttributeWithoutValue. See attributesEndedByTag.)
+                    if index < source.endIndex, ">" == source[index] {
+                        attributesEndedByTag.insert(attrOffset)
+                    }
                     value = parseAttributeValue(from: &index, tokens: &tokens)
                 }
                 attributes.append(HTMLAttribute(name: attrName, value: value, offset: attrOffset))
@@ -521,8 +537,9 @@ final class HTMLTokenizer {
         tokens.insert(contentsOf: sourceDiagnostics(skippingCharacterReferencesIn: noCharacterReferenceRanges), at: 0)
         // (Case 554591, item 12, from its second and third reviews: see
         // HTMLParsedDocument.impliedColgroupEnds and impliedTablePartEnds; and
-        // U11's implicitEndCauses.)
-        return (tokens, events, treeBuilder.impliedColgroupEnds, treeBuilder.impliedTablePartEnds, treeBuilder.implicitEndCauses)
+        // U11's implicitEndCauses; and A14's attributesEndedByTag and
+        // bodyStartEvent.)
+        return (tokens, events, treeBuilder.impliedColgroupEnds, treeBuilder.impliedTablePartEnds, treeBuilder.implicitEndCauses, attributesEndedByTag, treeBuilder.bodyStartEvent)
     }
 
     /// Which tokenizer state an element's contents are read in.

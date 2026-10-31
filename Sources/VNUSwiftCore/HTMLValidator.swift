@@ -483,7 +483,13 @@ public final class HTMLValidator: Sendable {
                     }
                     continue
                 }
-                if sections.textStartsBody, stack.last.map({ .html == $0.namespace && ("html" == $0.name || "head" == $0.name) }) ?? true {
+                // (Case 554591, A14's third review: and only text that's
+                // non-space as upstream's tokenizer delivers it, references
+                // decoded, ends the head; see HTMLImplicitClosures.textEndsHead,
+                // which HTMLTreeEventBuilder goes by too. <title>t</title>&#32;
+                // ended it here, so a </head> after it was "Stray end tag
+                // “head”.")
+                if sections.textStartsBody, HTMLImplicitClosures.textEndsHead(content), stack.last.map({ .html == $0.namespace && ("html" == $0.name || "head" == $0.name) }) ?? true {
                     if let headIndex = stack.lastIndex(where: { .html == $0.namespace && "head" == $0.name }) {
                         stack.removeSubrange(headIndex...)
                     }
@@ -616,7 +622,9 @@ public final class HTMLValidator: Sendable {
                     if "html" == name {
                         validateNamespaceDeclarations(namespace: namespace, attributes: attributes, offset: offset, length: length, locations: locations, messages: &messages)
                     }
-                    if sections.isInHead, !tagIsInTemplateContents, HTMLImplicitClosures.startTagImpliesBody(name, namespace: namespace) {
+                    // (Case 554591, A14's third review: before the head and
+                    // after </head> too, as HTMLTreeEventBuilder does.)
+                    if sections.textStartsBody, !tagIsInTemplateContents, HTMLImplicitClosures.startTagImpliesBody(name, namespace: namespace) {
                         if let headIndex = stack.lastIndex(where: { .html == $0.namespace && "head" == $0.name }) {
                             stack.removeSubrange(headIndex...)
                         }
@@ -859,6 +867,16 @@ public final class HTMLValidator: Sendable {
                 }
                 if HTMLVocabulary.voidElements.contains(name) {
                     if name == "br" {
+                        // (Case 554591, A14's third review: before the body,
+                        // </br> ends the head and starts the body, as
+                        // upstream's "anything else" rules in the modes before
+                        // the body do; HTMLTreeEventBuilder does the same.)
+                        if sections.textStartsBody, !Self.childFlags(of: stack.last, childNamespace: .html).contains(.inTemplateContents) {
+                            if let headIndex = stack.lastIndex(where: { .html == $0.namespace && "head" == $0.name }) {
+                                stack.removeSubrange(headIndex...)
+                            }
+                            sections.noteBodyStarted()
+                        }
                         appendError("End tag \u{201c}br\u{201d}.", offset: offset, length: length, locations: locations, messages: &messages)
                         // Upstream inserts a <br> for it, which first ends any
                         // foreign content it's in.

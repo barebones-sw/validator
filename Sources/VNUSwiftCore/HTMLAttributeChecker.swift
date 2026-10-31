@@ -506,6 +506,14 @@ struct HTMLGeneralAttributeChecker {
         // content upstream's schema checks (see the .characters case).
         var annotationXMLStack: [AnnotationXMLState] = []
         var roleStack: [String?] = []
+        // Case 554591 (A14/A16): the open elements as upstream's Assertions
+        // keeps them for its ARIA rules (see ARIANode), parallel to stack.
+        // (roleStack keeps each element's first lowercased token as written,
+        // in any namespace, which the other role rules still go by.)
+        var ariaNodeStack: [ARIANode] = []
+        // Case 554591 (A14): the rest of those rules' state (see
+        // ARIAContextState).
+        var ariaContext = ARIAContextState()
         var anchorHrefStack: [Bool] = []
         var labelStack: [LabelState] = []
         var pictureStack: [PictureState] = []
@@ -603,18 +611,38 @@ struct HTMLGeneralAttributeChecker {
         var sawBaseBlockingElement = false
         var sawBodyContentBeforeBase = false
         var autofocusCount = 0
-        var visibleMainCount = 0
-        var visibleRoleMainCount = 0
         let idElementNames = idElementNames(in: document)
         let idLabelableElementNames = idLabelableElementNames(in: document)
         let mapNames = mapNames(in: document)
         var cspState = CSPState()
 
+        // Case 554591 (A14 second review): where the table parts the parser
+        // implied end, for ariaNodeStack's record of them (see
+        // impliedTableParts): the next of HTMLParsedDocument's
+        // impliedColgroupEnds and impliedTablePartEnds to apply.
+        var nextImpliedColgroupEnd = 0
+        var nextImpliedTablePartEnd = 0
+
         for (eventIndex, event) in document.events.enumerated() {
+            // (Case 554591, A14 second review: those that end before this
+            // event, as HTMLValidator's table bookkeeping applies them.)
+            while nextImpliedColgroupEnd < document.impliedColgroupEnds.count, document.impliedColgroupEnds[nextImpliedColgroupEnd] <= eventIndex {
+                Self.endImpliedColgroup(in: &ariaNodeStack)
+                nextImpliedColgroupEnd += 1
+            }
+            while nextImpliedTablePartEnd < document.impliedTablePartEnds.count, document.impliedTablePartEnds[nextImpliedTablePartEnd].index <= eventIndex {
+                Self.endImpliedTablePart(document.impliedTablePartEnds[nextImpliedTablePartEnd].name, in: &ariaNodeStack)
+                nextImpliedTablePartEnd += 1
+            }
             switch event {
             case let .startElement(element):
                 let parent = stack.last
                 let role = firstRoleToken(for: element)
+                // Case 554591 (A14/A16): see ariaNodeStack. (A14 review: with
+                // the table parts the parser implied between this HTML element
+                // and its HTML parent; see impliedTableParts.)
+                let impliedParts = Self.impliedTableParts(for: element, in: &ariaNodeStack)
+                let ariaNode = Self.ariaNode(for: element, parent: ariaNodeStack.last, implied: impliedParts, index: ariaNodeStack.count)
                 // Review item A2 (U16): most of these checks are HTML's (in
                 // upstream, its Assertions checker runs them for HTML elements
                 // only), and elements inside inline SVG or MathML used to get
@@ -693,6 +721,16 @@ struct HTMLGeneralAttributeChecker {
                     appendDisallowedAttributeMessages(for: element, parent: parent, locations: locations, messages: &messages)
                 }
                 appendRoleTokenMessages(for: element, parent: parent, stack: stack, foreignSchemaChecksApply: foreignSchemaChecksApply, inTemplateContents: inTemplateContents, locations: locations, messages: &messages)
+                // Case 554591 (A14): the schema's judgment of the element's
+                // ARIA states and properties (see HTMLARIASchema), right after
+                // its judgment of the role, as vnu.jar orders them, and only
+                // where the schema checks the element at all (see
+                // foreignSchemaChecksApply). (A14's third review: with the
+                // attributes written "x=>"; see
+                // HTMLParsedDocument.attributesEndedByTag.)
+                if foreignSchemaChecksApply {
+                    appendARIASchemaMessages(for: element, parent: parentIsHTML ? parent : nil, attributesEndedByTag: document.attributesEndedByTag, locations: locations, messages: &messages)
+                }
                 if isHTML {
                     appendDatatypeAttributeMessages(for: element, locations: locations, messages: &messages)
                     appendGlobalAttributeMessages(for: element, locations: locations, messages: &messages)
@@ -706,7 +744,12 @@ struct HTMLGeneralAttributeChecker {
                     let parentIsDivInDL = parentIsHTML && "div" == parent && stack.count >= 2 && "dl" == stack[stack.count - 2] && .html == namespaceStack[stack.count - 2]
                     let baseMisplacementIsReported = !inTemplateContents && !inAnyElementContent && !isRejectedForeign
                         && !(parentIsHTML && ("dl" == parent || "picture" == parent)) && !parentIsDivInDL
-                    appendBaseMessages(for: element, parent: parent.map { HTMLForeignContent.displayName($0, namespace: parentNamespace) }, reportsMisplacement: baseMisplacementIsReported, sawBodyContentBeforeBase: sawBodyContentBeforeBase, sawBaseBlockingElement: sawBaseBlockingElement, locations: locations, messages: &messages)
+                    // (Case 554591, A14's third review: or once the body has
+                    // started, by the parser's model, which some tokens that
+                    // start it leave no start tag to show; see
+                    // HTMLParsedDocument.bodyStartEvent.)
+                    let bodyStartedBefore = document.bodyStartEvent.map { $0 <= eventIndex } ?? false
+                    appendBaseMessages(for: element, parent: parent.map { HTMLForeignContent.displayName($0, namespace: parentNamespace) }, reportsMisplacement: baseMisplacementIsReported, sawBodyContentBeforeBase: sawBodyContentBeforeBase || bodyStartedBefore, sawBaseBlockingElement: sawBaseBlockingElement, locations: locations, messages: &messages)
                     appendStructuralAssertionMessages(for: element, stack: stack, mapNames: mapNames, locations: locations, messages: &messages)
                     appendElementSpecificMessages(for: element, stack: stack, locations: locations, messages: &messages)
                 }
@@ -727,19 +770,29 @@ struct HTMLGeneralAttributeChecker {
                 // schema's, so not where it checks nothing; see
                 // foreignSchemaChecksApply. vnu.jar reports nothing for
                 // aria-checked on a <g role="img"> in an SVG <desc>.)
-                if isHTML || foreignSchemaChecksApply {
+                // (Case 554591, A14: and not in template contents, which
+                // neither upstream's schema nor its Assertions checker ever
+                // sees. These ran there; once role values were decoded, a
+                // <figure role="&#102;igure"> in a template got an
+                // "unnecessary role" warning that vnu.jar doesn't give.)
+                if isHTML || foreignSchemaChecksApply, !inTemplateContents {
                     appendARIAAttributeMessages(
                         for: element,
                         role: role,
                         idElementNames: idElementNames,
+                        attributesEndedByTag: document.attributesEndedByTag,
                         stack: stack,
                         roleStack: roleStack,
                         labelStack: labelStack,
-                        visibleMainCount: &visibleMainCount,
-                        visibleRoleMainCount: &visibleRoleMainCount,
                         locations: locations,
                         messages: &messages
                     )
+                }
+                // Case 554591 (A14/A16): upstream's Assertions rules for ARIA
+                // that this unit ports (see appendARIAContextMessages); its
+                // checker never sees template contents.
+                if !inTemplateContents {
+                    appendARIAContextMessages(for: element, node: ariaNode, ancestors: ariaNodeStack, state: &ariaContext, locations: locations, messages: &messages)
                 }
                 if isHTML {
                     appendLanguageAttributeMessages(for: element, locations: locations, messages: &messages)
@@ -991,6 +1044,7 @@ struct HTMLGeneralAttributeChecker {
                 templateContentsStack.append(inTemplateContents)
                 rejectedForeignStack.append(isRejectedForeign)
                 roleStack.append(role)
+                ariaNodeStack.append(ariaNode)
                 anchorHrefStack.append(isHTML && "a" == element.name && element.hasAttribute("href"))
             case let .endElement(name, endRange, implicit):
                 // Review item A2: whether the element ending is HTML, for the
@@ -1127,6 +1181,15 @@ struct HTMLGeneralAttributeChecker {
                     if openTimeTexts.isEmpty {
                         timeText.removeAll(keepingCapacity: true)
                     }
+                    // Case 554591 (A14): an HTML option that ends marks its
+                    // parent as having had one (upstream's setOptionFound),
+                    // for the option aria-selected rule in
+                    // appendARIAContextMessages.
+                    // (A14 review: not one with a popover attribute; see
+                    // ARIANode.hasPopover.)
+                    for position in index..<stack.count where position > 0 && "option" == stack[position] && .html == namespaceStack[position] && !ariaNodeStack[position].hasPopover {
+                        ariaNodeStack[position - 1].optionChildEnded = true
+                    }
                     stack.removeSubrange(index...)
                     namespaceStack.removeSubrange(index...)
                     anyElementContentStack.removeSubrange(index...)
@@ -1134,6 +1197,7 @@ struct HTMLGeneralAttributeChecker {
                     rejectedForeignStack.removeSubrange(index...)
                     annotationXMLStack.removeAll { $0.stackIndex >= index }
                     roleStack.removeSubrange(index...)
+                    ariaNodeStack.removeSubrange(index...)
                     anchorHrefStack.removeSubrange(index...)
                 }
             case let .characters(content, range):
@@ -1292,6 +1356,22 @@ struct HTMLGeneralAttributeChecker {
         }
         if let activeRoleTabElement, !sawRoleTabpanel {
             appendMessage("Every active \u{201c}role=tab\u{201d} element must have a corresponding \u{201c}role=tabpanel\u{201d} element.", for: activeRoleTabElement, locations: locations, messages: &messages)
+        }
+        // Case 554591 (A14): upstream's endDocument ARIA checks, in its
+        // order: the aria-activedescendant IDREFs that name no element
+        // outside template contents (the port checked each as the element
+        // started, whole and empty values too, against IDs in template
+        // contents as well), then the elements still missing their required
+        // context (see appendARIAContextMessages), unless an element with one
+        // of the roles they need owns them through aria-owns.
+        for reference in ariaContext.references where !ariaContext.ids.contains(ExactID(reference.id)) {
+            appendMessage("The \u{201c}aria-activedescendant\u{201d} attribute references \u{201c}\(reference.id)\u{201d}, which is not the ID of any element in this document.", for: reference.element, locations: locations, messages: &messages)
+        }
+        for subject in ariaContext.deferred {
+            let roles = Self.requiredContextRoles[subject.role]?.roles ?? []
+            if !roles.contains(where: { ariaContext.owners[$0]?.contains(ExactID(subject.id)) ?? false }) {
+                appendRequiredContextMessage(role: subject.role, for: subject.element, locations: locations, messages: &messages)
+            }
         }
         appendHeadingHierarchyMessages(headings, locations: locations, messages: &messages)
         languageCounts.add(pendingLanguageText)
@@ -2791,40 +2871,25 @@ struct HTMLGeneralAttributeChecker {
         for element: HTMLStartElement,
         role: String?,
         idElementNames: [String: String],
+        attributesEndedByTag: Set<Int>,
         stack: [String],
         roleStack: [String?],
         labelStack: [LabelState],
-        visibleMainCount: inout Int,
-        visibleRoleMainCount: inout Int,
         locations: SourceLocationMap,
         messages: inout [ValidationMessage]
     ) {
-        appendRoleEffectMessages(for: element, role: role, locations: locations, messages: &messages)
-        appendUnnecessaryRoleMessages(for: element, role: role, locations: locations, messages: &messages)
+        appendRoleEffectMessages(for: element, locations: locations, messages: &messages)
+        appendUnnecessaryRoleMessages(for: element, locations: locations, messages: &messages)
         if .html == element.namespace {
             appendARIANamingMessages(for: element, locations: locations, messages: &messages)
         }
         appendSelectRoleMessages(for: element, stack: stack, locations: locations, messages: &messages)
         appendSummaryARIAMessages(for: element, stack: stack, locations: locations, messages: &messages)
-        appendARIAPropertyMessages(for: element, role: role, idElementNames: idElementNames, locations: locations, messages: &messages)
+        appendARIAPropertyMessages(for: element, role: role, idElementNames: idElementNames, attributesEndedByTag: attributesEndedByTag, locations: locations, messages: &messages)
         appendLabelARIAAssociationMessages(for: element, idElementNames: idElementNames, labelStack: labelStack, locations: locations, messages: &messages)
         appendARIAStructureMessages(for: element, role: role, stack: stack, roleStack: roleStack, locations: locations, messages: &messages)
-
-        if .html == element.namespace, element.name == "main", !isHidden(element) {
-            visibleMainCount += 1
-            if visibleMainCount > 1 {
-                appendMessage("A document must not include more than one visible \u{201c}main\u{201d} element.", for: element, locations: locations, messages: &messages)
-            }
-            if visibleRoleMainCount > 0 {
-                appendWarningMessage("A document should not include more than one visible element with \u{201c}role=main\u{201d}.", for: element, locations: locations, messages: &messages)
-            }
-        }
-        if role == "main", !isHidden(element) {
-            visibleRoleMainCount += 1
-            if visibleRoleMainCount > 1 || element.name == "main" || visibleMainCount > 0 {
-                appendWarningMessage("A document should not include more than one visible element with \u{201c}role=main\u{201d}.", for: element, locations: locations, messages: &messages)
-            }
-        }
+        // (Case 554591, A14: the main element and role=main counts are now
+        // appendARIAContextMessages's, in upstream's order.)
     }
 
     private func appendRoleTokenMessages(
@@ -2976,10 +3041,14 @@ struct HTMLGeneralAttributeChecker {
     }
 
     /// The role attribute's value, "" for a valueless one (<div role>), as
-    /// upstream sees it; nil when there's no role attribute.
+    /// upstream sees it; nil when there's no role attribute. (Case 554591,
+    /// A14: decoded, as upstream's tokenizer hands it on: role="tab&#108;ist"
+    /// is tablist, where the port gave it a false "Bad value"; and, A14
+    /// review, with a literal U+0000 made U+FFFD, as it hands that on: see
+    /// assertionValue.)
     private func roleAttributeValue(for element: HTMLStartElement) -> String? {
         guard element.hasAttribute("role") else { return nil }
-        return element.attributeValue("role") ?? ""
+        return Self.assertionValue(element.attributeValue("role") ?? "")
     }
 
     /// The schema's view of an element's role, for the checks that stand in
@@ -2999,13 +3068,16 @@ struct HTMLGeneralAttributeChecker {
 
     private func appendRoleEffectMessages(
         for element: HTMLStartElement,
-        role: String?,
         locations: SourceLocationMap,
         messages: inout [ValidationMessage]
     ) {
         // Review item A2 (U16): not for MathML; and on SVG elements, only a
         // non-empty aria-* value counts (both as vnu.jar reports them).
-        guard role == "none" || role == "presentation", .mathML != element.namespace else { return }
+        // (Case 554591, A14: the role exactly as written, decoded, as
+        // upstream compares it, not its first lowercased token: role="NONE"
+        // and role="none foo" are neither, and once role values were decoded,
+        // role="none&#32;" would have been.)
+        guard let role = roleAttributeValue(for: element), "none" == role || "presentation" == role, .mathML != element.namespace else { return }
         let hasTabindex = element.hasAttribute("tabindex")
         let hasGlobalARIA = element.attributes.contains { attribute in
             attribute.name.hasPrefix("aria-") && attribute.name != "aria-hidden" && (.html == element.namespace || !(attribute.value ?? "").isEmpty)
@@ -3013,28 +3085,32 @@ struct HTMLGeneralAttributeChecker {
         guard hasTabindex || hasGlobalARIA else { return }
 
         if hasTabindex, hasGlobalARIA {
-            appendWarningMessage("The \u{201c}\(role ?? "")\u{201d} role does not affect elements that have a \u{201c}tabindex\u{201d} attribute and global ARIA attributes.", for: element, locations: locations, messages: &messages)
+            appendWarningMessage("The \u{201c}\(role)\u{201d} role does not affect elements that have a \u{201c}tabindex\u{201d} attribute and global ARIA attributes.", for: element, locations: locations, messages: &messages)
         } else if hasTabindex {
-            appendWarningMessage("The \u{201c}\(role ?? "")\u{201d} role does not affect elements that have a \u{201c}tabindex\u{201d} attribute.", for: element, locations: locations, messages: &messages)
+            appendWarningMessage("The \u{201c}\(role)\u{201d} role does not affect elements that have a \u{201c}tabindex\u{201d} attribute.", for: element, locations: locations, messages: &messages)
         } else {
-            appendWarningMessage("The \u{201c}\(role ?? "")\u{201d} role does not affect elements that have global ARIA attributes.", for: element, locations: locations, messages: &messages)
+            appendWarningMessage("The \u{201c}\(role)\u{201d} role does not affect elements that have global ARIA attributes.", for: element, locations: locations, messages: &messages)
         }
     }
 
     private func appendUnnecessaryRoleMessages(
         for element: HTMLStartElement,
-        role: String?,
         locations: SourceLocationMap,
         messages: inout [ValidationMessage]
     ) {
-        guard let role else { return }
+        // (Case 554591, A14: upstream compares the role exactly as written,
+        // decoded, in every one of these ("figure".equals(role)), not its
+        // first lowercased token, so role="FIGURE" and role="figure foo" aren't
+        // unnecessary on a figure. Once role values were decoded, the first
+        // token made role="figure&#32;" unnecessary too.)
+        guard let role = roleAttributeValue(for: element) else { return }
         // Review item A13: for math and select, upstream compares the role
         // attribute as written, so role="MATH" or role="listbox foo" isn't
         // "unnecessary" (the first is a "Bad value", and the second gets the
         // select error instead; see appendRoleTokenMessages and
         // appendSelectRoleMessages).
         if element.name == "math" {
-            if "math" == element.attributeValue("role") {
+            if "math" == role {
                 appendWarningMessage("Element \u{201c}math\u{201d} does not need a \u{201c}role\u{201d} attribute.", for: element, locations: locations, messages: &messages)
             }
             return
@@ -3042,8 +3118,7 @@ struct HTMLGeneralAttributeChecker {
         // Review item A2 (U16): the rest are about HTML elements (an SVG <a
         // href> isn't a "link" by default the way HTML's is).
         guard .html == element.namespace else { return }
-        if let expected = unnecessaryRole(for: element), expected == role,
-           element.name != "select" || expected == element.attributeValue("role") {
+        if let expected = unnecessaryRole(for: element), expected == role {
             if element.name == "a", role == "link" {
                 appendWarningMessage("The \u{201c}link\u{201d} role is unnecessary for element \u{201c}a\u{201d} with attribute \u{201c}href\u{201d}.", for: element, locations: locations, messages: &messages)
             } else if element.name == "select", role == "listbox" {
@@ -3055,7 +3130,7 @@ struct HTMLGeneralAttributeChecker {
             } else if element.name == "input", role == "spinbutton" {
                 appendWarningMessage("The \u{201c}spinbutton\u{201d} role is unnecessary for element \u{201c}input\u{201d} whose type is \u{201c}number\u{201d}.", for: element, locations: locations, messages: &messages)
             } else if "img" == element.name,
-                      "img" != element.attributeValue("role") || (element.hasAttribute("alt") && (element.attributeValue("alt") ?? "").isEmpty) {
+                      "img" != role || (element.hasAttribute("alt") && (element.attributeValue("alt") ?? "").isEmpty) {
                 // Review item 3: upstream calls role="img" unnecessary on an
                 // <img> only when the attribute is exactly "img" (not "IMG",
                 // " img " or "img button"; it compares the attribute as
@@ -3153,21 +3228,19 @@ struct HTMLGeneralAttributeChecker {
         if element.hasAttribute("role") {
             appendMessage("The \u{201c}role\u{201d} attribute must not be used on any \u{201c}summary\u{201d} element that is a summary for its parent \u{201c}details\u{201d} element.", for: element, locations: locations, messages: &messages)
         }
-        if element.hasAttribute("aria-expanded") {
-            appendMessage("Element \u{201c}summary\u{201d} is missing one or more of the following attributes: \u{201c}aria-checked\u{201d}, \u{201c}aria-level\u{201d}, \u{201c}role\u{201d}.", for: element, locations: locations, messages: &messages)
-        }
-        if element.hasAttribute("aria-pressed") {
-            appendMessage("Element \u{201c}summary\u{201d} is missing required attribute \u{201c}role\u{201d}.", for: element, locations: locations, messages: &messages)
-        }
-        if element.hasAttribute("aria-selected") {
-            appendMessage("Element \u{201c}summary\u{201d} is missing one or more of the following attributes: \u{201c}aria-checked\u{201d}, \u{201c}role\u{201d}.", for: element, locations: locations, messages: &messages)
-        }
+        // (Case 554591, A14: aria-selected is HTMLARIASchema's now, which
+        // gives the same message, for any summary, as the schema does. A14
+        // review: and so are aria-expanded and aria-pressed here, whose
+        // hand-written stand-ins for the schema's message ignored the role,
+        // so <summary role="button" aria-expanded="false"> was missing one;
+        // see ariaSchemaJudgedAttributes.)
     }
 
     private func appendARIAPropertyMessages(
         for element: HTMLStartElement,
         role: String?,
         idElementNames: [String: String],
+        attributesEndedByTag: Set<Int>,
         locations: SourceLocationMap,
         messages: inout [ValidationMessage]
     ) {
@@ -3210,10 +3283,9 @@ struct HTMLGeneralAttributeChecker {
         if element.hasAttribute("aria-grabbed") {
             appendWarningMessage("The \u{201c}aria-grabbed\u{201d} attribute is deprecated and should not be used. Support for it is poor and is unlikely to improve.", for: element, locations: locations, messages: &messages)
         }
-        if let active = element.attributeValue("aria-activedescendant"), idElementNames[active] == nil {
-            appendMessage("The \u{201c}aria-activedescendant\u{201d} attribute references \u{201c}\(active)\u{201d}, which is not the ID of any element in this document.", for: element, locations: locations, messages: &messages)
-        }
-        appendARIAWidgetPropertyMessages(for: element, role: role, locations: locations, messages: &messages)
+        // (Case 554591, A14: the aria-activedescendant IDREF check is at the
+        // end of the document now, as upstream's is.)
+        appendARIAWidgetPropertyMessages(for: element, role: role, attributesEndedByTag: attributesEndedByTag, locations: locations, messages: &messages)
     }
 
     private func appendImageMessages(
@@ -3555,89 +3627,853 @@ struct HTMLGeneralAttributeChecker {
     private func appendARIAWidgetPropertyMessages(
         for element: HTMLStartElement,
         role: String?,
+        attributesEndedByTag: Set<Int>,
         locations: SourceLocationMap,
         messages: inout [ValidationMessage]
     ) {
-        if element.hasAttribute("aria-checked") {
-            if element.name == "input", inputType(for: element) == "checkbox" || inputType(for: element) == "radio" {
-                appendMessage("The \u{201c}aria-checked\u{201d} attribute must not be used on an \u{201c}input\u{201d} element which has a \u{201c}type\u{201d} attribute whose value is \u{201c}\(inputType(for: element))\u{201d}.", for: element, locations: locations, messages: &messages)
-            } else if role == nil || !Self.ariaCheckedRoles.contains(role ?? "") {
-                appendAttributeNotAllowed("aria-checked", for: element, locations: locations, messages: &messages)
-            }
-        }
-        if element.hasAttribute("aria-placeholder") {
-            if element.hasAttribute("placeholder") {
-                appendMessage("The \u{201c}aria-placeholder\u{201d} attribute must not be specified on elements that have a \u{201c}placeholder\u{201d} attribute.", for: element, locations: locations, messages: &messages)
-            } else if role != "textbox" && role != "searchbox" {
-                appendAttributeNotAllowed("aria-placeholder", for: element, locations: locations, messages: &messages)
-            }
-        }
-        if element.name == "output", element.hasAttribute("aria-pressed"), role == nil {
-            appendMessage("Element \u{201c}output\u{201d} is missing required attribute \u{201c}role\u{201d}.", for: element, locations: locations, messages: &messages)
-        }
-        if normalizedAttributeValue("aria-readonly", for: element) == "true", role == nil {
-            appendMessage("Element \u{201c}\(element.name)\u{201d} is missing one or more of the following attributes: \u{201c}aria-checked\u{201d}, \u{201c}aria-expanded\u{201d}, \u{201c}aria-valuenow\u{201d}, \u{201c}role\u{201d}.", for: element, locations: locations, messages: &messages)
-        }
-        if element.hasAttribute("aria-readonly"), role == nil || !Self.ariaReadonlyRoles.contains(role ?? "") {
-            appendAttributeNotAllowed("aria-readonly", for: element, locations: locations, messages: &messages)
-        }
-        if element.hasAttribute("aria-selected") {
-            if element.name == "option" {
-                appendWarningMessage("The \u{201c}aria-selected\u{201d} attribute should not be used on the \u{201c}option\u{201d} element.", for: element, locations: locations, messages: &messages)
-            } else if role == nil || !Self.ariaSelectedRoles.contains(role ?? "") {
-                appendAttributeNotAllowed("aria-selected", for: element, locations: locations, messages: &messages)
-            }
-        }
-        if element.hasAttribute("aria-multiselectable") {
-            if element.name == "select" {
-                appendWarningMessage("The \u{201c}aria-multiselectable\u{201d} attribute should not be used with the \u{201c}select \u{201d} element.", for: element, locations: locations, messages: &messages)
-            } else if role == nil || !Self.ariaMultiselectableRoles.contains(role ?? "") {
-                appendAttributeNotAllowed("aria-multiselectable", for: element, locations: locations, messages: &messages)
-            }
-        }
-        if element.hasAttribute("aria-valuemin"), element.hasAttribute("min") {
-            appendMessage("The \u{201c}aria-valuemin\u{201d} attribute must not be used on an element which has a \u{201c}min\u{201d} attribute.", for: element, locations: locations, messages: &messages)
-        } else if element.hasAttribute("aria-valuemin") {
-            if element.name == "meter" {
-                appendWarningMessage("The \u{201c}aria-valuemin\u{201d} attribute should not be used on a \u{201c}meter\u{201d} element.", for: element, locations: locations, messages: &messages)
-            } else if element.name == "input", inputType(for: element) == "number" {
-                appendWarningMessage("The \u{201c}aria-valuemin\u{201d} attribute should not be used on an \u{201c}input\u{201d} element which has a \u{201c}type\u{201d} attribute whose value is \u{201c}number\u{201d}.", for: element, locations: locations, messages: &messages)
-            } else if role == nil || !Self.ariaRangeRoles.contains(role ?? "") {
-                appendAttributeNotAllowed("aria-valuemin", for: element, locations: locations, messages: &messages)
-            }
-        }
-        if element.hasAttribute("aria-valuemax"), element.hasAttribute("max") {
-            appendMessage("The \u{201c}aria-valuemax\u{201d} attribute must not be used on an element which has a \u{201c}max\u{201d} attribute.", for: element, locations: locations, messages: &messages)
-        } else if element.hasAttribute("aria-valuemax") {
-            if element.name == "input", inputType(for: element) == "number" {
-                appendWarningMessage("The \u{201c}aria-valuemax\u{201d} attribute should not be used on an \u{201c}input\u{201d} element which has a \u{201c}type\u{201d} attribute whose value is \u{201c}number\u{201d}.", for: element, locations: locations, messages: &messages)
-            } else if role == nil || !Self.ariaRangeRoles.contains(role ?? "") {
-                appendAttributeNotAllowed("aria-valuemax", for: element, locations: locations, messages: &messages)
-            }
-        }
+        // (Case 554591, A14: whether aria-checked, aria-placeholder,
+        // aria-readonly, aria-selected, aria-multiselectable, aria-valuemin
+        // and aria-valuemax are allowed at all is the schema's judgment now,
+        // HTMLARIASchema's, which goes by aria.rnc and implicit roles; their
+        // Assertions rules are appendARIAContextMessages's. The role sets that
+        // stood in for the schema here missed progressbar's aria-valuemin and
+        // aria-valuemax and treeitem's aria-selected and aria-checked, among
+        // others, and knew no implicit roles.)
+        // (Case 554591, A14 review: an output's aria-pressed is
+        // HTMLARIASchema's now, whose message this stood in for, ignoring the
+        // role: <output role="" aria-pressed="true"> was missing one. See
+        // ariaSchemaJudgedAttributes.)
         if role == "main" {
             for attribute in ["aria-disabled", "aria-haspopup", "aria-invalid"] where element.hasAttribute(attribute) {
                 appendWarningMessage("The \u{201c}\(attribute)\u{201d} attribute should not be used on any element which has \u{201c}role=main\u{201d}.", for: element, locations: locations, messages: &messages)
             }
         }
-        if role == "listbox", element.hasAttribute("aria-expanded") {
+        // (Case 554591, A14: a schema rule, so the schema's role value, which
+        // role="listbox foo" is and role="foo listbox" isn't (that's the
+        // role filter's "Discarding unrecognized token" instead).)
+        if "listbox" == knownSchemaRole(for: element), element.hasAttribute("aria-expanded") {
             appendAttributeNotAllowed("aria-expanded", for: element, locations: locations, messages: &messages)
         }
         if role == "listitem", element.hasAttribute("aria-level") {
             appendWarningMessage("The \u{201c}aria-level\u{201d} attribute should not be used on any element which has \u{201c}role=listitem\u{201d}.", for: element, locations: locations, messages: &messages)
         }
-        if element.name == "input",
-           inputType(for: element) == "text",
-           element.hasAttribute("list"),
-           element.hasAttribute("aria-haspopup") {
-            appendWarningMessage("The \u{201c}aria-haspopup\u{201d} attribute should not be used on an \u{201c}input\u{201d} element that has a \u{201c}list\u{201d} attribute and whose type is \u{201c}text\u{201d}.", for: element, locations: locations, messages: &messages)
-        }
+        // (Case 554591, A14: the input aria-haspopup rule is
+        // appendARIAContextMessages's now, with upstream's input types.)
         // Review item A13: a schema rule (aria.rnc), so it applies to the
         // schema's value, case-sensitively: not to role="COMBOBOX".
-        if element.name == "select", knownSchemaRole(for: element) == "combobox", !element.hasAttribute("aria-expanded") {
+        // (Case 554591, A14 review: by the attributes the schema sees, so an
+        // aria-expanded that upstream drops is missing, as vnu.jar says.)
+        if "select" == element.name, "combobox" == knownSchemaRole(for: element), !HTMLARIASchema.schemaSees("aria-expanded", in: Self.ariaSchemaAttributes(of: element, endedByTag: attributesEndedByTag)) {
             appendMessage("Element \u{201c}select\u{201d} is missing required attribute \u{201c}aria-expanded\u{201d}.", for: element, locations: locations, messages: &messages)
         }
     }
+
+    /// Case 554591 (A14/A16): an open element as upstream's Assertions keeps
+    /// it (its StackNode) for its ARIA rules: the element's name, whether
+    /// it's HTML, its role attribute's value as the parser hands it on
+    /// (decoded, a literal U+0000 made U+FFFD, untrimmed, case as written; nil
+    /// with none; see assertionValue), and, for an HTML element with a role,
+    /// upstream's `roles` (see assertionRoleTokens). The port's rules used
+    /// roleStack instead, the first lowercased token as written in any
+    /// namespace, which these rules don't go by: they look at every token
+    /// ("foo tablist" is a tablist), match some roles exactly as written,
+    /// count role="" as a role, and count an SVG or MathML element's role only
+    /// as written, for the required-context rule, never its tokens.
+    struct ARIANode {
+        let name: String
+        let isHTML: Bool
+        let rawRole: String?
+        let tokens: [String]?
+        /// The owned-child rules' roles among its tokens (an HTML element's
+        /// with a role), so that those rules cost the same however many
+        /// tokens a parent's role has. (A14 review: they searched the role
+        /// parent's and grandparent's tokens for every child, in time growing
+        /// with tokens times children.)
+        let ownedChildRoles: OwnedChildRoles
+        /// Whether it has a popover attribute. (An option with one never
+        /// marks its parent as having had an option: upstream's endElement
+        /// takes it as an autofocus scoping root first, in an else-if chain
+        /// that never gets to setOptionFound.)
+        let hasPopover: Bool
+        /// Its parent's role as upstream's stack has it, for the
+        /// required-context rule's presentation exemption: nil for a parent
+        /// the parser implied (see impliedTableParts), which has no role.
+        let parentRole: String?
+        /// What its open ancestors, with the table parts the parser implied
+        /// above it, give the rules for it (see ARIASummary).
+        let ancestry: ARIASummary
+        /// The same with the element itself: what its descendants' ancestry
+        /// starts from.
+        let summary: ARIASummary
+        /// Whether one of its HTML option children has ended (upstream's
+        /// setOptionFound; see appendARIAContextMessages).
+        var optionChildEnded = false
+        /// For an HTML table or row group: the table parts the parser has
+        /// implied in it that are still open, outermost first (see
+        /// impliedTableParts).
+        var openImplied: [String] = []
+    }
+
+    /// Case 554591 (A14/A16 review): what an element's open ancestors give
+    /// upstream's rules for it, kept as each element starts, from its
+    /// parent's, so that each rule costs the same however deep the element
+    /// is. (The rules walked every ancestor, and every token of each, for
+    /// every element: a long list of nested role="group" elements, say, took
+    /// time growing with the square of its depth.)
+    struct ARIASummary {
+        /// The li rules' roles among the tokens of the HTML ancestors that
+        /// have a role attribute, and whether there are any.
+        var liRoles: LIRoles = []
+        /// The required-context rule's owner roles an ancestor has, as
+        /// written (in any namespace) or implicitly (an HTML element's), as
+        /// requiredContextOwnerBits' bits.
+        var contextRoles: UInt16 = 0
+        /// The index in the stack of open elements of the nearest HTML
+        /// ancestor with a role attribute, for the owned-child rules.
+        var nearestRoleNode: Int?
+        /// The group-in-list rule's answer: whether the nearest HTML
+        /// ancestor with a role, explicit or implicit, is a list (nil: none
+        /// has one).
+        var listDecision: Bool?
+
+        /// With an implied element (see impliedTableParts) below the others:
+        /// an HTML element with no role attribute.
+        mutating func add(implied name: String) {
+            guard let implicit = HTMLGeneralAttributeChecker.elementsWithImplicitRole[name] else {
+                return
+            }
+            contextRoles |= HTMLGeneralAttributeChecker.requiredContextOwnerBits[implicit] ?? 0
+            listDecision = "list" == implicit
+        }
+
+        /// With an element below the others, at `index` in the stack.
+        mutating func add(_ node: (name: String, isHTML: Bool, rawRole: String?, tokens: [String]?), index: Int) {
+            // (A foreign element's role counts as written, as upstream's
+            // getRole() has it; only an HTML element has a name there, and so
+            // an implicit role, and tokens.)
+            if let rawRole = node.rawRole {
+                contextRoles |= HTMLGeneralAttributeChecker.requiredContextOwnerBits[rawRole] ?? 0
+            }
+            guard node.isHTML else {
+                return
+            }
+            let implicit = HTMLGeneralAttributeChecker.elementsWithImplicitRole[node.name]
+            if let implicit {
+                contextRoles |= HTMLGeneralAttributeChecker.requiredContextOwnerBits[implicit] ?? 0
+            }
+            if let tokens = node.tokens {
+                liRoles.insert(.any)
+                for token in tokens {
+                    liRoles.formUnion(LIRoles(token: token))
+                }
+                nearestRoleNode = index
+                listDecision = tokens.contains("list")
+            } else if let implicit {
+                listDecision = "list" == implicit
+            }
+        }
+    }
+
+    /// Case 554591 (A14 review): the role tokens upstream's owned-child rules
+    /// look for in the nearest HTML ancestors with a role (see
+    /// ARIANode.ownedChildRoles).
+    struct OwnedChildRoles: OptionSet {
+        let rawValue: UInt8
+
+        static let rowgroup = OwnedChildRoles(rawValue: 1 << 0)
+        static let group = OwnedChildRoles(rawValue: 1 << 1)
+        static let menu = OwnedChildRoles(rawValue: 1 << 2)
+        static let menubar = OwnedChildRoles(rawValue: 1 << 3)
+        static let tree = OwnedChildRoles(rawValue: 1 << 4)
+
+        init(rawValue: UInt8) {
+            self.rawValue = rawValue
+        }
+
+        /// Those among a role's tokens.
+        init(tokens: [String]) {
+            var roles: OwnedChildRoles = []
+            for token in tokens {
+                switch token {
+                case "rowgroup":
+                    roles.insert(.rowgroup)
+                case "group":
+                    roles.insert(.group)
+                case "menu":
+                    roles.insert(.menu)
+                case "menubar":
+                    roles.insert(.menubar)
+                case "tree":
+                    roles.insert(.tree)
+                default:
+                    break
+                }
+            }
+            self = roles
+        }
+    }
+
+    /// Case 554591 (A14/A16 review): the role tokens upstream's li rules look
+    /// for among the ancestors' (see ARIASummary.liRoles).
+    struct LIRoles: OptionSet {
+        let rawValue: UInt8
+
+        /// Some HTML ancestor has a role attribute.
+        static let any = LIRoles(rawValue: 1 << 0)
+        static let list = LIRoles(rawValue: 1 << 1)
+        static let tablist = LIRoles(rawValue: 1 << 2)
+        static let tree = LIRoles(rawValue: 1 << 3)
+        static let listbox = LIRoles(rawValue: 1 << 4)
+        static let menu = LIRoles(rawValue: 1 << 5)
+        static let menubar = LIRoles(rawValue: 1 << 6)
+
+        init(rawValue: UInt8) {
+            self.rawValue = rawValue
+        }
+
+        /// The one for a token, if it's one of these roles.
+        init(token: String) {
+            switch token {
+            case "list":
+                self = .list
+            case "tablist":
+                self = .tablist
+            case "tree":
+                self = .tree
+            case "listbox":
+                self = .listbox
+            case "menu":
+                self = .menu
+            case "menubar":
+                self = .menubar
+            default:
+                self = []
+            }
+        }
+    }
+
+    /// Case 554591 (A14): the document-wide state of upstream's ARIA rules
+    /// that appendARIAContextMessages ports.
+    struct ARIAContextState {
+        /// ariaOwnsIdsByRole: by owner role (exactly as written), the IDs its
+        /// elements list in aria-owns.
+        var owners: [String: Set<ExactID>] = [:]
+        /// needsAriaOwner: elements with an id whose role is missing its
+        /// required context, checked against owners at the end.
+        var deferred: [(element: HTMLStartElement, role: String, id: String)] = []
+        /// ariaReferences: the IDs aria-activedescendant attributes name.
+        var references: [(element: HTMLStartElement, id: String)] = []
+        /// allIds: the IDs of the elements outside template contents.
+        var ids: Set<ExactID> = []
+        /// hasVisibleMain and hasVisibleMainRole.
+        var hasVisibleMain = false
+        var hasVisibleMainRole = false
+    }
+
+    /// Case 554591 (A14 review): an ID as upstream's Java strings compare it,
+    /// code unit by code unit, for ARIAContextState's sets. Swift's String
+    /// equality is canonical equivalence (a KELVIN SIGN equals K, a decomposed
+    /// é equals é), so aria-owns="caf<e, U+0301>" owned the element with
+    /// id="café", which upstream's HashMap doesn't, and the element's missing
+    /// context went unreported. (Swift strings are always valid Unicode, so
+    /// equal UTF-8 is equal UTF-16.)
+    struct ExactID: Hashable {
+        let bytes: [UInt8]
+
+        init(_ value: String) {
+            bytes = Array(value.utf8)
+        }
+    }
+
+    /// Case 554591 (A14/A16): an element's ARIANode, from its parent's (nil
+    /// for the root), with the table parts the parser implied between them
+    /// (see impliedTableParts), for the element at `index` in the stack of
+    /// open elements.
+    private static func ariaNode(for element: HTMLStartElement, parent: ARIANode?, implied: [String], index: Int) -> ARIANode {
+        let isHTML = .html == element.namespace
+        let rawRole = element.hasAttribute("role") ? assertionValue(element.attributeValue("role") ?? "") : nil
+        let tokens = isHTML ? rawRole.map(assertionRoleTokens) : nil
+        var ancestry = parent?.summary ?? ARIASummary()
+        for name in implied {
+            ancestry.add(implied: name)
+        }
+        var summary = ancestry
+        summary.add((element.name, isHTML, rawRole, tokens), index: index)
+        return ARIANode(
+            name: element.name,
+            isHTML: isHTML,
+            rawRole: rawRole,
+            tokens: tokens,
+            ownedChildRoles: tokens.map(OwnedChildRoles.init(tokens:)) ?? [],
+            hasPopover: element.hasAttribute("popover"),
+            parentRole: implied.isEmpty ? parent?.rawRole : nil,
+            ancestry: ancestry,
+            summary: summary
+        )
+    }
+
+    /// Case 554591 (A14/A16 review): the table parts upstream's parser
+    /// implied between an HTML element and its parent in the port's events,
+    /// an HTML table or row group (the last of `nodes`), outermost first,
+    /// keeping track of which are still open in that parent (its
+    /// openImplied). HTMLDocumentParser keeps them out of the events, but
+    /// they're on upstream's stack, with their implicit roles, for the ARIA
+    /// rules. So a cell written straight in a table is in an implied tbody's
+    /// implied tr, which gives a role=gridcell in it its row; a <tr
+    /// role="option"> in a <table role="presentation"> has the implied tbody
+    /// for its parent, not the presentation table; and the implied tbody, a
+    /// rowgroup, is what a role=group tr in a role=list table is in. (Second
+    /// review: they stay open after the row or cell, so a script, style,
+    /// template, form or hidden input that comes next goes in them, as in
+    /// upstream's "in table" insertion mode; the parser's records of where
+    /// they end are applied as the events go; see validate.)
+    private static func impliedTableParts(for element: HTMLStartElement, in nodes: inout [ARIANode]) -> [String] {
+        guard .html == element.namespace, let index = nodes.indices.last, nodes[index].isHTML else {
+            return []
+        }
+        switch nodes[index].name {
+        case "table":
+            switch element.name {
+            case "tr":
+                nodes[index].openImplied = ["tbody"]
+                return ["tbody"]
+            case "td", "th":
+                nodes[index].openImplied = ["tbody", "tr"]
+                return ["tbody", "tr"]
+            case "col":
+                nodes[index].openImplied = ["colgroup"]
+                return ["colgroup"]
+            case "caption", "colgroup", "tbody", "thead", "tfoot":
+                // (Each closes what's implied: a row group or caption starts
+                // in the table itself.)
+                nodes[index].openImplied = []
+                return []
+            default:
+                return goesInCurrentTablePart(element) ? nodes[index].openImplied : []
+            }
+        case "tbody", "thead", "tfoot":
+            switch element.name {
+            case "td", "th":
+                nodes[index].openImplied = ["tr"]
+                return ["tr"]
+            case "tr":
+                nodes[index].openImplied = []
+                return []
+            default:
+                return goesInCurrentTablePart(element) ? nodes[index].openImplied : []
+            }
+        default:
+            return []
+        }
+    }
+
+    /// Case 554591 (A14 second review): whether upstream's "in table"
+    /// insertion mode puts an element in the current node (an implied tbody,
+    /// tr or colgroup, if one is open) rather than before the table: a
+    /// script, style, template or form, or an input whose type is hidden.
+    /// (After an implied colgroup only a template goes in it; the others end
+    /// it first, which the parser records; see validate.)
+    private static func goesInCurrentTablePart(_ element: HTMLStartElement) -> Bool {
+        switch element.name {
+        case "script", "style", "template", "form":
+            return true
+        case "input":
+            let type = HTMLCharacterReferences.decodeAttributeValue(element.attributeValue("type") ?? "")
+            return "hidden" == String(String.UnicodeScalarView(type.unicodeScalars.map { ("A"..."Z").contains($0) ? Unicode.Scalar(UInt8(truncatingIfNeeded: $0.value + 0x20)) : $0 }))
+        default:
+            return false
+        }
+    }
+
+    /// Case 554591 (A14 second review): the innermost HTML table's index in
+    /// `nodes`, if it's the innermost of the HTML tables, templates and html
+    /// element there, as the parser has it for the table parts it implied
+    /// (HTMLDocumentParser.closesImpliedTablePart).
+    private static func innermostTable(in nodes: [ARIANode]) -> Int? {
+        guard let boundary = nodes.lastIndex(where: { $0.isHTML && ("table" == $0.name || "template" == $0.name || "html" == $0.name) }),
+              "table" == nodes[boundary].name else {
+            return nil
+        }
+        return boundary
+    }
+
+    /// Case 554591 (A14 second review): an implied colgroup ending (see
+    /// HTMLParsedDocument.impliedColgroupEnds).
+    private static func endImpliedColgroup(in nodes: inout [ARIANode]) {
+        if let table = innermostTable(in: nodes), ["colgroup"] == nodes[table].openImplied {
+            nodes[table].openImplied = []
+        }
+    }
+
+    /// Case 554591 (A14 second review): a </tr> or </tbody> ending implied
+    /// table parts (see HTMLParsedDocument.impliedTablePartEnds): </tbody> the
+    /// implied tbody and its tr; </tr> the implied tr, in the table or in a
+    /// row group directly in it.
+    private static func endImpliedTablePart(_ name: String, in nodes: inout [ARIANode]) {
+        guard let table = innermostTable(in: nodes) else {
+            return
+        }
+        if "tbody" == name {
+            nodes[table].openImplied = []
+        } else if "tr" == nodes[table].openImplied.last {
+            nodes[table].openImplied.removeLast()
+        } else if table + 1 < nodes.count, nodes[table + 1].isHTML, ["tbody", "thead", "tfoot"].contains(nodes[table + 1].name),
+                  ["tr"] == nodes[table + 1].openImplied {
+            nodes[table + 1].openImplied = []
+        }
+    }
+
+    /// Case 554591 (A14 review): an attribute's value as upstream's tokenizer
+    /// hands it on to its checkers: character references decoded, and a
+    /// literal U+0000 made U+FFFD. (The port's tokenizer keeps a U+0000 as
+    /// written, which Java's trim() would then take away: role="tab\0" was a
+    /// tab, where upstream's "tab\u{FFFD}" is no role it knows.)
+    static func assertionValue(_ raw: String) -> String {
+        let decoded = HTMLCharacterReferences.decodeAttributeValue(raw)
+        // (In the UTF-8 bytes, where a zero byte can only be U+0000.)
+        guard decoded.utf8.contains(0) else {
+            return decoded
+        }
+        return String(String.UnicodeScalarView(decoded.unicodeScalars.map { "\u{0}" == $0 ? "\u{FFFD}" : $0 }))
+    }
+
+    /// Case 554591 (A14/A16): upstream's `roles` for a role value,
+    /// role.trim().toLowerCase().split("\\s+"): trimmed of every character up
+    /// to U+0020 (Java's trim()), lowercased, and split at runs of space,
+    /// tab, line feed, vertical tab, form feed or carriage return (Java's
+    /// \s). An empty or blank value is one empty token, as Java's split
+    /// makes it.
+    private static func assertionRoleTokens(_ value: String) -> [String] {
+        // The usual case, one role written in lowercase ASCII with nothing
+        // to trim or split ("option", "doc-noteref"): itself, with no copy.
+        // (A14 review: every element with a role made several new strings
+        // here, which took a good part of the time the ARIA rules added.)
+        if !value.isEmpty, value.utf8.allSatisfy({ (UInt8(ascii: "a")...UInt8(ascii: "z")).contains($0) || UInt8(ascii: "-") == $0 }) {
+            return [value]
+        }
+        let scalars = value.unicodeScalars
+        guard let first = scalars.firstIndex(where: { $0.value > 0x20 }),
+              let last = scalars.lastIndex(where: { $0.value > 0x20 }) else {
+            return [""]
+        }
+        let trimmed = String(String.UnicodeScalarView(scalars[first...last])).lowercased()
+        return trimmed.unicodeScalars
+            .split(whereSeparator: { " " == $0 || "\t" == $0 || "\n" == $0 || "\u{0B}" == $0 || "\u{0C}" == $0 || "\r" == $0 })
+            .map { String(String.UnicodeScalarView($0)) }
+    }
+
+    /// Case 554591 (A14): an attribute value's whitespace-separated tokens,
+    /// as upstream's AttributeUtil.split takes them: at space, tab, line feed
+    /// and carriage return only. (A14 review: not at a literal form feed,
+    /// where the port split them, so aria-owns="x\u{0C}y" owned an x; a &#12;
+    /// is a space by the time upstream's tokenizer hands the value on, as
+    /// HTMLCharacterReferences.decodeAttributeValue has it.)
+    private static func htmlWhitespaceTokens(_ value: String) -> [String] {
+        value.unicodeScalars
+            .split(whereSeparator: { " " == $0 || "\t" == $0 || "\n" == $0 || "\r" == $0 })
+            .map { String(String.UnicodeScalarView($0)) }
+    }
+
+    /// Case 554591 (A14 review): an element's attributes as HTMLARIASchema
+    /// takes them. (A14's third review: one written with an "=" and then the
+    /// tag's end, as in <div aria-checked=>, without a value, as upstream's
+    /// tokenizer gives it, for the ARIA dropping wrapper; see
+    /// HTMLParsedDocument.attributesEndedByTag. The check after it reads the
+    /// value "" there, as for an attribute with no value at all.)
+    private static func ariaSchemaAttributes(of element: HTMLStartElement, endedByTag: Set<Int>) -> [HTMLARIASchema.Attribute] {
+        if endedByTag.isEmpty {
+            return element.attributes.map { HTMLARIASchema.Attribute(name: $0.name, value: $0.value) }
+        }
+        return element.attributes.map { HTMLARIASchema.Attribute(name: $0.name, value: endedByTag.contains($0.offset) ? nil : $0.value) }
+    }
+
+    /// Case 554591 (A14): the schema's messages for an element's ARIA states
+    /// and properties (see HTMLARIASchema), on the role as the schema sees it:
+    /// for HTML and SVG, what upstream's role filter passes on; for MathML,
+    /// the value as written.
+    private func appendARIASchemaMessages(
+        for element: HTMLStartElement,
+        parent: String?,
+        attributesEndedByTag: Set<Int>,
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) {
+        // (A14 review: only an element with one of the attributes
+        // HTMLARIASchema judges can get a message from it, so every other
+        // one, nearly every element, stops here, before the role filter.)
+        let judged = Self.ariaSchemaJudgedAttributes(for: element, parent: parent)
+        guard element.attributes.contains(where: { judged.contains($0.name) }) else {
+            return
+        }
+        let schemaRole: String?
+        if .mathML == element.namespace {
+            schemaRole = roleAttributeValue(for: element)
+        } else {
+            schemaRole = filteredRole(for: element)?.schemaValue
+        }
+        let attributes = Self.ariaSchemaAttributes(of: element, endedByTag: attributesEndedByTag)
+        let reportedElsewhere = requiredAttributesReportedElsewhere(for: element, attributesEndedByTag: attributesEndedByTag)
+        for message in HTMLARIASchema.messages(element: element.name, namespace: element.namespace, parent: parent, attributes: attributes, schemaRole: schemaRole, reportedElsewhere: reportedElsewhere, judged: judged) {
+            switch message {
+            case let .notAllowed(attribute):
+                appendAttributeNotAllowed(attribute, for: element, locations: locations, messages: &messages)
+            case let .missingRequired(attribute):
+                appendMessage("Element \u{201c}\(element.displayName)\u{201d} is missing required attribute \u{201c}\(attribute)\u{201d}.", for: element, locations: locations, messages: &messages)
+            case let .missingOneOf(attributes):
+                appendMessage("Element \u{201c}\(element.displayName)\u{201d} is missing one or more of the following attributes: \(attributes.map { "\u{201c}\($0)\u{201d}" }.joined(separator: ", ")).", for: element, locations: locations, messages: &messages)
+            }
+        }
+    }
+
+    /// Case 554591 (A14 review): the states and properties HTMLARIASchema
+    /// reports on for an element (`parent` is an HTML parent's name): the
+    /// seven it judges, and, where the port had hand-written stand-ins for
+    /// the schema's message about them, an output's aria-pressed and a
+    /// details element's summary's aria-expanded and aria-pressed, which it
+    /// now judges as the schema does. (The stand-ins ignored the role, so
+    /// <summary role="button" aria-expanded="false"> and <output role=""
+    /// aria-pressed="true"> were missing one, and gave "missing" where vnu.jar
+    /// says "not allowed".)
+    private static func ariaSchemaJudgedAttributes(for element: HTMLStartElement, parent: String?) -> Set<String> {
+        guard .html == element.namespace else {
+            return HTMLARIASchema.judgedAttributes
+        }
+        if "output" == element.name {
+            return outputJudgedAttributes
+        }
+        if "summary" == element.name, "details" == parent {
+            return summaryJudgedAttributes
+        }
+        return HTMLARIASchema.judgedAttributes
+    }
+
+    /// Case 554591 (A14 review): see ariaSchemaJudgedAttributes.
+    static let outputJudgedAttributes = HTMLARIASchema.judgedAttributes.union(["aria-pressed"])
+    static let summaryJudgedAttributes = HTMLARIASchema.judgedAttributes.union(["aria-expanded", "aria-pressed"])
+
+    /// Case 554591 (A14 review): the attributes another of the port's
+    /// checkers reports missing on an element, on the same conditions, which
+    /// the schema's end-of-tag message from HTMLARIASchema mustn't name again
+    /// (vnu.jar's one message names them with the role, a later unit's): an
+    /// a's href with a download or ping (HTMLRequiredAttributeChecker), an
+    /// img's src and srcset, an object's data, an input type=image's alt
+    /// (HTMLValidator), a meter's value (appendMeterMessages), and the
+    /// aria-expanded of a select with role=combobox
+    /// (appendARIAWidgetPropertyMessages).
+    private func requiredAttributesReportedElsewhere(for element: HTMLStartElement, attributesEndedByTag: Set<Int>) -> Set<String> {
+        guard .html == element.namespace else {
+            return []
+        }
+        switch element.name {
+        case "a":
+            if !element.hasAttribute("href"), element.hasAttribute("download") || element.hasAttribute("ping") {
+                return ["href"]
+            }
+        case "img":
+            if !element.hasAttribute("src"), !element.hasAttribute("srcset") {
+                return ["src", "srcset"]
+            }
+        case "object":
+            if !element.hasAttribute("data") {
+                return ["data"]
+            }
+        case "input":
+            // (Decoded, as HTMLValidator's attribute values are: A14 review,
+            // type="imag&#101;" got its alt message twice.)
+            if "image" == element.attributeValue("type").map({ HTMLCharacterReferences.decode($0).lowercased() }), !element.hasAttribute("alt") {
+                return ["alt"]
+            }
+        case "meter":
+            if nil == element.attributeValue("value") {
+                return ["value"]
+            }
+        case "select":
+            if "combobox" == knownSchemaRole(for: element), !HTMLARIASchema.schemaSees("aria-expanded", in: Self.ariaSchemaAttributes(of: element, endedByTag: attributesEndedByTag)) {
+                return ["aria-expanded"]
+            }
+        default:
+            break
+        }
+        return []
+    }
+
+    /// Case 554591 (A14/A16): upstream's Assertions rules for ARIA structure
+    /// and for the ARIA states and properties HTMLARIASchema judges, with its
+    /// role model (see ARIANode), in its order. `ancestors` are the element's
+    /// open ancestors' nodes, nearest last; what the rules need from them is
+    /// in the node's ancestry. (Never in template contents, which upstream's
+    /// checker never sees.)
+    private func appendARIAContextMessages(
+        for element: HTMLStartElement,
+        node: ARIANode,
+        ancestors: [ARIANode],
+        state: inout ARIAContextState,
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) {
+        let isHTML = node.isHTML
+        // IDs, and the IDs aria-activedescendant names (checked at the end,
+        // as upstream's MUST_NOT_DANGLE_IDREFS are): a non-empty value's
+        // tokens, in any namespace. (A14 review: with a literal U+0000 as
+        // upstream's tokenizer hands it on, U+FFFD; see assertionValue.)
+        if let id = element.attributeValue("id").map(Self.assertionValue), !id.isEmpty {
+            state.ids.insert(ExactID(id))
+        }
+        if let active = element.attributeValue("aria-activedescendant").map(Self.assertionValue), !active.isEmpty {
+            for token in Self.htmlWhitespaceTokens(active) {
+                state.references.append((element, token))
+            }
+        }
+        // An owner: an HTML element whose role is exactly one of the roles
+        // the required-context rule asks for registers the IDs in its
+        // aria-owns, for the elements that rule defers (see the end of
+        // validate).
+        if isHTML, let rawRole = node.rawRole, Self.requiredContextOwnerRoles.contains(rawRole),
+           let owns = element.attributeValue("aria-owns").map(Self.assertionValue) {
+            state.owners[rawRole, default: []].formUnion(Self.htmlWhitespaceTokens(owns).map(ExactID.init))
+        }
+
+        // The judged ARIA states' and properties' own rules (Assertions),
+        // most only for a non-empty value. An input's type here is its value
+        // lowercased ("text" when there's no type attribute; A14 review: ""
+        // for one with no value, as upstream has it, which no input-type rule
+        // takes, where the port made it "text" and warned about an
+        // aria-haspopup with a list).
+        if isHTML {
+            let type = element.hasAttribute("type") ? HTMLCharacterReferences.decodeAttributeValue(element.attributeValue("type") ?? "").lowercased() : "text"
+            func nonEmpty(_ attribute: String) -> Bool {
+                !(element.attributeValue(attribute) ?? "").isEmpty
+            }
+            if "input" == element.name, "radio" == type || "checkbox" == type, nonEmpty("aria-checked") {
+                appendMessage("The \u{201c}aria-checked\u{201d} attribute must not be used on an \u{201c}input\u{201d} element which has a \u{201c}type\u{201d} attribute whose value is \u{201c}\(type)\u{201d}.", for: element, locations: locations, messages: &messages)
+            }
+            if "input" == element.name, Self.inputTypesWithARIARange.contains(type) {
+                for (aria, native) in [("aria-valuemin", "min"), ("aria-valuemax", "max")] where nonEmpty(aria) {
+                    if element.hasAttribute(native) {
+                        appendMessage("The \u{201c}\(aria)\u{201d} attribute must not be used on an element which has a \u{201c}\(native)\u{201d} attribute.", for: element, locations: locations, messages: &messages)
+                    } else {
+                        appendWarningMessage("The \u{201c}\(aria)\u{201d} attribute should not be used on an \u{201c}input\u{201d} element which has a \u{201c}type\u{201d} attribute whose value is \u{201c}\(type)\u{201d}.", for: element, locations: locations, messages: &messages)
+                    }
+                }
+            }
+            if "input" == element.name, Self.inputTypesWithListPopup.contains(type), element.hasAttribute("list"), nonEmpty("aria-haspopup") {
+                appendWarningMessage("The \u{201c}aria-haspopup\u{201d} attribute should not be used on an \u{201c}input\u{201d} element that has a \u{201c}list\u{201d} attribute and whose type is \u{201c}\(type)\u{201d}.", for: element, locations: locations, messages: &messages)
+            }
+            if "progress" == element.name, nonEmpty("aria-valuemax") {
+                if element.hasAttribute("max") {
+                    appendMessage("The \u{201c}aria-valuemax\u{201d} attribute must not be used on an element which has a \u{201c}max\u{201d} attribute.", for: element, locations: locations, messages: &messages)
+                } else {
+                    appendWarningMessage("The \u{201c}aria-valuemax\u{201d} attribute should not be used on a \u{201c}progress\u{201d} element.", for: element, locations: locations, messages: &messages)
+                }
+            }
+            if "meter" == element.name {
+                for (aria, native) in [("aria-valuemin", "min"), ("aria-valuemax", "max")] where nonEmpty(aria) {
+                    if element.hasAttribute(native) {
+                        appendMessage("The \u{201c}\(aria)\u{201d} attribute must not be used on an element which has a \u{201c}\(native)\u{201d} attribute.", for: element, locations: locations, messages: &messages)
+                    } else {
+                        appendWarningMessage("The \u{201c}\(aria)\u{201d} attribute should not be used on a \u{201c}meter\u{201d} element.", for: element, locations: locations, messages: &messages)
+                    }
+                }
+            }
+            // (Only until the parent's first option child ends.)
+            if "option" == element.name, !(ancestors.last?.optionChildEnded ?? false), nonEmpty("aria-selected") {
+                appendWarningMessage("The \u{201c}aria-selected\u{201d} attribute should not be used on the \u{201c}option\u{201d} element.", for: element, locations: locations, messages: &messages)
+            }
+            if "select" == element.name, element.hasAttribute("aria-multiselectable") {
+                appendWarningMessage("The \u{201c}aria-multiselectable\u{201d} attribute should not be used with the \u{201c}select \u{201d} element.", for: element, locations: locations, messages: &messages)
+            }
+            // (A14 review: the value decoded, as upstream compares it, so
+            // aria-readonly="&#116;rue" counts.)
+            if element.hasAttribute("contenteditable"), "true" == element.attributeValue("aria-readonly").map(HTMLCharacterReferences.decodeAttributeValue) {
+                appendMessage("The \u{201c}aria-readonly\u{201d} attribute must only be specified with a value of \u{201c}false\u{201d} on elements that have a \u{201c}contenteditable\u{201d} attribute.", for: element, locations: locations, messages: &messages)
+            }
+            if element.hasAttribute("aria-placeholder"), element.hasAttribute("placeholder") {
+                appendMessage("The \u{201c}aria-placeholder\u{201d} attribute must not be specified on elements that have a \u{201c}placeholder\u{201d} attribute.", for: element, locations: locations, messages: &messages)
+            }
+        }
+
+        // role=main, then a main element (which counts as one), as upstream
+        // checks them: so <main role="main"> on its own gets nothing, where
+        // the port warned that it was a second role=main.
+        if isHTML, let tokens = node.tokens, !(node.rawRole ?? "").isEmpty, tokens.contains("main"), !isHidden(element) {
+            if state.hasVisibleMainRole {
+                appendWarningMessage("A document should not include more than one visible element with \u{201c}role=main\u{201d}.", for: element, locations: locations, messages: &messages)
+            }
+            state.hasVisibleMainRole = true
+        }
+        if isHTML, "main" == element.name, !isHidden(element) {
+            if state.hasVisibleMain {
+                appendMessage("A document must not include more than one visible \u{201c}main\u{201d} element.", for: element, locations: locations, messages: &messages)
+            }
+            state.hasVisibleMain = true
+            state.hasVisibleMainRole = true
+        }
+
+        // An li with a role (Assertions.java:3312-3376), by the roles of its
+        // HTML ancestors that have one: every token of each (A14 review: as
+        // the ancestry keeps them, ARIASummary.liRoles, rather than gathered
+        // from every ancestor for every li). The last four rules don't apply
+        // to an li that's none, presentation or generic (the guard the port
+        // lacked, so Bootstrap's <li role="presentation"> in a role=tablist
+        // <ul> and the ARIA authoring practices' <li role="none"> in a
+        // menubar were errors).
+        if isHTML, "li" == element.name, let tokens = node.tokens {
+            let ancestorRoles = node.ancestry.liRoles
+            if !ancestorRoles.contains(.any) || ancestorRoles.contains(.list), !tokens.contains("listitem") {
+                appendMessage("An \u{201c}li\u{201d} element that is a descendant of a \u{201c}ul\u{201d}, \u{201c}ol\u{201d}, or \u{201c}menu\u{201d} element with no explicit \u{201c}role\u{201d} value, or a descendant of a \u{201c}role=list\u{201d} element, must not have any \u{201c}role\u{201d} value other than \u{201c}listitem\u{201d}.", for: element, locations: locations, messages: &messages)
+            }
+            if !tokens.contains(where: Self.presentationalRoleTokens.contains) {
+                if ancestorRoles.contains(.tablist), !tokens.contains("tab") {
+                    appendMessage("An \u{201c}li\u{201d} element that is a descendant of a \u{201c}role=tablist\u{201d} element must not have any \u{201c}role\u{201d} value other than \u{201c}tab\u{201d}.", for: element, locations: locations, messages: &messages)
+                }
+                if ancestorRoles.contains(.tree), !tokens.contains("treeitem") {
+                    appendMessage("An \u{201c}li\u{201d} element that is a descendant of a \u{201c}role=tree\u{201d} element must not have any \u{201c}role\u{201d} value other than \u{201c}treeitem\u{201d}.", for: element, locations: locations, messages: &messages)
+                }
+                if !ancestorRoles.isDisjoint(with: [.listbox, .list]), !tokens.contains("group"), !tokens.contains("option") {
+                    appendMessage("An \u{201c}li\u{201d} element that is a descendant of a \u{201c}role=listbox\u{201d} element or \u{201c}role=list\u{201d} element must not have any \u{201c}role\u{201d} value other than \u{201c}group\u{201d} or \u{201c}option\u{201d}.", for: element, locations: locations, messages: &messages)
+                }
+                if !ancestorRoles.isDisjoint(with: [.menu, .menubar]),
+                   !tokens.contains(where: ["group", "menuitem", "menuitemcheckbox", "menuitemradio", "separator"].contains) {
+                    appendMessage("An \u{201c}li\u{201d} element that is a descendant of a \u{201c}role=menu\u{201d} element or \u{201c}role=menubar\u{201d} element must not have any \u{201c}role\u{201d} value other than \u{201c}group\u{201d}, \u{201c}menuitem\u{201d}, \u{201c}menuitemcheckbox\u{201d}, \u{201c}menuitemradio\u{201d}, or \u{201c}separator\u{201d}.", for: element, locations: locations, messages: &messages)
+                }
+            }
+        }
+
+        // Required context (Assertions.java:4806-4822), for an element in any
+        // namespace whose role is exactly one of the 13 that need one: an
+        // open ancestor with one of the roles it needs, exactly as written,
+        // or whose element has one implicitly (even with a role of its own),
+        // unless its parent's role is exactly presentation. The port knew 3
+        // of the roles, matched first tokens, and counted no implicit role,
+        // so a role=cell in a <tr> was an error. With an id, the element may
+        // be owned instead, which is known only at the end. (A14 review: the
+        // ancestors' roles as the ancestry keeps them, contextRoles, the
+        // parser's implied table parts among them, so a cell straight in a
+        // table has its implied tr's row, and a tr's parent there is the
+        // implied tbody, never a presentation table; only an HTML ancestor
+        // has an implicit role, as upstream's foreign stack nodes have no
+        // name. And th's two implicit roles, columnheader and rowheader, are
+        // no role this rule asks for.)
+        if let rawRole = node.rawRole, let required = Self.requiredContextMasks[rawRole],
+           "presentation" != node.parentRole,
+           "tbody" != element.name, "tfoot" != element.name, "thead" != element.name {
+            if 0 == node.ancestry.contextRoles & required {
+                if let id = element.attributeValue("id").map(Self.assertionValue), !id.isEmpty {
+                    state.deferred.append((element, rawRole, id))
+                } else {
+                    appendRequiredContextMessage(role: rawRole, for: element, locations: locations, messages: &messages)
+                }
+            }
+        }
+
+        // Owned children (Assertions.java:4824-4877): an HTML element with a
+        // role (but none, presentation or generic), by its nearest HTML
+        // ancestor with a role and the one above that; the port looked at the
+        // parent's first token and any ancestor's. (A14 review: found through
+        // the ancestry's nearestRoleNode, the role parent's own giving the
+        // one above it, and their roles through ownedChildRoles.)
+        if isHTML, let tokens = node.tokens, !tokens.contains(where: Self.presentationalRoleTokens.contains),
+           let parentIndex = node.ancestry.nearestRoleNode {
+            let roleParent = ancestors[parentIndex].ownedChildRoles
+            if roleParent.contains(.rowgroup), !tokens.contains("row") {
+                appendMessage("An element that is a child of an element with \u{201c}role=rowgroup\u{201d} must have \u{201c}role=row\u{201d}.", for: element, locations: locations, messages: &messages)
+            }
+            if roleParent.contains(.group), let grandparentIndex = ancestors[parentIndex].ancestry.nearestRoleNode {
+                let roleGrandparent = ancestors[grandparentIndex].ownedChildRoles
+                if !roleGrandparent.isDisjoint(with: [.menu, .menubar]),
+                   !tokens.contains(where: ["menuitem", "menuitemcheckbox", "menuitemradio"].contains) {
+                    appendMessage("An element with \u{201c}role=group\u{201d} that is a descendant of an element with \u{201c}role=menu\u{201d} or \u{201c}role=menubar\u{201d} must contain only elements with \u{201c}role=menuitem\u{201d}, \u{201c}role=menuitemcheckbox\u{201d}, or \u{201c}role=menuitemradio\u{201d}.", for: element, locations: locations, messages: &messages)
+                }
+                if roleGrandparent.contains(.tree), !tokens.contains("treeitem") {
+                    appendMessage("An element with \u{201c}role=group\u{201d} that is a descendant of an element with \u{201c}role=tree\u{201d} must contain only elements with \u{201c}role=treeitem\u{201d}.", for: element, locations: locations, messages: &messages)
+                }
+            }
+        }
+
+        // A group in a list (Assertions.java:4879-4916): the nearest HTML
+        // ancestor with a role decides, or failing that one with an implicit
+        // role (ul and ol are lists); other elements don't count. The port
+        // looked at the parent's explicit role only. (A14 review: the
+        // ancestry's listDecision has the answer, with the parser's implied
+        // tbody and tr, a rowgroup and a row, deciding for what's in them.)
+        if isHTML, let tokens = node.tokens, tokens.contains("group"), true == node.ancestry.listDecision {
+            appendMessage("An element with \u{201c}role=group\u{201d} must not be a child of an element with \u{201c}role=list\u{201d}.", for: element, locations: locations, messages: &messages)
+        }
+    }
+
+    /// Case 554591 (A14): upstream's errContainedInOrOwnedBy.
+    private func appendRequiredContextMessage(
+        role: String,
+        for element: HTMLStartElement,
+        locations: SourceLocationMap,
+        messages: inout [ValidationMessage]
+    ) {
+        guard let required = Self.requiredContextRoles[role] else { return }
+        appendMessage("An element with \u{201c}role=\(role)\u{201d} must be contained in, or owned by, an element with the \u{201c}role\u{201d} value \(required.rendered).", for: element, locations: locations, messages: &messages)
+    }
+
+    /// Case 554591 (A14): upstream's REQUIRED_ROLE_ANCESTOR_BY_DESCENDANT: the
+    /// roles an element with each of these roles needs as an ancestor's (or
+    /// an owner's), and how its message names them (renderRoleSet, in the
+    /// order of Java's HashSet of them).
+    static let requiredContextRoles: [String: (roles: Set<String>, rendered: String)] = [
+        "option": (["listbox"], "\u{201c}listbox\u{201d}"),
+        "tab": (["tablist"], "\u{201c}tablist\u{201d}"),
+        "menuitem": (["menubar", "menu"], "\u{201c}menubar\u{201d}, or \u{201c}menu\u{201d}"),
+        "menuitemcheckbox": (["menubar", "menu"], "\u{201c}menubar\u{201d}, or \u{201c}menu\u{201d}"),
+        "menuitemradio": (["menubar", "menu", "group"], "\u{201c}menubar\u{201d}, \u{201c}menu\u{201d}, or \u{201c}group\u{201d}"),
+        "treeitem": (["tree", "group"], "\u{201c}tree\u{201d}, or \u{201c}group\u{201d}"),
+        "listitem": (["list", "group"], "\u{201c}list\u{201d}, or \u{201c}group\u{201d}"),
+        "cell": (["row"], "\u{201c}row\u{201d}"),
+        "gridcell": (["row"], "\u{201c}row\u{201d}"),
+        "columnheader": (["row"], "\u{201c}row\u{201d}"),
+        "rowheader": (["row"], "\u{201c}row\u{201d}"),
+        "row": (["treegrid", "grid", "rowgroup", "table"], "\u{201c}treegrid\u{201d}, \u{201c}grid\u{201d}, \u{201c}rowgroup\u{201d}, or \u{201c}table\u{201d}"),
+        "rowgroup": (["treegrid", "grid", "table"], "\u{201c}treegrid\u{201d}, \u{201c}grid\u{201d}, or \u{201c}table\u{201d}"),
+    ]
+
+    /// Case 554591 (A14): the roles of requiredContextRoles's ancestors,
+    /// whose elements can own an element through aria-owns.
+    static let requiredContextOwnerRoles: Set<String> = [
+        "grid", "group", "list", "listbox", "menu", "menubar", "row", "rowgroup", "table", "tablist", "tree", "treegrid"
+    ]
+
+    /// Case 554591 (A14/A16 review): a bit for each of
+    /// requiredContextOwnerRoles, for ARIASummary.contextRoles.
+    static let requiredContextOwnerBits: [String: UInt16] = Dictionary(
+        uniqueKeysWithValues: requiredContextOwnerRoles.sorted().enumerated().map { ($1, UInt16(1) << UInt16($0)) }
+    )
+
+    /// Case 554591 (A14/A16 review): requiredContextRoles's roles as
+    /// requiredContextOwnerBits' bits.
+    static let requiredContextMasks: [String: UInt16] = requiredContextRoles.mapValues { required in
+        required.roles.reduce(0) { $0 | (requiredContextOwnerBits[$1] ?? 0) }
+    }
+
+    /// Case 554591 (A14): upstream's ELEMENTS_WITH_IMPLICIT_ROLE. (th, which
+    /// has two in ELEMENTS_WITH_IMPLICIT_ROLES, columnheader and rowheader,
+    /// needn't be here: no rule that uses these asks for either.)
+    static let elementsWithImplicitRole: [String: String] = [
+        "article": "article", "aside": "complementary", "body": "document", "button": "button", "datalist": "listbox",
+        "dd": "definition", "details": "group", "dialog": "dialog", "dfn": "term", "dt": "term", "fieldset": "group",
+        "figure": "figure", "form": "form", "h1": "heading", "h2": "heading", "h3": "heading", "h4": "heading",
+        "h5": "heading", "h6": "heading", "hr": "separator", "img": "img", "li": "listitem", "link": "link",
+        "main": "main", "nav": "navigation", "ol": "list", "output": "status", "progress": "progressbar",
+        "section": "region", "summary": "button", "s": "deletion", "table": "table", "tbody": "rowgroup",
+        "textarea": "textbox", "tfoot": "rowgroup", "thead": "rowgroup", "td": "cell", "tr": "row", "ul": "list"
+    ]
+
+    /// Case 554591 (A14/A16): the role tokens upstream's li and owned-child
+    /// rules exempt.
+    static let presentationalRoleTokens: Set<String> = ["none", "presentation", "generic"]
+
+    /// Case 554591 (A14): the input types whose aria-valuemin and
+    /// aria-valuemax upstream checks against min and max.
+    static let inputTypesWithARIARange: Set<String> = ["date", "month", "week", "time", "datetime-local", "number", "range"]
+
+    /// Case 554591 (A14): the input types whose aria-haspopup upstream warns
+    /// about with a list attribute.
+    static let inputTypesWithListPopup: Set<String> = ["email", "search", "tel", "text", "url"]
 
     private func appendARIAStructureMessages(
         for element: HTMLStartElement,
@@ -3662,46 +4498,11 @@ struct HTMLGeneralAttributeChecker {
         if isHTML, let role, Self.headingProhibitedRoles.contains(role), stack.contains(where: { Self.headingElements.contains($0) }) {
             appendMessage("An element with the attribute \u{201c}role=\(role)\u{201d} must not appear as a descendant of an \u{201c}h1\u{201d}, \u{201c}h2\u{201d}, \u{201c}h3\u{201d}, \u{201c}h4\u{201d}, \u{201c}h5\u{201d}, or \u{201c}h6\u{201d} element.", for: element, locations: locations, messages: &messages)
         }
-        if role == "option", !roleStack.contains(where: { $0 == "listbox" }) {
-            appendMessage("An element with \u{201c}role=option\u{201d} must be contained in, or owned by, an element with the \u{201c}role\u{201d} value \u{201c}listbox\u{201d}.", for: element, locations: locations, messages: &messages)
-        }
-        if role == "cell", !roleStack.contains(where: { $0 == "row" }) {
-            appendMessage("An element with \u{201c}role=cell\u{201d} must be contained in, or owned by, an element with the \u{201c}role\u{201d} value \u{201c}row\u{201d}.", for: element, locations: locations, messages: &messages)
-        }
-        if role == "row", !roleStack.contains(where: { $0 == "treegrid" || $0 == "grid" || $0 == "rowgroup" || $0 == "table" }) {
-            appendMessage("An element with \u{201c}role=row\u{201d} must be contained in, or owned by, an element with the \u{201c}role\u{201d} value \u{201c}treegrid\u{201d}, \u{201c}grid\u{201d}, \u{201c}rowgroup\u{201d}, or \u{201c}table\u{201d}.", for: element, locations: locations, messages: &messages)
-        }
-        if isHTML, role == "group", roleStack.last == "list" {
-            appendMessage("An element with \u{201c}role=group\u{201d} must not be a child of an element with \u{201c}role=list\u{201d}.", for: element, locations: locations, messages: &messages)
-        }
+        // (Case 554591, A14/A16: the required-context, li, owned-child and
+        // group-in-list rules are appendARIAContextMessages's now, with
+        // upstream's role model.)
         if element.name == "div", stack.last == "dl", let role, role != "presentation", role != "none" {
             appendMessage("A \u{201c}div\u{201d} child of a \u{201c}dl\u{201d} element must not have any \u{201c}role\u{201d} value other than \u{201c}presentation\u{201d} or \u{201c}none\u{201d}.", for: element, locations: locations, messages: &messages)
-        }
-        if element.name == "li", let role {
-            if roleStack.contains(where: { $0 == "listbox" || $0 == "list" }), role != "group", role != "option" {
-                appendMessage("An \u{201c}li\u{201d} element that is a descendant of a \u{201c}role=listbox\u{201d} element or \u{201c}role=list\u{201d} element must not have any \u{201c}role\u{201d} value other than \u{201c}group\u{201d} or \u{201c}option\u{201d}.", for: element, locations: locations, messages: &messages)
-            }
-            if roleStack.contains(where: { $0 == "menu" || $0 == "menubar" }), !["group", "menuitem", "menuitemcheckbox", "menuitemradio", "separator"].contains(role) {
-                appendMessage("An \u{201c}li\u{201d} element that is a descendant of a \u{201c}role=menu\u{201d} element or \u{201c}role=menubar\u{201d} element must not have any \u{201c}role\u{201d} value other than \u{201c}group\u{201d}, \u{201c}menuitem\u{201d}, \u{201c}menuitemcheckbox\u{201d}, \u{201c}menuitemradio\u{201d}, or \u{201c}separator\u{201d}.", for: element, locations: locations, messages: &messages)
-            }
-            if roleStack.contains(where: { $0 == "tablist" }), role != "tab" {
-                appendMessage("An \u{201c}li\u{201d} element that is a descendant of a \u{201c}role=tablist\u{201d} element must not have any \u{201c}role\u{201d} value other than \u{201c}tab\u{201d}.", for: element, locations: locations, messages: &messages)
-            }
-            if roleStack.contains(where: { $0 == "tree" }), role != "treeitem" {
-                appendMessage("An \u{201c}li\u{201d} element that is a descendant of a \u{201c}role=tree\u{201d} element must not have any \u{201c}role\u{201d} value other than \u{201c}treeitem\u{201d}.", for: element, locations: locations, messages: &messages)
-            }
-        }
-        if isHTML, roleStack.last == "group", let role {
-            if roleStack.contains(where: { $0 == "menu" || $0 == "menubar" }),
-               !["menuitem", "menuitemcheckbox", "menuitemradio"].contains(role) {
-                appendMessage("An element with \u{201c}role=group\u{201d} that is a descendant of an element with \u{201c}role=menu\u{201d} or \u{201c}role=menubar\u{201d} must contain only elements with \u{201c}role=menuitem\u{201d}, \u{201c}role=menuitemcheckbox\u{201d}, or \u{201c}role=menuitemradio\u{201d}.", for: element, locations: locations, messages: &messages)
-            }
-            if roleStack.contains(where: { $0 == "tree" }), role != "treeitem" {
-                appendMessage("An element with \u{201c}role=group\u{201d} that is a descendant of an element with \u{201c}role=tree\u{201d} must contain only elements with \u{201c}role=treeitem\u{201d}.", for: element, locations: locations, messages: &messages)
-            }
-        }
-        if isHTML, roleStack.last == "rowgroup", role != "row" {
-            appendMessage("An element that is a child of an element with \u{201c}role=rowgroup\u{201d} must have \u{201c}role=row\u{201d}.", for: element, locations: locations, messages: &messages)
         }
         if let ancestorRole = roleStack.compactMap({ $0 }).last(where: { ["button", "img", "math", "progressbar", "separator", "slider"].contains($0) }) {
             if ancestorRole == "button", Self.headingElements.contains(element.name) {
@@ -4114,9 +4915,8 @@ struct HTMLGeneralAttributeChecker {
     ) {
         guard element.name == "meter" else { return }
 
-        if element.hasAttribute("aria-valuemax") {
-            appendWarningMessage("The \u{201c}aria-valuemax\u{201d} attribute should not be used on a \u{201c}meter\u{201d} element.", for: element, locations: locations, messages: &messages)
-        }
+        // (Case 554591, A14: the aria-valuemin and aria-valuemax rules are
+        // appendARIAContextMessages's now, with upstream's conditions.)
         guard let value = element.attributeValue("value") else {
             appendMessage("Element \u{201c}meter\u{201d} is missing required attribute \u{201c}value\u{201d}.", for: element, locations: locations, messages: &messages)
             return
@@ -4179,9 +4979,8 @@ struct HTMLGeneralAttributeChecker {
     ) {
         guard element.name == "progress" else { return }
 
-        if element.hasAttribute("aria-valuemax") {
-            appendWarningMessage("The \u{201c}aria-valuemax\u{201d} attribute should not be used on a \u{201c}progress\u{201d} element.", for: element, locations: locations, messages: &messages)
-        }
+        // (Case 554591, A14: the aria-valuemax rule is
+        // appendARIAContextMessages's now, with upstream's conditions.)
         let maxValue = numberAttribute("max", for: element, defaultValue: 1, locations: locations, messages: &messages)
         if let max = maxValue, max <= 0 {
             appendBadAttributeValue(element.attributeValue("max") ?? "", attribute: "max", for: element, locations: locations, messages: &messages)
@@ -4437,6 +5236,11 @@ struct HTMLGeneralAttributeChecker {
         }
     }
 
+    /// (Case 554591, A14 review: as written, undecoded, as the rules that use
+    /// it have always had it: decoding it reached first-token rules that
+    /// upstream applies otherwise, giving custom elements false positives and
+    /// losing the div-in-dl error. The rules this unit ports have their own
+    /// role model; see ARIANode.)
     private func roleTokens(for element: HTMLStartElement) -> [String] {
         element.attributeValue("role")?
             .lowercased()
@@ -6403,27 +7207,6 @@ struct HTMLGeneralAttributeChecker {
         "presentation", "strong", "subscript", "superscript"
     ]
 
-    private static let ariaCheckedRoles: Set<String> = [
-        "checkbox", "menuitemcheckbox", "menuitemradio", "option", "radio", "switch"
-    ]
-
-    private static let ariaReadonlyRoles: Set<String> = [
-        "checkbox", "combobox", "grid", "gridcell", "listbox", "radiogroup", "slider",
-        "spinbutton", "textbox"
-    ]
-
-    private static let ariaSelectedRoles: Set<String> = [
-        "gridcell", "option", "row", "tab"
-    ]
-
-    private static let ariaMultiselectableRoles: Set<String> = [
-        "grid", "listbox", "tablist", "tree"
-    ]
-
-    private static let ariaRangeRoles: Set<String> = [
-        "meter", "scrollbar", "separator", "slider", "spinbutton"
-    ]
-
     // select.attrs in upstream's web-forms.rnc.
     private static let selectSchemaRoles: Set<String> = ["combobox", "listbox", "menu"]
 
@@ -7388,4 +8171,1377 @@ enum HTMLDatetimeDatatype {
             return value
         }
     }
+}
+
+/// Case 554591 (A14): upstream's schema model of an element's ARIA states and
+/// properties, as vnu.jar's default schema has it (aria.rnc and the html5
+/// element patterns, with svg11 and MathML), and Jing's way of judging an
+/// element's attributes against it (PatternValidator). Each of the element's
+/// patterns, and within each its implicit and role patterns, is an
+/// alternative. Each attribute in turn, in the order the schema validator
+/// gets them (see schemaAttributes), narrows the live alternatives to those
+/// that take it; one no live alternative takes is "not allowed", and
+/// ignored. If no alternative left is satisfied at the end of the start tag,
+/// what the ones left still need is "missing" (see missingAttributes).
+///
+/// The port judged a few of these attributes with hand-written role sets,
+/// keyed by the first token of the role as written, ignoring implicit roles:
+/// so aria-valuemin and aria-valuemax on a role=progressbar (Bootstrap's
+/// progress bars), aria-selected and aria-checked on a role=treeitem, and
+/// aria-readonly on an <input type=text> were all "not allowed", where
+/// vnu.jar reports nothing. Those attributes (judgedAttributes) are now
+/// judged as the schema judges them. The others, every attribute's value,
+/// and the states a role requires on its own (role=checkbox's aria-checked)
+/// are left for a later unit: every attribute narrows the alternatives, as
+/// in Jing, but only the judged ones are reported as not allowed, and
+/// "missing" is reported only for an element with one of them.
+enum HTMLARIASchema {
+    /// aria.<name> in aria.rnc: a role value, the role-specific states and
+    /// properties it accepts (beyond aria.global, which every element with
+    /// ARIA attributes takes), and those it requires.
+    struct RolePattern {
+        let role: String
+        let allowed: Set<String>
+        let required: [String]
+    }
+
+    /// One of an element's patterns in the schema, as far as ARIA goes.
+    struct Variant {
+        /// Where this pattern is one of the element's alternatives at all.
+        /// (The attributes that tell an element's patterns apart, its type
+        /// and those in `rejected`, narrow them where they come in the start
+        /// tag instead, as Jing narrows by them.)
+        enum Selector {
+            /// Everywhere.
+            case always
+            /// Only where its parent is this element: an li's patterns
+            /// differ by its parent (ul.inner, ol.inner, menu.inner).
+            case parent(String)
+            /// Only where its parent isn't this element: meta's microdata
+            /// pattern isn't one in a noscript (A14's third review), since
+            /// head's noscript takes only the refresh and default-style
+            /// pragmas, and the port's events can't tell head's noscript
+            /// from the body's.
+            case notParent(String)
+            /// input's and button's patterns differ by their type attribute
+            /// (w:string, compared ignoring ASCII case): this one takes this
+            /// value, and is the one with no type attribute where `optional`.
+            case type(String, optional: Bool)
+        }
+
+        let selector: Selector
+        /// Its implicit patterns (implicitPatterns), alternatives used
+        /// with no role attribute (several for td, cell and gridcell).
+        let implicit: [String]
+        /// The role patterns it accepts (rolePatterns); nil for any
+        /// (anyRolePatterns).
+        let roles: [String]?
+        /// Whether it takes a role attribute at all.
+        let acceptsRole: Bool
+        /// Whether it takes any attribute (the obsolete elements legacy.rnc
+        /// defines with a wildcard), so nothing here applies.
+        let anyAttribute: Bool
+        /// Other states and properties it takes in every alternative (the
+        /// date inputs' aria-valuemin and aria-valuemax, embed's wildcard).
+        let extraARIA: Set<String>
+        /// Other attributes it requires: each list is one requirement,
+        /// satisfied by any of its names (img's src or srcset).
+        let requiredGroups: [[String]]
+        /// Attributes it doesn't take that another of the element's patterns
+        /// does, so that one written leaves this pattern out, unless it's the
+        /// last one left: a without href takes no href, target or download;
+        /// button's reset and button patterns no formaction; time's without
+        /// datetime no datetime; the textbox half of an email, url or tel
+        /// input no list (the combobox half requires it); the RDFa meta for
+        /// the body no name.
+        let rejected: Set<String>
+    }
+
+    /// What the schema reports for an element's judged attributes.
+    enum Message: Equatable {
+        /// "Attribute “X” not allowed on element “E” at this point."
+        case notAllowed(String)
+        /// "Element “E” is missing required attribute “X”."
+        case missingRequired(String)
+        /// "Element “E” is missing one or more of the following attributes:
+        /// “X”, “Y”."
+        case missingOneOf([String])
+    }
+
+    /// The states and properties the port judges (see the type's comment):
+    /// the ones its hand-written role sets judged before.
+    static let judgedAttributes: Set<String> = [
+        "aria-checked", "aria-multiselectable", "aria-placeholder", "aria-readonly", "aria-selected", "aria-valuemax",
+        "aria-valuemin"
+    ]
+
+    /// The states and properties aria.global doesn't have, which only some
+    /// roles' and implicit patterns take: the ones that narrow an element's
+    /// implicit and role patterns.
+    static let roleSpecificAttributes: Set<String> = [
+        "aria-activedescendant", "aria-autocomplete", "aria-checked", "aria-colcount", "aria-colindex", "aria-colspan",
+        "aria-expanded", "aria-level", "aria-modal", "aria-multiline", "aria-multiselectable", "aria-orientation",
+        "aria-placeholder", "aria-posinset", "aria-pressed", "aria-readonly", "aria-required", "aria-rowcount",
+        "aria-rowindex", "aria-rowspan", "aria-selected", "aria-setsize", "aria-sort", "aria-valuemax", "aria-valuemin",
+        "aria-valuenow", "aria-valuetext"
+    ]
+
+    /// AriaAttributeDroppingContentHandlerWrapper's KNOWN_ARIA_ATTRIBUTE_NAMES:
+    /// the aria-* names whose valueless attributes it drops (see
+    /// droppingValuelessARIA).
+    static let knownARIAAttributes: Set<String> = [
+        "aria-activedescendant", "aria-atomic", "aria-autocomplete", "aria-braillelabel", "aria-brailleroledescription",
+        "aria-busy", "aria-checked", "aria-colcount", "aria-colindex", "aria-colindextext", "aria-colspan",
+        "aria-controls", "aria-current", "aria-describedby", "aria-description", "aria-details", "aria-disabled",
+        "aria-dropeffect", "aria-errormessage", "aria-expanded", "aria-flowto", "aria-grabbed", "aria-haspopup",
+        "aria-hidden", "aria-invalid", "aria-keyshortcuts", "aria-label", "aria-labelledby", "aria-level", "aria-live",
+        "aria-modal", "aria-multiline", "aria-multiselectable", "aria-orientation", "aria-owns", "aria-placeholder",
+        "aria-posinset", "aria-pressed", "aria-readonly", "aria-relevant", "aria-required", "aria-roledescription",
+        "aria-rowcount", "aria-rowindex", "aria-rowindextext", "aria-rowspan", "aria-selected", "aria-setsize",
+        "aria-sort", "aria-valuemax", "aria-valuemin", "aria-valuenow", "aria-valuetext"
+    ]
+
+    /// An element's attribute as the schema gets it: its name, and its value
+    /// as upstream's tokenizer hands it on (nil for an attribute written
+    /// without a value).
+    struct Attribute {
+        let name: String
+        let value: String?
+    }
+
+    /// One of an element's alternatives: one of its variants' implicit
+    /// patterns or role patterns (or, for a variant with no implicit
+    /// pattern, the one with neither), as indices and bits, so that
+    /// narrowing copies no sets. (A14 review: built once for each HTML
+    /// element, htmlAlternatives, where they were built from the tables for
+    /// every element with a judged attribute; 50,000 <div aria-readonly>
+    /// took half again as long as before.)
+    private struct Alternative {
+        /// Its variant's index among the element's variants.
+        let variant: Int
+        /// Its role pattern's role value, an index into roleValues; -1 for
+        /// an implicit or plain alternative.
+        let role: Int
+        /// The role-specific states and properties it takes (stateBits):
+        /// its implicit or role pattern's, and its variant's extras.
+        let accepts: UInt32
+        /// Those its role requires.
+        let requires: UInt32
+    }
+
+    /// Where Jing's narrowing leaves an element's alternatives.
+    private struct Narrowing {
+        var live: [Alternative]
+        /// The role-specific states and properties the live alternatives
+        /// have taken (stateBits).
+        var states: UInt32 = 0
+        /// The other attributes they have taken, the role and type among
+        /// them. (Every live alternative has taken all of these: an
+        /// attribute leaves only those that take it.)
+        var consumed: Set<String> = []
+        /// The judged attributes none of them took, in order.
+        var notAllowed: [String] = []
+    }
+
+    /// What one of the live patterns still needs, for telling identical
+    /// requirements apart, as Jing's interned patterns are (see
+    /// missingAttributes): its type's value, its other required attributes,
+    /// and what its ARIA part needs.
+    private struct PatternNeeds: Hashable {
+        var type: String?
+        var groups: [[String]] = []
+        var aria: ARIANeeds?
+    }
+
+    /// What one implicit or role alternative's ARIA part needs: its role's
+    /// value (an index into roleValues; -1 when the role is given) and the
+    /// states it still requires (stateBits).
+    private struct ARIANeeds: Hashable {
+        let role: Int
+        let states: UInt32
+    }
+
+    /// roleSpecificAttributes in order, each one's bit its index.
+    private static let stateNames: [String] = roleSpecificAttributes.sorted()
+
+    /// A bit for each of roleSpecificAttributes, for the alternatives' sets
+    /// of them.
+    private static let stateBits: [String: UInt32] = Dictionary(
+        uniqueKeysWithValues: stateNames.enumerated().map { ($1, UInt32(1) << UInt32($0)) }
+    )
+
+    /// The bits of those of these names that are role-specific states and
+    /// properties.
+    private static func stateMask(_ names: some Sequence<String>) -> UInt32 {
+        names.reduce(0) { $0 | (stateBits[$1] ?? 0) }
+    }
+
+    /// The role values of rolePatterns, in order, for the alternatives'
+    /// role indices. (Several patterns can have one role value: switch and
+    /// switch-checked-not-required; their role attribute patterns are one.)
+    private static let roleValues: [String] = Array(Set(rolePatterns.values.map(\.role))).sorted()
+
+    /// Each role value's index in roleValues.
+    private static let roleValueIndex: [String: Int] = Dictionary(
+        uniqueKeysWithValues: roleValues.enumerated().map { ($1, $0) }
+    )
+
+    /// Every HTML element's alternatives, for all of its variants (see
+    /// alternatives(of:)), built once.
+    private static let htmlAlternatives: [String: [Alternative]] = htmlElements.mapValues { alternatives(of: $0) }
+
+    /// Whether the schema sees an element's `attribute` at all: not when
+    /// upstream's dropping takes it away (see droppingValuelessARIA). For the
+    /// port's hand-written stand-in for the schema's message about a select
+    /// with role=combobox, which went by the attribute as written, so <select
+    /// role="combobox" aria-hidden aria-expanded="true"> wasn't missing its
+    /// aria-expanded, as it is in vnu.jar.
+    static func schemaSees(_ attribute: String, in attributes: [Attribute]) -> Bool {
+        guard attributes.contains(where: { attribute == $0.name }) else {
+            return false
+        }
+        return droppingValuelessARIA(firstOfEachName(attributes)).contains { attribute == $0.name }
+    }
+
+    /// The schema's messages for an element's judged attributes, in Jing's
+    /// order. `schemaRole` is the role as the schema sees it (after
+    /// upstream's role filter for HTML and SVG; as written for MathML), nil
+    /// with no role attribute; `parent` is an HTML element's parent's name
+    /// (for li and meta); `reportedElsewhere` are
+    /// the attributes another of the port's checkers reports missing on this
+    /// element (img's src and srcset with neither, say); `judged` are the
+    /// states and properties to report on, judgedAttributes and, for some
+    /// elements, others (see
+    /// HTMLGeneralAttributeChecker.ariaSchemaJudgedAttributes). Empty for an
+    /// element the schema doesn't know or doesn't judge (custom elements,
+    /// the obsolete ones it takes anything on).
+    static func messages(
+        element name: String,
+        namespace: HTMLNamespace,
+        parent: String?,
+        attributes: [Attribute],
+        schemaRole: String?,
+        reportedElsewhere: Set<String>,
+        judged: Set<String>
+    ) -> [Message] {
+        // Only the judged attributes get messages here, so an element with
+        // none of them (nearly every element) needs nothing more; nor does
+        // one whose judged attributes upstream drops before its schema sees
+        // them.
+        guard attributes.contains(where: { judged.contains($0.name) }) else {
+            return []
+        }
+        let seen = schemaAttributes(attributes, element: name, namespace: namespace)
+        guard seen.contains(where: { judged.contains($0.name) }) else {
+            return []
+        }
+        // The element's patterns and their alternatives, those of the
+        // patterns it can have where it is (see selects).
+        let variants: [Variant]
+        var initial: [Alternative]
+        switch namespace {
+        case .svg:
+            variants = [svgVariant(name)]
+            initial = alternatives(of: variants)
+        case .mathML:
+            variants = [mathMLVariant(name)]
+            initial = alternatives(of: variants)
+        case .html:
+            guard let known = htmlElements[name], let all = htmlAlternatives[name] else {
+                return []
+            }
+            variants = known
+            initial = all
+        }
+        let selected = variants.map { selects($0, parent: parent) }
+        guard selected.contains(true), !zip(variants, selected).contains(where: { $1 && $0.anyAttribute }) else {
+            return []
+        }
+        if selected.contains(false) {
+            initial = initial.filter { selected[$0.variant] }
+        }
+        let typed = variants.contains { variant in
+            if case .type = variant.selector {
+                return true
+            }
+            return false
+        }
+        let final = narrowing(initial, by: seen, variants: variants, typed: typed, schemaRole: schemaRole, judged: judged)
+        var messages = final.notAllowed.map(Message.notAllowed)
+        if !final.live.isEmpty, !final.live.contains(where: { satisfied($0, variants: variants, state: final) }) {
+            let missing = missingAttributes(final, variants: variants)
+            // (Jing sorts the names, a TreeSet of Java strings; these are all
+            // ASCII, so Swift's order is the same.)
+            let sorted = missing.names.sorted()
+            if missing.hasChoice {
+                // One message naming them all; but not where it names an
+                // attribute another checker reports missing (img's src, input
+                // type=image's alt): that one's message stands, and Jing's one
+                // message naming it and the role too is a later unit's.
+                if missing.names.isDisjoint(with: reportedElsewhere) {
+                    messages.append(.missingOneOf(sorted))
+                }
+            } else {
+                // One message for each name, as Jing gives them, but for those
+                // another checker reports already, in the same words. (A14
+                // review: <input type="image" role="checkbox"
+                // aria-readonly="true"> lost vnu.jar's "missing required
+                // attribute “aria-checked”" with the alt message.)
+                messages.append(contentsOf: sorted.filter { !reportedElsewhere.contains($0) }.map(Message.missingRequired))
+            }
+        }
+        return messages
+    }
+
+    /// The first attribute of each name, which is the one upstream's
+    /// tokenizer keeps.
+    private static func firstOfEachName(_ attributes: [Attribute]) -> [Attribute] {
+        var names: Set<String> = []
+        return attributes.filter { names.insert($0.name).inserted }
+    }
+
+    /// An element's attributes as upstream's schema validator gets them: the
+    /// first of each name, in the order AttributesPermutingXMLReaderWrapper
+    /// puts an HTML element's in (an SVG or MathML element's keep theirs;
+    /// see permute), less those AriaAttributeDroppingContentHandlerWrapper
+    /// drops (see droppingValuelessARIA), which comes after it.
+    private static func schemaAttributes(_ attributes: [Attribute], element name: String, namespace: HTMLNamespace) -> [Attribute] {
+        var list = firstOfEachName(attributes)
+        if .html == namespace {
+            permute(&list, element: name)
+        }
+        return droppingValuelessARIA(list)
+    }
+
+    /// AttributesPermutingXMLReaderWrapper.startElement, which puts some of
+    /// an HTML element's attributes first, for the schema's better messages:
+    /// for an input (or command) whose type isn't first, the type, then the
+    /// role; for a textarea, script or meta, its wrap, src or content
+    /// instead (the content last), the role staying where it is; for any
+    /// other element, the role (each after the template attribute, which
+    /// goes first). Jing narrows by the attributes in this order, so which
+    /// alternatives the role leaves depends on it: <a href="#" role="alert">
+    /// is a.nohref's alert, the href then not allowed, where the port took
+    /// the href first and judged the role against a.href's 15. (And <input
+    /// type=checkbox role=switch> is judged with the role first but <input
+    /// role=switch type=checkbox> with the type first: upstream's quirk,
+    /// kept.)
+    private static func permute(_ list: inout [Attribute], element name: String) {
+        // (Java's getIndex: -1 for an attribute that isn't there.)
+        func index(_ attribute: String) -> Int {
+            list.firstIndex { attribute == $0.name } ?? -1
+        }
+        // PermutingAttributesWrapper.pullUp: to the front, if it isn't there.
+        func pullUp(_ attribute: String) {
+            let at = index(attribute)
+            if at > 0 {
+                list.insert(list.remove(at: at), at: 0)
+            }
+        }
+        // PermutingAttributesWrapper.pushDown: to the end, if it isn't there.
+        func pushDown(_ attribute: String) {
+            let at = index(attribute)
+            if at >= 0, at != list.count - 1 {
+                list.append(list.remove(at: at))
+            }
+        }
+        if ("input" == name || "command" == name) && index("type") > 0 {
+            pullUp("role")
+            pullUp("type")
+            pullUp("template")
+        } else if "textarea" == name && index("wrap") > 0 {
+            pullUp("wrap")
+            pullUp("template")
+        } else if "script" == name && index("src") > 0 {
+            pullUp("src")
+            pullUp("template")
+        } else if "meta" == name && index("content") < list.count - 1 {
+            // (Taken with no content attribute too: -1 is less.)
+            pushDown("content")
+            pullUp("template")
+        } else if index("template") > 0 || index("role") > 0 {
+            pullUp("role")
+            pullUp("template")
+        }
+    }
+
+    /// AriaAttributeDroppingContentHandlerWrapper.filterAttributes, which
+    /// stands between the parser and the schema validator (for HTML, SVG and
+    /// MathML alike): at the first attribute with one of its known aria-*
+    /// names written without a value (the parser's shared empty string is
+    /// the value it compares against, so aria-x="" is kept), it drops that
+    /// attribute and, because its second loop tests that attribute's index
+    /// instead of each later one's, every later attribute with a known name,
+    /// whatever its value. So the schema never sees the aria-checked in <div
+    /// aria-hidden aria-checked="true">, and says nothing about it, where the
+    /// port said it was missing a role. (Only the schema: upstream's
+    /// Assertions sees every attribute.)
+    private static func droppingValuelessARIA(_ list: [Attribute]) -> [Attribute] {
+        guard let first = list.firstIndex(where: { nil == $0.value && knownARIAAttributes.contains($0.name) }) else {
+            return list
+        }
+        return Array(list[..<first]) + list[(first + 1)...].filter { !knownARIAAttributes.contains($0.name) }
+    }
+
+    /// Every alternative of the element's patterns, as Jing's choice of them
+    /// starts out: each pattern's implicit patterns (or, for one with none,
+    /// the pattern with no role, which takes aria.global and its extra
+    /// states only), then its role patterns.
+    private static func alternatives(of variants: [Variant]) -> [Alternative] {
+        var alternatives: [Alternative] = []
+        for (index, variant) in variants.enumerated() {
+            let extra = stateMask(variant.extraARIA)
+            if variant.implicit.isEmpty {
+                alternatives.append(Alternative(variant: index, role: -1, accepts: extra, requires: 0))
+            }
+            for key in variant.implicit {
+                alternatives.append(Alternative(variant: index, role: -1, accepts: stateMask(implicitPatterns[key] ?? []) | extra, requires: 0))
+            }
+            guard variant.acceptsRole else {
+                continue
+            }
+            for key in variant.roles ?? anyRolePatterns {
+                if let pattern = rolePatterns[key], let role = roleValueIndex[pattern.role] {
+                    alternatives.append(Alternative(variant: index, role: role, accepts: stateMask(pattern.allowed) | extra, requires: stateMask(pattern.required)))
+                }
+            }
+        }
+        return alternatives
+    }
+
+    /// Jing's narrowing (PatternValidator.startElement's attribute loop):
+    /// each attribute in turn leaves the live alternatives that take it.
+    private static func narrowing(
+        _ initial: [Alternative],
+        by attributes: [Attribute],
+        variants: [Variant],
+        typed: Bool,
+        schemaRole: String?,
+        judged: Set<String>
+    ) -> Narrowing {
+        var state = Narrowing(live: initial)
+        // (Whether any of the patterns rejects anything; see below.)
+        let anyRejects = variants.contains { !$0.rejected.isEmpty }
+        for attribute in attributes {
+            let name = attribute.name
+            if "role" == name {
+                // The role: the alternatives with a role pattern take it,
+                // those for its value if there are any. A value none has
+                // (role="foo") is a "Bad value" that Jing recovers from by
+                // keeping them all, the role counting as given. With no
+                // alternative left that takes a role at all, it's "not
+                // allowed" (the role checks report that), and ignored.
+                guard let schemaRole else {
+                    continue
+                }
+                let takers = state.live.filter { 0 <= $0.role }
+                guard !takers.isEmpty else {
+                    continue
+                }
+                let role = roleValueIndex[schemaRole] ?? -1
+                let matching = takers.filter { role == $0.role }
+                state.live = matching.isEmpty ? takers : matching
+                state.consumed.insert(name)
+            } else if let bit = stateBits[name] {
+                // A role-specific state or property.
+                let next = state.live.filter { 0 != $0.accepts & bit }
+                if next.isEmpty {
+                    if judged.contains(name) {
+                        state.notAllowed.append(name)
+                    }
+                } else {
+                    state.live = next
+                    state.states |= bit
+                }
+            } else if typed, "type" == name {
+                // input's and button's type: every pattern takes it, those
+                // for its value if any of them is still live; any other value
+                // is a "Bad value" (reported elsewhere) that keeps them all.
+                let value = typeValue(attribute.value)
+                let matching = state.live.filter { alternative in
+                    if case let .type(type, _) = variants[alternative.variant].selector {
+                        return type == value
+                    }
+                    return false
+                }
+                if !matching.isEmpty {
+                    state.live = matching
+                }
+                state.consumed.insert(name)
+            } else {
+                // Any other attribute leaves out only the patterns that
+                // reject it (see Variant.rejected), unless that would leave
+                // none: then it's "not allowed" (reported elsewhere, where
+                // the port reports it at all), and ignored. (A14 review:
+                // decided once for each pattern, not for each of its
+                // alternatives: an a without href has some 124, and every
+                // attribute looked in each one's rejected set.)
+                if anyRejects {
+                    let rejecting = variants.indices.filter { variants[$0].rejected.contains(name) }
+                    if !rejecting.isEmpty, state.live.contains(where: { rejecting.contains($0.variant) }) {
+                        let next = state.live.filter { !rejecting.contains($0.variant) }
+                        guard !next.isEmpty else {
+                            continue
+                        }
+                        state.live = next
+                    }
+                }
+                state.consumed.insert(name)
+            }
+        }
+        return state
+    }
+
+    /// Whether an alternative needs nothing more: its role and the states
+    /// the role requires (see roleSatisfied), and its pattern's type and
+    /// other required attributes (see patternSatisfied).
+    private static func satisfied(_ alternative: Alternative, variants: [Variant], state: Narrowing) -> Bool {
+        roleSatisfied(alternative, state: state) && patternSatisfied(variants[alternative.variant], consumed: state.consumed)
+    }
+
+    /// Whether an alternative's own ARIA part needs nothing more: an
+    /// implicit or plain one never does; a role's needs the role and the
+    /// states that role requires.
+    private static func roleSatisfied(_ alternative: Alternative, state: Narrowing) -> Bool {
+        guard 0 <= alternative.role else {
+            return true
+        }
+        return state.consumed.contains("role") && 0 == alternative.requires & ~state.states
+    }
+
+    /// Whether a pattern's own attributes need nothing more: its type where
+    /// that isn't optional, and its other required attributes.
+    private static func patternSatisfied(_ variant: Variant, consumed: Set<String>) -> Bool {
+        if case let .type(_, optional) = variant.selector, !optional, !consumed.contains("type") {
+            return false
+        }
+        return variant.requiredGroups.allSatisfy { $0.contains(where: consumed.contains) }
+    }
+
+    /// Jing's end-of-tag message when no live alternative is satisfied
+    /// (PatternValidator.startElement): RequiredContent.getRequiredAttributes
+    /// of what's left, a choice of the live patterns, each the interleave of
+    /// what it still needs: its type, its other required attributes, and its
+    /// ARIA part. A pattern's ARIA part adds nothing while one of its live
+    /// implicit or role alternatives needs nothing more
+    /// (RequiredContentFunction.caseChoice returns empty for a nullable
+    /// choice), so <input aria-expanded> doesn't ask for the aria-checked
+    /// that only the checkbox input's checkbox and switch roles need, its
+    /// implicit checkbox still being live; otherwise it's a choice of what
+    /// each of them needs, its role (with that role's value) and the states
+    /// that role requires. Identical patterns are one
+    /// (ValidatorPatternBuilder.makeChoice, of interned patterns), so the
+    /// three button patterns of <button type=foo aria-colindex=1>, each
+    /// needing role="gridcell", ask for the role once. Then
+    /// NameRecordingVisitor: every attribute that names, and whether it has
+    /// a choice (then Jing gives one message naming them all; without, one
+    /// per attribute).
+    private static func missingAttributes(_ state: Narrowing, variants: [Variant]) -> (names: Set<String>, hasChoice: Bool) {
+        let roleTaken = state.consumed.contains("role")
+        var names: Set<String> = []
+        var hasChoice = false
+        // The live patterns' needs, those with no choice in them, to tell
+        // apart (with a choice anywhere, the message names them all anyway).
+        var patterns: Set<PatternNeeds> = []
+        // A pattern's own needs: its type, where that isn't optional, and its
+        // other required attributes.
+        func ownNeeds(_ variant: Variant) -> PatternNeeds {
+            var needs = PatternNeeds()
+            if case let .type(type, optional) = variant.selector, !optional, !state.consumed.contains("type") {
+                names.insert("type")
+                needs.type = type
+            }
+            for group in variant.requiredGroups where !group.contains(where: state.consumed.contains) {
+                names.formUnion(group)
+                // (src or srcset: a choice.)
+                hasChoice = hasChoice || group.count > 1
+                needs.groups.append(group)
+            }
+            return needs
+        }
+        // The states a role alternative still needs (stateBits), named.
+        func missingStates(_ alternative: Alternative) -> UInt32 {
+            let missing = alternative.requires & ~state.states
+            var bits = missing
+            while 0 != bits {
+                names.insert(stateNames[bits.trailingZeroBitCount])
+                bits &= bits - 1
+            }
+            return missing
+        }
+        if roleTaken {
+            // Once the role is given, each live alternative (every one a
+            // role's) is a pattern of its own in Jing's choice: each role
+            // pattern's role attribute has its own value, so the derivatives
+            // by the role don't merge, and a value none has is recovered from
+            // as a flat choice of them all (RecoverAfterFunction), each with
+            // its pattern's own needs and its role's missing states. So one
+            // that needs nothing more of its role doesn't hide another's
+            // states, as it does inside a pattern's ARIA part (below). (A14
+            // review: <input role="foo" aria-selected="true"> asks for the
+            // aria-checked the radio input's radio role needs, though its
+            // menuitemradio role needs none.)
+            for alternative in state.live {
+                var needs = ownNeeds(variants[alternative.variant])
+                let missing = missingStates(alternative)
+                if 0 != missing {
+                    needs.aria = ARIANeeds(role: -1, states: missing)
+                }
+                patterns.insert(needs)
+            }
+            return (names, hasChoice || patterns.count > 1)
+        }
+        // Without a role, a pattern's ARIA part is one choice inside it, of
+        // its implicit and role alternatives. (The live alternatives keep the
+        // order they were built in, so each variant's are together.)
+        var start = 0
+        while start < state.live.count {
+            let index = state.live[start].variant
+            var end = start + 1
+            while end < state.live.count, index == state.live[end].variant {
+                end += 1
+            }
+            let ariaAlternatives = state.live[start..<end]
+            start = end
+            var needs = ownNeeds(variants[index])
+            if !ariaAlternatives.contains(where: { roleSatisfied($0, state: state) }) {
+                // (Every one of them is a role's here: an implicit or plain
+                // alternative is always satisfied.)
+                var choices: Set<ARIANeeds> = []
+                for alternative in ariaAlternatives where 0 <= alternative.role {
+                    choices.insert(ARIANeeds(role: alternative.role, states: missingStates(alternative)))
+                    names.insert("role")
+                }
+                hasChoice = hasChoice || choices.count > 1
+                needs.aria = choices.first
+            }
+            patterns.insert(needs)
+        }
+        return (names, hasChoice || patterns.count > 1)
+    }
+
+    /// A type attribute's value as the schema compares it: decoded, ASCII
+    /// letters lowercased, not trimmed ("" for one with no value).
+    private static func typeValue(_ value: String?) -> String {
+        let decoded = HTMLCharacterReferences.decodeAttributeValue(value ?? "")
+        return String(String.UnicodeScalarView(decoded.unicodeScalars.map { ("A"..."Z").contains($0) ? Unicode.Scalar(UInt8(truncatingIfNeeded: $0.value + 0x20)) : $0 }))
+    }
+
+    /// Whether one of the element's variants can be one of its alternatives
+    /// where it is: all of them but an li's for other parents and meta's
+    /// microdata pattern in a noscript. (Its type and the attributes in
+    /// `rejected` narrow them as they come; see narrowing.)
+    private static func selects(_ variant: Variant, parent: String?) -> Bool {
+        switch variant.selector {
+        case .always, .type:
+            return true
+        case let .parent(required):
+            return required == parent
+        case let .notParent(excluded):
+            return excluded != parent
+        }
+    }
+
+    /// An SVG element's pattern (.drivers/html5-svg-mathml.rnc and svg11):
+    /// any role, with an implicit pattern for some; every other SVG element
+    /// takes aria.global only, and no role.
+    private static func svgVariant(_ name: String) -> Variant {
+        var implicit: [String] = []
+        if svgImplicitGroupElements.contains(name) {
+            implicit = ["group"]
+        } else if svgImplicitLinkElements.contains(name) {
+            implicit = ["link"]
+        } else if svgImplicitImgElements.contains(name) {
+            implicit = ["img"]
+        }
+        let takesRole = !implicit.isEmpty || svgAnyRoleElements.contains(name)
+        return Variant(selector: .always, implicit: implicit, roles: takesRole ? nil : [], acceptsRole: takesRole, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: [])
+    }
+
+    /// A MathML element's pattern: math takes role="math" or its implicit
+    /// pattern; no other MathML element takes any ARIA attribute.
+    private static func mathMLVariant(_ name: String) -> Variant {
+        if "math" == name {
+            return Variant(selector: .always, implicit: ["math"], roles: ["math"], acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: [])
+        }
+        return Variant(selector: .always, implicit: [], roles: [], acceptsRole: false, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: [])
+    }
+
+    // MARK: Generated from the schema (a14/gen_aria_tables.py)
+
+    /// aria.rnc's role patterns (aria.<name>), each with its role value, the
+    /// role-specific states and properties it accepts beyond aria.global, and
+    /// those it requires, by pattern name. Generated from aria.rnc.
+    static let rolePatterns: [String: RolePattern] = [
+        "alert": RolePattern(role: "alert", allowed: ["aria-expanded"], required: []),
+        "alertdialog": RolePattern(role: "alertdialog", allowed: ["aria-expanded", "aria-modal"], required: []),
+        "application": RolePattern(role: "application", allowed: ["aria-activedescendant", "aria-expanded"], required: []),
+        "article": RolePattern(role: "article", allowed: ["aria-expanded", "aria-posinset", "aria-setsize"], required: []),
+        "banner": RolePattern(role: "banner", allowed: ["aria-expanded"], required: []),
+        "blockquote": RolePattern(role: "blockquote", allowed: [], required: []),
+        "button": RolePattern(role: "button", allowed: ["aria-expanded", "aria-pressed"], required: []),
+        "caption": RolePattern(role: "caption", allowed: [], required: []),
+        "cell": RolePattern(role: "cell", allowed: ["aria-colindex", "aria-colspan", "aria-rowindex", "aria-rowspan"], required: []),
+        "checkbox": RolePattern(role: "checkbox", allowed: ["aria-checked", "aria-expanded", "aria-readonly", "aria-required"], required: ["aria-checked"]),
+        "code": RolePattern(role: "code", allowed: [], required: []),
+        "columnheader": RolePattern(role: "columnheader", allowed: ["aria-colindex", "aria-colspan", "aria-expanded", "aria-readonly", "aria-required", "aria-rowindex", "aria-rowspan", "aria-selected", "aria-sort"], required: []),
+        "combobox": RolePattern(role: "combobox", allowed: ["aria-activedescendant", "aria-autocomplete", "aria-expanded", "aria-orientation", "aria-readonly", "aria-required"], required: ["aria-expanded"]),
+        "complementary": RolePattern(role: "complementary", allowed: ["aria-expanded"], required: []),
+        "contentinfo": RolePattern(role: "contentinfo", allowed: ["aria-expanded"], required: []),
+        "definition": RolePattern(role: "definition", allowed: ["aria-expanded"], required: []),
+        "deletion": RolePattern(role: "deletion", allowed: [], required: []),
+        "dialog": RolePattern(role: "dialog", allowed: ["aria-expanded", "aria-modal"], required: []),
+        "doc-abstract": RolePattern(role: "doc-abstract", allowed: [], required: []),
+        "doc-acknowledgments": RolePattern(role: "doc-acknowledgments", allowed: [], required: []),
+        "doc-afterword": RolePattern(role: "doc-afterword", allowed: [], required: []),
+        "doc-appendix": RolePattern(role: "doc-appendix", allowed: [], required: []),
+        "doc-backlink": RolePattern(role: "doc-backlink", allowed: [], required: []),
+        "doc-biblioentry": RolePattern(role: "doc-biblioentry", allowed: [], required: []),
+        "doc-bibliography": RolePattern(role: "doc-bibliography", allowed: [], required: []),
+        "doc-biblioref": RolePattern(role: "doc-biblioref", allowed: [], required: []),
+        "doc-chapter": RolePattern(role: "doc-chapter", allowed: [], required: []),
+        "doc-colophon": RolePattern(role: "doc-colophon", allowed: [], required: []),
+        "doc-conclusion": RolePattern(role: "doc-conclusion", allowed: [], required: []),
+        "doc-cover": RolePattern(role: "doc-cover", allowed: [], required: []),
+        "doc-credit": RolePattern(role: "doc-credit", allowed: [], required: []),
+        "doc-credits": RolePattern(role: "doc-credits", allowed: [], required: []),
+        "doc-dedication": RolePattern(role: "doc-dedication", allowed: [], required: []),
+        "doc-endnote": RolePattern(role: "doc-endnote", allowed: [], required: []),
+        "doc-endnotes": RolePattern(role: "doc-endnotes", allowed: [], required: []),
+        "doc-epigraph": RolePattern(role: "doc-epigraph", allowed: [], required: []),
+        "doc-epilogue": RolePattern(role: "doc-epilogue", allowed: [], required: []),
+        "doc-errata": RolePattern(role: "doc-errata", allowed: [], required: []),
+        "doc-example": RolePattern(role: "doc-example", allowed: [], required: []),
+        "doc-footnote": RolePattern(role: "doc-footnote", allowed: [], required: []),
+        "doc-foreword": RolePattern(role: "doc-foreword", allowed: [], required: []),
+        "doc-glossary": RolePattern(role: "doc-glossary", allowed: [], required: []),
+        "doc-glossref": RolePattern(role: "doc-glossref", allowed: [], required: []),
+        "doc-index": RolePattern(role: "doc-index", allowed: [], required: []),
+        "doc-introduction": RolePattern(role: "doc-introduction", allowed: [], required: []),
+        "doc-noteref": RolePattern(role: "doc-noteref", allowed: [], required: []),
+        "doc-notice": RolePattern(role: "doc-notice", allowed: [], required: []),
+        "doc-pagebreak": RolePattern(role: "doc-pagebreak", allowed: [], required: []),
+        "doc-pagelist": RolePattern(role: "doc-pagelist", allowed: [], required: []),
+        "doc-part": RolePattern(role: "doc-part", allowed: [], required: []),
+        "doc-preface": RolePattern(role: "doc-preface", allowed: [], required: []),
+        "doc-prologue": RolePattern(role: "doc-prologue", allowed: [], required: []),
+        "doc-pullquote": RolePattern(role: "doc-pullquote", allowed: [], required: []),
+        "doc-qna": RolePattern(role: "doc-qna", allowed: [], required: []),
+        "doc-subtitle": RolePattern(role: "doc-subtitle", allowed: [], required: []),
+        "doc-tip": RolePattern(role: "doc-tip", allowed: [], required: []),
+        "doc-toc": RolePattern(role: "doc-toc", allowed: [], required: []),
+        "document": RolePattern(role: "document", allowed: ["aria-expanded"], required: []),
+        "emphasis": RolePattern(role: "emphasis", allowed: [], required: []),
+        "feed": RolePattern(role: "feed", allowed: ["aria-expanded"], required: []),
+        "figure": RolePattern(role: "figure", allowed: ["aria-expanded"], required: []),
+        "form": RolePattern(role: "form", allowed: ["aria-expanded"], required: []),
+        "graphics-document": RolePattern(role: "graphics-document", allowed: [], required: []),
+        "graphics-object": RolePattern(role: "graphics-object", allowed: [], required: []),
+        "graphics-symbol": RolePattern(role: "graphics-symbol", allowed: [], required: []),
+        "grid": RolePattern(role: "grid", allowed: ["aria-activedescendant", "aria-colcount", "aria-expanded", "aria-level", "aria-multiselectable", "aria-readonly", "aria-rowcount"], required: []),
+        "gridcell": RolePattern(role: "gridcell", allowed: ["aria-colindex", "aria-colspan", "aria-expanded", "aria-level", "aria-readonly", "aria-required", "aria-rowindex", "aria-rowspan", "aria-selected"], required: []),
+        "group": RolePattern(role: "group", allowed: ["aria-activedescendant", "aria-expanded"], required: []),
+        "heading": RolePattern(role: "heading", allowed: ["aria-expanded", "aria-level"], required: ["aria-level"]),
+        "image": RolePattern(role: "image", allowed: ["aria-expanded"], required: []),
+        "img": RolePattern(role: "img", allowed: ["aria-expanded"], required: []),
+        "insertion": RolePattern(role: "insertion", allowed: [], required: []),
+        "link": RolePattern(role: "link", allowed: ["aria-expanded"], required: []),
+        "list": RolePattern(role: "list", allowed: ["aria-expanded"], required: []),
+        "listbox": RolePattern(role: "listbox", allowed: ["aria-activedescendant", "aria-multiselectable", "aria-orientation", "aria-readonly", "aria-required"], required: []),
+        "listitem": RolePattern(role: "listitem", allowed: ["aria-expanded", "aria-level", "aria-posinset", "aria-setsize"], required: []),
+        "log": RolePattern(role: "log", allowed: ["aria-expanded"], required: []),
+        "main": RolePattern(role: "main", allowed: ["aria-expanded"], required: []),
+        "marquee": RolePattern(role: "marquee", allowed: ["aria-expanded"], required: []),
+        "math": RolePattern(role: "math", allowed: ["aria-expanded"], required: []),
+        "menu": RolePattern(role: "menu", allowed: ["aria-activedescendant", "aria-expanded", "aria-orientation"], required: []),
+        "menubar": RolePattern(role: "menubar", allowed: ["aria-activedescendant", "aria-expanded", "aria-orientation"], required: []),
+        "menuitem": RolePattern(role: "menuitem", allowed: ["aria-expanded", "aria-posinset", "aria-setsize"], required: []),
+        "menuitemcheckbox": RolePattern(role: "menuitemcheckbox", allowed: ["aria-checked", "aria-expanded", "aria-posinset", "aria-setsize"], required: ["aria-checked"]),
+        "menuitemcheckbox-checked-not-required": RolePattern(role: "menuitemcheckbox", allowed: ["aria-expanded", "aria-posinset", "aria-setsize"], required: []),
+        "menuitemradio": RolePattern(role: "menuitemradio", allowed: ["aria-checked", "aria-expanded", "aria-posinset", "aria-selected", "aria-setsize"], required: ["aria-checked"]),
+        "menuitemradio-checked-not-required": RolePattern(role: "menuitemradio", allowed: ["aria-expanded", "aria-posinset", "aria-selected", "aria-setsize"], required: []),
+        "meter": RolePattern(role: "meter", allowed: ["aria-valuemax", "aria-valuemin", "aria-valuenow", "aria-valuetext"], required: ["aria-valuenow"]),
+        "navigation": RolePattern(role: "navigation", allowed: ["aria-expanded"], required: []),
+        "none": RolePattern(role: "none", allowed: [], required: []),
+        "note": RolePattern(role: "note", allowed: ["aria-expanded"], required: []),
+        "option": RolePattern(role: "option", allowed: ["aria-checked", "aria-posinset", "aria-selected", "aria-setsize"], required: []),
+        "paragraph": RolePattern(role: "paragraph", allowed: [], required: []),
+        "presentation": RolePattern(role: "presentation", allowed: [], required: []),
+        "progressbar": RolePattern(role: "progressbar", allowed: ["aria-valuemax", "aria-valuemin", "aria-valuenow", "aria-valuetext"], required: []),
+        "radio": RolePattern(role: "radio", allowed: ["aria-checked", "aria-posinset", "aria-selected", "aria-setsize"], required: ["aria-checked"]),
+        "radiogroup": RolePattern(role: "radiogroup", allowed: ["aria-activedescendant", "aria-expanded", "aria-orientation", "aria-readonly", "aria-required"], required: []),
+        "region": RolePattern(role: "region", allowed: ["aria-expanded"], required: []),
+        "row": RolePattern(role: "row", allowed: ["aria-activedescendant", "aria-colindex", "aria-expanded", "aria-level", "aria-posinset", "aria-rowindex", "aria-selected", "aria-setsize"], required: []),
+        "rowgroup": RolePattern(role: "rowgroup", allowed: ["aria-activedescendant", "aria-expanded"], required: []),
+        "rowheader": RolePattern(role: "rowheader", allowed: ["aria-colindex", "aria-colspan", "aria-expanded", "aria-readonly", "aria-required", "aria-rowindex", "aria-rowspan", "aria-selected", "aria-sort"], required: []),
+        "scrollbar": RolePattern(role: "scrollbar", allowed: ["aria-orientation", "aria-valuemax", "aria-valuemin", "aria-valuenow", "aria-valuetext"], required: ["aria-valuenow"]),
+        "search": RolePattern(role: "search", allowed: ["aria-expanded", "aria-orientation"], required: []),
+        "searchbox": RolePattern(role: "searchbox", allowed: ["aria-activedescendant", "aria-autocomplete", "aria-multiline", "aria-placeholder", "aria-readonly", "aria-required"], required: []),
+        "separator": RolePattern(role: "separator", allowed: ["aria-expanded", "aria-orientation", "aria-valuemax", "aria-valuemin", "aria-valuenow", "aria-valuetext"], required: []),
+        "slider": RolePattern(role: "slider", allowed: ["aria-orientation", "aria-readonly", "aria-valuemax", "aria-valuemin", "aria-valuenow", "aria-valuetext"], required: ["aria-valuenow"]),
+        "spinbutton": RolePattern(role: "spinbutton", allowed: ["aria-activedescendant", "aria-readonly", "aria-required", "aria-valuemax", "aria-valuemin", "aria-valuenow", "aria-valuetext"], required: []),
+        "status": RolePattern(role: "status", allowed: ["aria-expanded"], required: []),
+        "strong": RolePattern(role: "strong", allowed: [], required: []),
+        "subscript": RolePattern(role: "subscript", allowed: [], required: []),
+        "superscript": RolePattern(role: "superscript", allowed: [], required: []),
+        "switch": RolePattern(role: "switch", allowed: ["aria-checked", "aria-expanded", "aria-readonly", "aria-required"], required: ["aria-checked"]),
+        "switch-checked-not-required": RolePattern(role: "switch", allowed: ["aria-expanded", "aria-readonly", "aria-required"], required: []),
+        "tab": RolePattern(role: "tab", allowed: ["aria-expanded", "aria-posinset", "aria-selected", "aria-setsize"], required: []),
+        "table": RolePattern(role: "table", allowed: ["aria-colcount", "aria-rowcount"], required: []),
+        "tablist": RolePattern(role: "tablist", allowed: ["aria-activedescendant", "aria-expanded", "aria-level", "aria-multiselectable", "aria-orientation"], required: []),
+        "tabpanel": RolePattern(role: "tabpanel", allowed: ["aria-expanded"], required: []),
+        "term": RolePattern(role: "term", allowed: ["aria-expanded"], required: []),
+        "textbox": RolePattern(role: "textbox", allowed: ["aria-activedescendant", "aria-autocomplete", "aria-multiline", "aria-placeholder", "aria-readonly", "aria-required"], required: []),
+        "time": RolePattern(role: "time", allowed: [], required: []),
+        "timer": RolePattern(role: "timer", allowed: ["aria-expanded"], required: []),
+        "toolbar": RolePattern(role: "toolbar", allowed: ["aria-activedescendant", "aria-expanded", "aria-orientation"], required: []),
+        "tooltip": RolePattern(role: "tooltip", allowed: ["aria-expanded"], required: []),
+        "tree": RolePattern(role: "tree", allowed: ["aria-activedescendant", "aria-expanded", "aria-multiselectable", "aria-orientation", "aria-required"], required: []),
+        "treegrid": RolePattern(role: "treegrid", allowed: ["aria-activedescendant", "aria-colcount", "aria-expanded", "aria-level", "aria-multiselectable", "aria-orientation", "aria-readonly", "aria-required", "aria-rowcount"], required: []),
+        "treeitem": RolePattern(role: "treeitem", allowed: ["aria-checked", "aria-expanded", "aria-level", "aria-posinset", "aria-selected", "aria-setsize"], required: []),
+    ]
+
+    /// common.attrs.aria: the role patterns of an element that takes any role
+    /// (the 123 of aria.rnc's patterns it lists).
+    static let anyRolePatterns: [String] = [
+        "alert", "alertdialog", "application", "article", "banner", "blockquote", "button", "caption", "cell",
+        "checkbox", "code", "columnheader", "combobox", "complementary", "contentinfo", "definition", "deletion",
+        "dialog", "doc-abstract", "doc-acknowledgments", "doc-afterword", "doc-appendix", "doc-backlink",
+        "doc-biblioentry", "doc-bibliography", "doc-biblioref", "doc-chapter", "doc-colophon", "doc-conclusion",
+        "doc-cover", "doc-credit", "doc-credits", "doc-dedication", "doc-endnote", "doc-endnotes", "doc-epigraph",
+        "doc-epilogue", "doc-errata", "doc-example", "doc-footnote", "doc-foreword", "doc-glossary", "doc-glossref",
+        "doc-index", "doc-introduction", "doc-noteref", "doc-notice", "doc-pagebreak", "doc-pagelist", "doc-part",
+        "doc-preface", "doc-prologue", "doc-pullquote", "doc-qna", "doc-subtitle", "doc-tip", "doc-toc", "document",
+        "emphasis", "feed", "figure", "form", "graphics-document", "graphics-object", "graphics-symbol", "grid",
+        "gridcell", "group", "heading", "image", "img", "insertion", "link", "list", "listbox", "listitem", "log",
+        "main", "marquee", "math", "menu", "menubar", "menuitem", "menuitemcheckbox", "menuitemradio", "meter",
+        "navigation", "none", "note", "option", "paragraph", "presentation", "progressbar", "radio", "radiogroup",
+        "region", "row", "rowgroup", "rowheader", "scrollbar", "search", "searchbox", "separator", "slider",
+        "spinbutton", "status", "strong", "subscript", "superscript", "switch", "tab", "table", "tablist",
+        "tabpanel", "term", "textbox", "time", "timer", "toolbar", "tooltip", "tree", "treegrid", "treeitem",
+    ]
+
+    /// aria.rnc's implicit patterns (common.attrs.aria.implicit.<name>): the
+    /// states and properties an element with that implicit role accepts with
+    /// no role attribute, beyond aria.global.
+    static let implicitPatterns: [String: Set<String>] = [
+        "article": ["aria-expanded"],
+        "banner": ["aria-expanded"],
+        "button": ["aria-expanded", "aria-pressed"],
+        "cell": ["aria-colindex", "aria-colspan", "aria-rowindex", "aria-rowspan"],
+        "checkbox": ["aria-checked", "aria-expanded", "aria-readonly", "aria-required"],
+        "column-or-row-header": ["aria-colindex", "aria-colspan", "aria-expanded", "aria-readonly", "aria-required", "aria-rowindex", "aria-rowspan", "aria-selected", "aria-sort"],
+        "combobox": ["aria-activedescendant", "aria-autocomplete", "aria-expanded", "aria-placeholder", "aria-readonly", "aria-required"],
+        "complementary": ["aria-expanded"],
+        "contentinfo": ["aria-expanded"],
+        "definition": ["aria-expanded"],
+        "dialog": ["aria-expanded", "aria-modal"],
+        "document": ["aria-expanded"],
+        "figure": ["aria-expanded"],
+        "form": ["aria-expanded"],
+        "gridcell": ["aria-colindex", "aria-colspan", "aria-expanded", "aria-level", "aria-readonly", "aria-required", "aria-rowindex", "aria-rowspan", "aria-selected"],
+        "group": ["aria-activedescendant", "aria-expanded"],
+        "heading": ["aria-expanded", "aria-level"],
+        "img": ["aria-expanded"],
+        "landmark": ["aria-expanded"],
+        "link": ["aria-expanded"],
+        "list": ["aria-expanded"],
+        "listbox": ["aria-activedescendant", "aria-multiselectable", "aria-required"],
+        "listitem": ["aria-expanded", "aria-level", "aria-posinset", "aria-setsize"],
+        "main": ["aria-expanded"],
+        "math": ["aria-expanded"],
+        "navigation": ["aria-expanded"],
+        "option": ["aria-checked", "aria-posinset", "aria-selected", "aria-setsize"],
+        "progressbar": ["aria-valuemax", "aria-valuemin", "aria-valuenow", "aria-valuetext"],
+        "radio": ["aria-checked", "aria-posinset", "aria-required", "aria-selected", "aria-setsize"],
+        "region": ["aria-expanded"],
+        "row": ["aria-activedescendant", "aria-colindex", "aria-expanded", "aria-level", "aria-posinset", "aria-rowindex", "aria-selected", "aria-setsize"],
+        "rowgroup": ["aria-activedescendant", "aria-expanded"],
+        "search": ["aria-expanded"],
+        "searchbox": ["aria-activedescendant", "aria-autocomplete", "aria-multiline", "aria-placeholder", "aria-readonly", "aria-required"],
+        "section": ["aria-expanded"],
+        "separator": ["aria-orientation", "aria-valuemax", "aria-valuemin", "aria-valuenow", "aria-valuetext"],
+        "slider": ["aria-orientation", "aria-valuemax", "aria-valuemin", "aria-valuenow", "aria-valuetext"],
+        "spinbutton": ["aria-placeholder", "aria-required", "aria-valuemax", "aria-valuemin", "aria-valuenow", "aria-valuetext"],
+        "status": ["aria-expanded"],
+        "table": ["aria-colcount", "aria-rowcount"],
+        "term": ["aria-expanded"],
+        "textbox": ["aria-activedescendant", "aria-autocomplete", "aria-multiline", "aria-placeholder", "aria-readonly", "aria-required"],
+        "toolbar": ["aria-activedescendant", "aria-expanded"],
+    ]
+
+    /// The HTML elements' patterns, as far as ARIA goes: for each element,
+    /// each of its patterns (several where the schema has several, as for
+    /// input's types), with what selects it, its implicit patterns, the role
+    /// patterns it accepts (nil: any, anyRolePatterns), whether it takes a
+    /// role attribute at all, its other aria-* attributes, and the other
+    /// attributes it requires (a list for a choice, as img's src or srcset).
+    /// Generated from the html5 schema files.
+    static let htmlElements: [String: [Variant]] = [
+        "a": [
+            Variant(selector: .always, implicit: ["link"], roles: ["button", "checkbox", "link", "menuitem", "menuitemcheckbox", "menuitemradio", "option", "radio", "switch", "tab", "treeitem", "doc-backlink", "doc-biblioref", "doc-glossref", "doc-noteref"], acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [["href"]], rejected: []),
+            Variant(selector: .always, implicit: [], roles: nil, acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: ["about", "charset", "content", "coords", "datatype", "download", "href", "hreflang", "inlist", "itemid", "itemprop", "itemref", "itemscope", "itemtype", "methods", "name", "ping", "prefix", "property", "referrerpolicy", "rel", "resource", "rev", "shape", "target", "type", "typeof", "urn", "vocab"]),
+        ],
+        "abbr": [
+            Variant(selector: .always, implicit: [], roles: nil, acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "acronym": [
+            Variant(selector: .always, implicit: [], roles: [], acceptsRole: false, anyAttribute: true, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "address": [
+            Variant(selector: .always, implicit: [], roles: nil, acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "applet": [
+            Variant(selector: .always, implicit: [], roles: [], acceptsRole: false, anyAttribute: true, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "area": [
+            Variant(selector: .always, implicit: ["link"], roles: ["link", "button"], acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "article": [
+            Variant(selector: .always, implicit: ["article"], roles: ["article", "document", "application", "main", "feed", "region", "presentation", "none"], acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "aside": [
+            Variant(selector: .always, implicit: ["complementary"], roles: ["note", "complementary", "search", "feed", "region", "presentation", "none", "doc-dedication", "doc-example", "doc-footnote", "doc-glossary", "doc-pullquote", "doc-tip"], acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "audio": [
+            Variant(selector: .always, implicit: [], roles: ["application"], acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "b": [
+            Variant(selector: .always, implicit: [], roles: nil, acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "base": [
+            Variant(selector: .always, implicit: [], roles: [], acceptsRole: false, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "basefont": [
+            Variant(selector: .always, implicit: [], roles: [], acceptsRole: false, anyAttribute: true, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "bdi": [
+            Variant(selector: .always, implicit: [], roles: nil, acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "bdo": [
+            Variant(selector: .always, implicit: [], roles: nil, acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "bgsound": [
+            Variant(selector: .always, implicit: [], roles: [], acceptsRole: false, anyAttribute: true, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "big": [
+            Variant(selector: .always, implicit: [], roles: [], acceptsRole: false, anyAttribute: true, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "blink": [
+            Variant(selector: .always, implicit: [], roles: [], acceptsRole: false, anyAttribute: true, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "blockquote": [
+            Variant(selector: .always, implicit: [], roles: nil, acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "body": [
+            Variant(selector: .always, implicit: ["document"], roles: ["application", "document", "presentation", "none"], acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "br": [
+            Variant(selector: .always, implicit: [], roles: ["presentation", "none"], acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "button": [
+            Variant(selector: .type("submit", optional: true), implicit: ["button"], roles: ["button", "checkbox", "combobox", "link", "menuitem", "menuitemcheckbox", "menuitemradio", "option", "radio", "separator", "tab", "gridcell", "slider", "treeitem"], acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+            Variant(selector: .type("reset", optional: false), implicit: ["button"], roles: ["button", "checkbox", "combobox", "link", "menuitem", "menuitemcheckbox", "menuitemradio", "option", "radio", "separator", "switch", "gridcell", "slider", "treeitem"], acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: ["formaction", "formenctype", "formmethod", "formnovalidate", "formtarget"]),
+            Variant(selector: .type("button", optional: false), implicit: ["button"], roles: ["button", "checkbox", "combobox", "link", "menuitem", "menuitemcheckbox", "menuitemradio", "option", "radio", "separator", "switch", "tab", "gridcell", "slider", "treeitem"], acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: ["formaction", "formenctype", "formmethod", "formnovalidate", "formtarget"]),
+        ],
+        "canvas": [
+            Variant(selector: .always, implicit: [], roles: nil, acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "caption": [
+            Variant(selector: .always, implicit: [], roles: [], acceptsRole: false, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "center": [
+            Variant(selector: .always, implicit: [], roles: [], acceptsRole: false, anyAttribute: true, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "cite": [
+            Variant(selector: .always, implicit: [], roles: nil, acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "code": [
+            Variant(selector: .always, implicit: [], roles: nil, acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "col": [
+            Variant(selector: .always, implicit: [], roles: [], acceptsRole: false, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "colgroup": [
+            Variant(selector: .always, implicit: [], roles: [], acceptsRole: false, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "data": [
+            Variant(selector: .always, implicit: [], roles: nil, acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [["value"]], rejected: []),
+        ],
+        "datalist": [
+            Variant(selector: .always, implicit: [], roles: [], acceptsRole: false, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "dd": [
+            Variant(selector: .always, implicit: ["definition"], roles: ["definition"], acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "del": [
+            Variant(selector: .always, implicit: [], roles: nil, acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "details": [
+            Variant(selector: .always, implicit: ["group"], roles: ["group"], acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "dfn": [
+            Variant(selector: .always, implicit: [], roles: nil, acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "dialog": [
+            Variant(selector: .always, implicit: ["dialog"], roles: ["alertdialog", "dialog"], acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "dir": [
+            Variant(selector: .always, implicit: [], roles: [], acceptsRole: false, anyAttribute: true, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "div": [
+            Variant(selector: .always, implicit: [], roles: nil, acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "dl": [
+            Variant(selector: .always, implicit: [], roles: ["list", "group", "presentation", "none"], acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "dt": [
+            Variant(selector: .always, implicit: ["term"], roles: ["term", "listitem"], acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "em": [
+            Variant(selector: .always, implicit: [], roles: nil, acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "embed": [
+            Variant(selector: .always, implicit: [], roles: ["application", "document", "img", "presentation", "none"], acceptsRole: true, anyAttribute: false, extraARIA: ["aria-autocomplete", "aria-checked", "aria-colcount", "aria-colindex", "aria-colspan", "aria-level", "aria-modal", "aria-multiline", "aria-multiselectable", "aria-orientation", "aria-placeholder", "aria-posinset", "aria-pressed", "aria-readonly", "aria-rowcount", "aria-rowindex", "aria-rowspan", "aria-selected", "aria-setsize", "aria-sort", "aria-valuemax", "aria-valuemin", "aria-valuenow", "aria-valuetext"], requiredGroups: [], rejected: []),
+        ],
+        "fieldset": [
+            Variant(selector: .always, implicit: ["group"], roles: ["group", "radiogroup", "presentation", "none"], acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "figcaption": [
+            Variant(selector: .always, implicit: [], roles: ["presentation", "none", "group"], acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "figure": [
+            Variant(selector: .always, implicit: ["figure"], roles: nil, acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "font": [
+            Variant(selector: .always, implicit: [], roles: [], acceptsRole: false, anyAttribute: true, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "footer": [
+            Variant(selector: .always, implicit: ["contentinfo"], roles: ["contentinfo", "group", "presentation", "none", "doc-footnote"], acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "form": [
+            Variant(selector: .always, implicit: ["form"], roles: ["form", "search", "presentation", "none"], acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "frame": [
+            Variant(selector: .always, implicit: [], roles: [], acceptsRole: false, anyAttribute: true, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "frameset": [
+            Variant(selector: .always, implicit: [], roles: [], acceptsRole: false, anyAttribute: true, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "h1": [
+            Variant(selector: .always, implicit: ["heading"], roles: ["heading", "tab", "presentation", "none", "doc-subtitle"], acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "h2": [
+            Variant(selector: .always, implicit: ["heading"], roles: ["heading", "tab", "presentation", "none", "doc-subtitle"], acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "h3": [
+            Variant(selector: .always, implicit: ["heading"], roles: ["heading", "tab", "presentation", "none", "doc-subtitle"], acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "h4": [
+            Variant(selector: .always, implicit: ["heading"], roles: ["heading", "tab", "presentation", "none", "doc-subtitle"], acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "h5": [
+            Variant(selector: .always, implicit: ["heading"], roles: ["heading", "tab", "presentation", "none", "doc-subtitle"], acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "h6": [
+            Variant(selector: .always, implicit: ["heading"], roles: ["heading", "tab", "presentation", "none", "doc-subtitle"], acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "head": [
+            Variant(selector: .always, implicit: [], roles: [], acceptsRole: false, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "header": [
+            Variant(selector: .always, implicit: ["banner"], roles: ["banner", "group", "presentation", "none", "doc-footnote"], acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "hgroup": [
+            Variant(selector: .always, implicit: [], roles: nil, acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "hr": [
+            Variant(selector: .always, implicit: ["separator"], roles: ["separator", "presentation", "none", "doc-pagebreak"], acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "html": [
+            Variant(selector: .always, implicit: [], roles: [], acceptsRole: false, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "i": [
+            Variant(selector: .always, implicit: [], roles: nil, acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "iframe": [
+            Variant(selector: .always, implicit: [], roles: ["application", "document", "img", "presentation", "none"], acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "img": [
+            Variant(selector: .always, implicit: ["img"], roles: ["button", "checkbox", "img", "link", "math", "menuitem", "menuitemcheckbox", "menuitemradio", "none", "option", "presentation", "progressbar", "radio", "scrollbar", "separator", "slider", "switch", "tab", "treeitem", "doc-cover"], acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [["src", "srcset"]], rejected: []),
+        ],
+        "input": [
+            Variant(selector: .type("text", optional: true), implicit: ["textbox"], roles: ["textbox", "combobox", "searchbox", "spinbutton"], acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+            Variant(selector: .type("password", optional: false), implicit: [], roles: [], acceptsRole: false, anyAttribute: false, extraARIA: ["aria-placeholder", "aria-required"], requiredGroups: [], rejected: []),
+            Variant(selector: .type("checkbox", optional: false), implicit: ["checkbox"], roles: ["checkbox", "button", "menuitemcheckbox-checked-not-required", "option", "switch-checked-not-required"], acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+            Variant(selector: .type("radio", optional: false), implicit: ["radio"], roles: ["radio", "menuitemradio-checked-not-required"], acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+            Variant(selector: .type("button", optional: false), implicit: ["button"], roles: ["button", "checkbox", "combobox", "link", "menuitem", "menuitemcheckbox", "menuitemradio", "option", "radio", "separator", "switch", "tab", "gridcell", "slider", "treeitem"], acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+            Variant(selector: .type("submit", optional: false), implicit: ["button"], roles: ["button", "checkbox", "combobox", "gridcell", "link", "menuitem", "menuitemcheckbox", "menuitemradio", "option", "radio", "slider", "switch", "tab", "treeitem"], acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+            Variant(selector: .type("reset", optional: false), implicit: ["button"], roles: ["button", "checkbox", "combobox", "gridcell", "link", "menuitem", "menuitemcheckbox", "menuitemradio", "option", "radio", "slider", "switch", "tab", "treeitem"], acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+            Variant(selector: .type("file", optional: false), implicit: [], roles: [], acceptsRole: false, anyAttribute: false, extraARIA: ["aria-required"], requiredGroups: [], rejected: []),
+            Variant(selector: .type("hidden", optional: false), implicit: [], roles: [], acceptsRole: false, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+            Variant(selector: .type("image", optional: false), implicit: ["button"], roles: ["button", "checkbox", "combobox", "gridcell", "link", "menuitem", "menuitemcheckbox", "menuitemradio", "option", "radio", "separator", "slider", "switch", "tab", "treeitem"], acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [["alt"]], rejected: []),
+            Variant(selector: .type("datetime-local", optional: false), implicit: [], roles: [], acceptsRole: false, anyAttribute: false, extraARIA: ["aria-required", "aria-valuemax", "aria-valuemin"], requiredGroups: [], rejected: []),
+            Variant(selector: .type("date", optional: false), implicit: [], roles: [], acceptsRole: false, anyAttribute: false, extraARIA: ["aria-required", "aria-valuemax", "aria-valuemin"], requiredGroups: [], rejected: []),
+            Variant(selector: .type("month", optional: false), implicit: [], roles: [], acceptsRole: false, anyAttribute: false, extraARIA: ["aria-required", "aria-valuemax", "aria-valuemin"], requiredGroups: [], rejected: []),
+            Variant(selector: .type("time", optional: false), implicit: [], roles: [], acceptsRole: false, anyAttribute: false, extraARIA: ["aria-required", "aria-valuemax", "aria-valuemin"], requiredGroups: [], rejected: []),
+            Variant(selector: .type("week", optional: false), implicit: [], roles: [], acceptsRole: false, anyAttribute: false, extraARIA: ["aria-required", "aria-valuemax", "aria-valuemin"], requiredGroups: [], rejected: []),
+            Variant(selector: .type("number", optional: false), implicit: ["spinbutton"], roles: ["spinbutton"], acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+            Variant(selector: .type("range", optional: false), implicit: ["slider"], roles: ["slider"], acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+            Variant(selector: .type("email", optional: false), implicit: ["textbox"], roles: ["textbox"], acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: ["list"]),
+            Variant(selector: .type("email", optional: false), implicit: ["combobox"], roles: ["combobox"], acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [["list"]], rejected: []),
+            Variant(selector: .type("url", optional: false), implicit: ["textbox"], roles: ["textbox"], acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: ["list"]),
+            Variant(selector: .type("url", optional: false), implicit: ["combobox"], roles: ["combobox"], acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [["list"]], rejected: []),
+            Variant(selector: .type("search", optional: false), implicit: ["searchbox"], roles: ["searchbox"], acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+            Variant(selector: .type("tel", optional: false), implicit: ["textbox"], roles: ["textbox"], acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: ["list"]),
+            Variant(selector: .type("tel", optional: false), implicit: ["combobox"], roles: ["combobox"], acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [["list"]], rejected: []),
+            Variant(selector: .type("color", optional: false), implicit: [], roles: [], acceptsRole: false, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "ins": [
+            Variant(selector: .always, implicit: [], roles: nil, acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "isindex": [
+            Variant(selector: .always, implicit: [], roles: [], acceptsRole: false, anyAttribute: true, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "kbd": [
+            Variant(selector: .always, implicit: [], roles: nil, acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "keygen": [
+            Variant(selector: .always, implicit: [], roles: [], acceptsRole: false, anyAttribute: true, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "label": [
+            Variant(selector: .always, implicit: [], roles: nil, acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "legend": [
+            Variant(selector: .always, implicit: [], roles: [], acceptsRole: false, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "li": [
+            Variant(selector: .parent("ul"), implicit: ["listitem"], roles: nil, acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+            Variant(selector: .parent("ol"), implicit: ["listitem"], roles: ["listitem", "menuitem", "menuitemcheckbox", "menuitemradio", "option", "radio", "tab", "treeitem", "separator", "presentation", "none", "doc-biblioentry", "doc-endnote"], acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+            Variant(selector: .parent("menu"), implicit: [], roles: ["listitem", "menuitem", "menuitemcheckbox", "menuitemradio", "option", "tab", "treeitem", "presentation", "none"], acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "link": [
+            Variant(selector: .always, implicit: [], roles: ["link", "presentation", "none", "menuitem"], acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "listing": [
+            Variant(selector: .always, implicit: [], roles: [], acceptsRole: false, anyAttribute: true, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "main": [
+            Variant(selector: .always, implicit: ["main"], roles: ["main"], acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "map": [
+            Variant(selector: .always, implicit: [], roles: [], acceptsRole: false, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "mark": [
+            Variant(selector: .always, implicit: [], roles: nil, acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "marquee": [
+            Variant(selector: .always, implicit: [], roles: [], acceptsRole: false, anyAttribute: true, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "menu": [
+            Variant(selector: .always, implicit: ["list"], roles: ["group", "list", "listbox", "menu", "menubar", "radiogroup", "tablist", "toolbar", "tree", "presentation", "none"], acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "menuitem": [
+            Variant(selector: .always, implicit: [], roles: [], acceptsRole: false, anyAttribute: true, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "meta": [
+            Variant(selector: .always, implicit: [], roles: [], acceptsRole: false, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: ["itemprop"]),
+            Variant(selector: .notParent("noscript"), implicit: [], roles: [], acceptsRole: false, anyAttribute: false, extraARIA: [], requiredGroups: [["content"], ["itemprop"]], rejected: ["about", "charset", "datatype", "http-equiv", "inlist", "media", "name", "prefix", "property", "resource", "scheme", "typeof", "vocab"]),
+        ],
+        "meter": [
+            Variant(selector: .always, implicit: [], roles: [], acceptsRole: false, anyAttribute: false, extraARIA: ["aria-valuemax", "aria-valuemin"], requiredGroups: [["value"]], rejected: []),
+        ],
+        "multicol": [
+            Variant(selector: .always, implicit: [], roles: [], acceptsRole: false, anyAttribute: true, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "nav": [
+            Variant(selector: .always, implicit: ["navigation"], roles: ["navigation", "doc-index", "doc-pagelist", "doc-toc", "menu", "menubar", "none", "presentation", "tablist"], acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "nextid": [
+            Variant(selector: .always, implicit: [], roles: [], acceptsRole: false, anyAttribute: true, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "nobr": [
+            Variant(selector: .always, implicit: [], roles: [], acceptsRole: false, anyAttribute: true, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "noembed": [
+            Variant(selector: .always, implicit: [], roles: [], acceptsRole: false, anyAttribute: true, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "noframes": [
+            Variant(selector: .always, implicit: [], roles: [], acceptsRole: false, anyAttribute: true, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "noscript": [
+            Variant(selector: .always, implicit: [], roles: [], acceptsRole: false, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "object": [
+            Variant(selector: .always, implicit: [], roles: ["application", "document", "img"], acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [["data"]], rejected: []),
+        ],
+        "ol": [
+            Variant(selector: .always, implicit: ["list"], roles: ["group", "list", "listbox", "menu", "menubar", "radiogroup", "tablist", "toolbar", "tree", "presentation", "none"], acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "optgroup": [
+            Variant(selector: .always, implicit: ["group"], roles: ["group"], acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "option": [
+            Variant(selector: .always, implicit: ["option"], roles: ["option"], acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "output": [
+            Variant(selector: .always, implicit: ["status"], roles: nil, acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "p": [
+            Variant(selector: .always, implicit: [], roles: nil, acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "param": [
+            Variant(selector: .always, implicit: [], roles: [], acceptsRole: false, anyAttribute: true, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "picture": [
+            Variant(selector: .always, implicit: [], roles: [], acceptsRole: false, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "plaintext": [
+            Variant(selector: .always, implicit: [], roles: [], acceptsRole: false, anyAttribute: true, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "pre": [
+            Variant(selector: .always, implicit: [], roles: nil, acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "progress": [
+            Variant(selector: .always, implicit: ["progressbar"], roles: ["progressbar"], acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "q": [
+            Variant(selector: .always, implicit: [], roles: nil, acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "rb": [
+            Variant(selector: .always, implicit: [], roles: nil, acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "rp": [
+            Variant(selector: .always, implicit: [], roles: nil, acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "rt": [
+            Variant(selector: .always, implicit: [], roles: nil, acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "rtc": [
+            Variant(selector: .always, implicit: [], roles: nil, acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "ruby": [
+            Variant(selector: .always, implicit: [], roles: nil, acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "s": [
+            Variant(selector: .always, implicit: [], roles: nil, acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "samp": [
+            Variant(selector: .always, implicit: [], roles: nil, acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "script": [
+            Variant(selector: .always, implicit: [], roles: [], acceptsRole: false, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "search": [
+            Variant(selector: .always, implicit: ["search"], roles: ["search", "form", "group", "none", "presentation", "region"], acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "section": [
+            Variant(selector: .always, implicit: ["region"], roles: ["alert", "alertdialog", "application", "dialog", "feed", "group", "log", "marquee", "presentation", "none", "region", "status", "tabpanel", "banner", "complementary", "contentinfo", "document", "main", "navigation", "note", "search", "doc-abstract", "doc-acknowledgments", "doc-afterword", "doc-appendix", "doc-bibliography", "doc-chapter", "doc-colophon", "doc-conclusion", "doc-credit", "doc-credits", "doc-dedication", "doc-endnotes", "doc-epigraph", "doc-epilogue", "doc-errata", "doc-example", "doc-foreword", "doc-glossary", "doc-index", "doc-introduction", "doc-notice", "doc-pagelist", "doc-part", "doc-preface", "doc-prologue", "doc-pullquote", "doc-qna", "doc-toc"], acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "select": [
+            Variant(selector: .always, implicit: ["combobox", "listbox"], roles: ["listbox", "combobox", "menu"], acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "selectedcontent": [
+            Variant(selector: .always, implicit: [], roles: nil, acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "slot": [
+            Variant(selector: .always, implicit: [], roles: nil, acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "small": [
+            Variant(selector: .always, implicit: [], roles: nil, acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "source": [
+            Variant(selector: .always, implicit: [], roles: [], acceptsRole: false, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "spacer": [
+            Variant(selector: .always, implicit: [], roles: [], acceptsRole: false, anyAttribute: true, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "span": [
+            Variant(selector: .always, implicit: [], roles: nil, acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "strike": [
+            Variant(selector: .always, implicit: [], roles: [], acceptsRole: false, anyAttribute: true, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "strong": [
+            Variant(selector: .always, implicit: [], roles: nil, acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "style": [
+            Variant(selector: .always, implicit: [], roles: [], acceptsRole: false, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "sub": [
+            Variant(selector: .always, implicit: [], roles: nil, acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "summary": [
+            Variant(selector: .always, implicit: [], roles: nil, acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "sup": [
+            Variant(selector: .always, implicit: [], roles: nil, acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "table": [
+            Variant(selector: .always, implicit: ["table"], roles: nil, acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "tbody": [
+            Variant(selector: .always, implicit: ["rowgroup"], roles: nil, acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "td": [
+            Variant(selector: .always, implicit: ["cell", "gridcell"], roles: nil, acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "template": [
+            Variant(selector: .always, implicit: [], roles: [], acceptsRole: false, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "textarea": [
+            Variant(selector: .always, implicit: ["textbox"], roles: ["textbox"], acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "tfoot": [
+            Variant(selector: .always, implicit: ["rowgroup"], roles: nil, acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "th": [
+            Variant(selector: .always, implicit: ["column-or-row-header"], roles: nil, acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "thead": [
+            Variant(selector: .always, implicit: ["rowgroup"], roles: nil, acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "time": [
+            Variant(selector: .always, implicit: [], roles: nil, acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: ["datetime"]),
+            Variant(selector: .always, implicit: [], roles: nil, acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [["datetime"]], rejected: []),
+        ],
+        "title": [
+            Variant(selector: .always, implicit: [], roles: [], acceptsRole: false, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "tr": [
+            Variant(selector: .always, implicit: ["row"], roles: nil, acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "track": [
+            Variant(selector: .always, implicit: [], roles: [], acceptsRole: false, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "tt": [
+            Variant(selector: .always, implicit: [], roles: [], acceptsRole: false, anyAttribute: true, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "u": [
+            Variant(selector: .always, implicit: [], roles: nil, acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "ul": [
+            Variant(selector: .always, implicit: ["list"], roles: ["group", "list", "listbox", "menu", "menubar", "radiogroup", "tablist", "toolbar", "tree", "presentation", "none"], acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "var": [
+            Variant(selector: .always, implicit: [], roles: nil, acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "video": [
+            Variant(selector: .always, implicit: [], roles: ["application"], acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "wbr": [
+            Variant(selector: .always, implicit: [], roles: ["presentation", "none"], acceptsRole: true, anyAttribute: false, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+        "xmp": [
+            Variant(selector: .always, implicit: [], roles: [], acceptsRole: false, anyAttribute: true, extraARIA: [], requiredGroups: [], rejected: []),
+        ],
+    ]
+
+    /// The SVG elements that take a role attribute: any role, and some with
+    /// an implicit pattern as well (.drivers/html5-svg-mathml.rnc and svg11).
+    /// Every other SVG element takes aria.global only.
+    static let svgAnyRoleElements: Set<String> = ["circle", "ellipse", "line", "path", "polygon", "rect", "svg", "symbol", "use"]
+    static let svgImplicitGroupElements: Set<String> = ["altglyph", "foreignobject", "g", "glyph", "glyphref", "polyline", "text", "tspan"]
+    static let svgImplicitLinkElements: Set<String> = ["a"]
+    static let svgImplicitImgElements: Set<String> = ["image"]
 }

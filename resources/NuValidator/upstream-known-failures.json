@@ -16,126 +16,6 @@
       "category" : "invalid",
       "failure" : "Expected “The “aria-labelledby” attribute must not be specified on any “area” element unless the element has a “role” value other than “caption”, “code”, “deletion”, “emphasis”, “generic”, “insertion”, “paragraph”, “presentation”, “strong”, “subscript”, or “superscript”.” but instead encountered “Stray end tag “map”.”."
     },
-    "html-aria/misc/aria-owns-broken-idref-isvalid.html" : {
-      "category" : "valid",
-      "failure" : "Expected no errors or warnings but encountered error “An element with “role=option” must be contained in, or owned by, an element with the “role” value “listbox”.”."
-    },
-    "html-aria/misc/input-checkbox-role-switch-aria-expanded-isvalid.html" : {
-      "category" : "valid",
-      "failure" : "Expected no errors or warnings but encountered error “Attribute “aria-readonly” not allowed on element “input” at this point.”."
-    },
-    "html-aria/misc/li-role-none-with-role-menu-ancestor-isvalid.html" : {
-      "category" : "valid",
-      "failure" : "Expected no errors or warnings but encountered error “An “li” element that is a descendant of a “role=menu” element or “role=menubar” element must not have any “role” value other than “group”, “menuitem”, “menuitemcheckbox”, “menuitemradio”, or “separator”.”."
-    },
-    "html-aria/misc/td-with-aria-selected-isvalid.html" : {
-      "category" : "valid",
-      "failure" : "Expected no errors or warnings but encountered error “Attribute “aria-selected” not allowed on element “td” at this point.”."
-    },
-    "html-aria/misc/unnecessary-role-rowgroup-haswarn.html" : {
-      "category" : "haswarn",
-      "failure" : "Expected a warning only but encountered error “An element that is a child of an element with “role=rowgroup” must have “role=row”.”."
-    },
-    "html-aria/misc/unnecessary-rowgroup-role-on-tbody-haswarn.html" : {
-      "category" : "haswarn",
-      "failure" : "Expected a warning only but encountered error “An element that is a child of an element with “role=rowgroup” must have “role=row”.”."
-    },
-    "html-aria/roles-properties-supported-inherited/columnheader-aria-readonly-false.html" : {
-      "category" : "valid",
-      "failure" : "Expected no errors or warnings but encountered error “Attribute “aria-readonly” not allowed on element “span” at this point.”."
-    },
-    "html-aria/roles-properties-supported-inherited/columnheader-aria-readonly-true.html" : {
-      "category" : "valid",
-      "failure" : "Expected no errors or warnings but encountered error “Attribute “aria-readonly” not allowed on element “span” at this point.”."
-    },
-    "html-aria/roles-properties-supported-inherited/columnheader-aria-selected-false.html" : {
-      "category" : "valid",
-      "failure" : "Expected no errors or warnings but encountered error “Attribute “aria-selected” not allowed on element “span” at this point.”."
-    },
-    "html-aria/roles-properties-supported-inherited/columnheader-aria-selected-true.html" : {
-      "category" : "valid",
-      "failure" : "Expected no errors or warnings but encountered error “Attribute “aria-selected” not allowed on element “span” at this point.”."
-    },
-    "html-aria/roles-properties-supported-inherited/columnheader-aria-selected-undefined.html" : {
-      "category" : "valid",
-      "failure" : "Expected no errors or warnings but encountered error “Attribute “aria-selected” not allowed on element “span” at this point.”."
-    },
-    "html-aria/roles-properties-supported-inherited/progressbar-aria-valuemax-1.1.html" : {
-      "category" : "valid",
-      "failure" : "Expected no errors or warnings but encountered error “Attribute “aria-valuemax” not allowed on element “div” at this point.”."
-    },
-    "html-aria/roles-properties-supported-inherited/progressbar-aria-valuemin-1.1.html" : {
-      "category" : "valid",
-      "failure" : "Expected no errors or warnings but encountered error “Attribute “aria-valuemin” not allowed on element “div” at this point.”."
-    },
-    "html-aria/roles-properties-supported-inherited/rowheader-aria-readonly-false.html" : {
-      "category" : "valid",
-      "failure" : "Expected no errors or warnings but encountered error “Attribute “aria-readonly” not allowed on element “span” at this point.”."
-    },
-    "html-aria/roles-properties-supported-inherited/rowheader-aria-readonly-true.html" : {
-      "category" : "valid",
-      "failure" : "Expected no errors or warnings but encountered error “Attribute “aria-readonly” not allowed on element “span” at this point.”."
-    },
-    "html-aria/roles-properties-supported-inherited/rowheader-aria-selected-false.html" : {
-      "category" : "valid",
-      "failure" : "Expected no errors or warnings but encountered error “Attribute “aria-selected” not allowed on element “span” at this point.”."
-    },
-    "html-aria/roles-properties-supported-inherited/rowheader-aria-selected-true.html" : {
-      "category" : "valid",
-      "failure" : "Expected no errors or warnings but encountered error “Attribute “aria-selected” not allowed on element “span” at this point.”."
-    },
-    "html-aria/roles-properties-supported-inherited/rowheader-aria-selected-undefined.html" : {
-      "category" : "valid",
-      "failure" : "Expected no errors or warnings but encountered error “Attribute “aria-selected” not allowed on element “span” at this point.”."
-    },
-    "html-aria/roles-properties-supported-inherited/treegrid-aria-multiselectable-false.html" : {
-      "category" : "valid",
-      "failure" : "Expected no errors or warnings but encountered error “Attribute “aria-multiselectable” not allowed on element “div” at this point.”."
-    },
-    "html-aria/roles-properties-supported-inherited/treegrid-aria-multiselectable-true.html" : {
-      "category" : "valid",
-      "failure" : "Expected no errors or warnings but encountered error “Attribute “aria-multiselectable” not allowed on element “div” at this point.”."
-    },
-    "html-aria/roles-properties-supported-inherited/treegrid-aria-readonly-false.html" : {
-      "category" : "valid",
-      "failure" : "Expected no errors or warnings but encountered error “Attribute “aria-readonly” not allowed on element “div” at this point.”."
-    },
-    "html-aria/roles-properties-supported-inherited/treegrid-aria-readonly-true.html" : {
-      "category" : "valid",
-      "failure" : "Expected no errors or warnings but encountered error “Attribute “aria-readonly” not allowed on element “div” at this point.”."
-    },
-    "html-aria/roles-properties-supported-inherited/treeitem-aria-checked-false.html" : {
-      "category" : "valid",
-      "failure" : "Expected no errors or warnings but encountered error “Attribute “aria-checked” not allowed on element “div” at this point.”."
-    },
-    "html-aria/roles-properties-supported-inherited/treeitem-aria-checked-mixed.html" : {
-      "category" : "valid",
-      "failure" : "Expected no errors or warnings but encountered error “Attribute “aria-checked” not allowed on element “div” at this point.”."
-    },
-    "html-aria/roles-properties-supported-inherited/treeitem-aria-checked-true.html" : {
-      "category" : "valid",
-      "failure" : "Expected no errors or warnings but encountered error “Attribute “aria-checked” not allowed on element “div” at this point.”."
-    },
-    "html-aria/roles-properties-supported-inherited/treeitem-aria-checked-undefined.html" : {
-      "category" : "valid",
-      "failure" : "Expected no errors or warnings but encountered error “Attribute “aria-checked” not allowed on element “div” at this point.”."
-    },
-    "html-aria/roles-properties-supported-inherited/treeitem-aria-selected-false.html" : {
-      "category" : "valid",
-      "failure" : "Expected no errors or warnings but encountered error “Attribute “aria-selected” not allowed on element “div” at this point.”."
-    },
-    "html-aria/roles-properties-supported-inherited/treeitem-aria-selected-true.html" : {
-      "category" : "valid",
-      "failure" : "Expected no errors or warnings but encountered error “Attribute “aria-selected” not allowed on element “div” at this point.”."
-    },
-    "html-aria/roles-properties-supported-inherited/treeitem-aria-selected-undefined.html" : {
-      "category" : "valid",
-      "failure" : "Expected no errors or warnings but encountered error “Attribute “aria-selected” not allowed on element “div” at this point.”."
-    },
-    "html-aria/testcases-multiselectable/testcase-tree-multiselectable-C.html" : {
-      "category" : "valid",
-      "failure" : "Expected no errors or warnings but encountered error “Attribute “aria-selected” not allowed on element “div” at this point.”."
-    },
     "html-rdfa/0321-isvalid.html" : {
       "category" : "valid",
       "failure" : "Expected no errors or warnings but encountered error “A “link” element must have an “href” or “imagesrcset” attribute, or both.”."
@@ -420,10 +300,6 @@
       "category" : "valid",
       "failure" : "Expected no errors or warnings but encountered error “A document must not include more than one “meta” element with its “name” attribute set to the value “description”.”."
     },
-    "html/elements/meter/aria-valuemax-haswarn.html" : {
-      "category" : "haswarn",
-      "failure" : "Expected a warning only but encountered error “Attribute “aria-valuemax” not allowed on element “meter” at this point.”."
-    },
     "html/elements/meter/high-below-min-novalid.html" : {
       "category" : "invalid",
       "failure" : "Expected “The value of the “min” attribute must be less than or equal to the value of the “high” attribute.” but instead encountered “The value of the “low” attribute must be less than or equal to the value of the “high” attribute.”."
@@ -484,10 +360,6 @@
       "category" : "valid",
       "failure" : "Expected no errors or warnings but encountered error “Bad value “(min-width: 600px)” for attribute “media” on element “source”.”."
     },
-    "html/elements/progress/aria-valuemax-haswarn.html" : {
-      "category" : "haswarn",
-      "failure" : "Expected a warning only but encountered error “Attribute “aria-valuemax” not allowed on element “progress” at this point.”."
-    },
     "html/elements/q/cite/scheme-data-contains-fragment-haswarn.html" : {
       "category" : "haswarn",
       "failure" : "Expected a warning only but encountered error “Bad value “data:text/html,test#test” for attribute “cite” on element “q”.”."
@@ -539,10 +411,6 @@
     "html/elements/table/integrity/Alexis_of_Russia-novalid.html" : {
       "category" : "invalid",
       "failure" : "Expected “Bad value “chu” for attribute “lang” on element “span”.” but instead encountered “The “center” element is obsolete. Use CSS instead.”."
-    },
-    "html/elements/tbody/role-rowgroup-haswarn.html" : {
-      "category" : "haswarn",
-      "failure" : "Expected a warning only but encountered error “An element that is a child of an element with “role=rowgroup” must have “role=row”.”."
     },
     "html/elements/track/src/scheme-data-contains-fragment-haswarn.html" : {
       "category" : "haswarn",
@@ -625,9 +493,9 @@
   },
   "passCounts" : {
     "hasinfo" : 5,
-    "haswarn" : 152,
+    "haswarn" : 157,
     "invalid" : 3587,
-    "valid" : 1722
+    "valid" : 1750
   },
   "version" : 2
 }

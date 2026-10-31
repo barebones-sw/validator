@@ -95,6 +95,31 @@ struct HTMLParsedDocument: Equatable, Sendable {
     /// or self-closed element's end, which closes nothing still open, has no
     /// entry: its event's range is the token.)
     var implicitEndCauses: [HTMLImplicitEndCause]
+    /// Case 554591 (A14's second and third reviews, the notes' item 89): the
+    /// offsets of the attributes written with an "=" and then the end of the
+    /// tag, as in <div aria-checked=>. Upstream's tokenizer takes those as
+    /// attributes without a value, as <div aria-checked> is, so its ARIA
+    /// dropping wrapper takes them away (see
+    /// HTMLARIASchema.droppingValuelessARIA); their value here is "", which
+    /// is what upstream's other checks read for both. (For a while it was
+    /// nil, as a valueless attribute's is here; but every check that reads a
+    /// value then took it for a missing attribute, since attributeValue gives
+    /// nil for both: <meter value=> was "missing required attribute
+    /// “value”", <bdo dir=> had to have a dir, and an <a href=> lost its "Bad
+    /// value “”".) Usually empty.
+    var attributesEndedByTag: Set<Int>
+    /// Case 554591 (A14's third review): where, in events, the body starts
+    /// as this parser has it (see HTMLImplicitClosures.DocumentSections):
+    /// the index of the first event of the token that started it, or nil
+    /// where it never does (a frameset document, or one with nothing but
+    /// head content). Some of those tokens leave no event: a </br> before
+    /// the body, a stray table part, or non-space text in the head; and the
+    /// events have no element for a body the parser implies. So
+    /// HTMLGeneralAttributeChecker's base rule, which took a base for one in
+    /// the body only after a start tag that isn't head content, missed
+    /// "Element “base” not allowed as child of “body”" for
+    /// <title>t</title></br></head><body></br><base href="x/">.
+    var bodyStartEvent: Int?
 }
 
 struct HTMLDocumentParser {
@@ -109,8 +134,8 @@ struct HTMLDocumentParser {
     func parse() -> HTMLParsedDocument {
         // Review item A2: the tokenizer runs the tree builder as it goes (see
         // HTMLTreeEventBuilder), so one pass produces both.
-        let (tokens, events, impliedColgroupEnds, impliedTablePartEnds, implicitEndCauses) = HTMLTokenizer(source: source, locations: locations).tokenizeAndBuildTree()
-        return HTMLParsedDocument(tokens: tokens, events: events, impliedColgroupEnds: impliedColgroupEnds, impliedTablePartEnds: impliedTablePartEnds, implicitEndCauses: implicitEndCauses)
+        let (tokens, events, impliedColgroupEnds, impliedTablePartEnds, implicitEndCauses, attributesEndedByTag, bodyStartEvent) = HTMLTokenizer(source: source, locations: locations).tokenizeAndBuildTree()
+        return HTMLParsedDocument(tokens: tokens, events: events, impliedColgroupEnds: impliedColgroupEnds, impliedTablePartEnds: impliedTablePartEnds, implicitEndCauses: implicitEndCauses, attributesEndedByTag: attributesEndedByTag, bodyStartEvent: bodyStartEvent)
     }
 }
 
@@ -175,6 +200,8 @@ struct HTMLTreeEventBuilder {
     // HTMLParsedDocument.implicitEndCauses; the token being consumed (where a
     // text token starts), or, once they all have been, the end of the file.
     private(set) var implicitEndCauses: [HTMLImplicitEndCause] = []
+    // Case 554591 (A14's third review): see HTMLParsedDocument.bodyStartEvent.
+    private(set) var bodyStartEvent: Int?
     private var currentTokenRange = HTMLSourceRange(offset: 0, length: 0)
     private var stack: [OpenElement] = []
     // Quirks mode changes one implicit closure (<table> doesn't close an
@@ -221,6 +248,16 @@ struct HTMLTreeEventBuilder {
     }
 
     mutating func consume(_ token: HTMLToken) {
+        // (Case 554591, A14's third review: see bodyStartEvent. The body
+        // starts on several of the paths below, some of which return early,
+        // so it's noted once the token is done: the events it appended, and
+        // all after, are the body's.)
+        let firstEvent = events.count
+        defer {
+            if nil == bodyStartEvent, sections.bodyStarted {
+                bodyStartEvent = firstEvent
+            }
+        }
         // (Case 554591, U11: for the elements it closes implicitly; see
         // implicitEndCauses.)
         switch token {
@@ -265,7 +302,14 @@ struct HTMLTreeEventBuilder {
                 if "html" != name {
                     endImpliedColgroup()
                 }
-                if sections.isInHead, !isInTemplateContents, HTMLImplicitClosures.startTagImpliesBody(name, namespace: namespace) {
+                // (Case 554591, A14's third review: before the head, and after
+                // </head>, too, as upstream's "before head" and "after head"
+                // modes pass the tag on to "anything else", which inserts the
+                // body: a stray <tbody> or <td> as the first tag started no
+                // body here, so a </head> after it closed the head that
+                // upstream had ended, where vnu.jar reports "Stray end tag
+                // “head”." HTMLValidator does the same.)
+                if sections.textStartsBody, !isInTemplateContents, HTMLImplicitClosures.startTagImpliesBody(name, namespace: namespace) {
                     closeHead()
                     sections.noteBodyStarted()
                 }
@@ -367,8 +411,11 @@ struct HTMLTreeEventBuilder {
             // in its <title> or <style>) ends the head and starts the body, as
             // upstream's "anything else" rule does; the text is then body
             // content. (Leaving the head open made a later </body> find it
-            // unclosed.)
-            if sections.textStartsBody, HTMLImplicitClosures.containsNonSpace(content), stack.last.map({ .html == $0.namespace && ("html" == $0.name || "head" == $0.name) }) ?? true {
+            // unclosed.) (Case 554591, A14's third review: non-space as
+            // upstream's tokenizer delivers it, references decoded; see
+            // HTMLImplicitClosures.textEndsHead. HTMLValidator does the
+            // same.)
+            if sections.textStartsBody, HTMLImplicitClosures.textEndsHead(content), stack.last.map({ .html == $0.namespace && ("html" == $0.name || "head" == $0.name) }) ?? true {
                 closeHead()
                 sections.noteBodyStarted()
             }
@@ -524,8 +571,13 @@ struct HTMLTreeEventBuilder {
         // everything up to the <body> or <html>.) In the head, though, they
         // first close the head and imply the body, as upstream's "anything
         // else" rule there does; HTMLValidator does the same.
+        // (Case 554591, A14's third review: but not in a template's contents,
+        // where upstream ignores them; a </body> in a template in the head
+        // closed the template and the head here, so the template's contents
+        // after it were checked, as body content, which vnu.jar doesn't
+        // check at all. HTMLValidator already calls them stray there.)
         if "body" == name || "html" == name {
-            if sections.textStartsBody {
+            if sections.textStartsBody, !isInTemplateContents {
                 closeHead()
                 sections.noteBodyStarted()
             }
@@ -573,6 +625,16 @@ struct HTMLTreeEventBuilder {
         if "br" == name || ("p" == name && nil == htmlMatch) {
             while let top = stack.last, .html != top.namespace {
                 closeTop()
+            }
+            // (Case 554591, A14's third review: before the body, </br> ends
+            // the head and starts the body, as upstream's "anything else"
+            // rules in the modes before the body do. It started nothing here,
+            // so a <body> after it was a body start tag, where vnu.jar reports
+            // "Start tag “body” seen but an element of the same type was
+            // already open." HTMLValidator does the same.)
+            if "br" == name, sections.textStartsBody, !isInTemplateContents {
+                closeHead()
+                sections.noteBodyStarted()
             }
             // Case 554591 (item 4): and, in a figure, the element itself, as
             // an empty one, so that the checkers see what upstream's do: a
@@ -1056,6 +1118,25 @@ enum HTMLImplicitClosures {
     /// (zeroOriginatingReplacementCharacter). (A reference to a NUL, which
     /// the tokenizer makes U+FFFD, does end it.)
     static func textEndsColumnGroup(_ text: String) -> Bool {
+        let decoded = text.contains("&") ? HTMLCharacterReferences.decode(text) : text
+        return decoded.utf8.contains { 0x20 != $0 && 0x09 != $0 && 0x0A != $0 && 0x0C != $0 && 0x0D != $0 && 0x00 != $0 }
+    }
+
+    /// Case 554591 (A14's third review): whether text in the head, or
+    /// before it, or after </head> (upstream's "before head", "in head" and
+    /// "after head" modes), ends the head and starts the body: whether, as
+    /// upstream's tokenizer delivers it, it has a character other than
+    /// HTML's space characters. As in textEndsColumnGroup, the text here is
+    /// as written, so a reference to one (&#32;, &#x20;, &#9;, &#10;, &#13;,
+    /// &#12;, &Tab;, &NewLine;) is decoded first: containsNonSpace took
+    /// <title>t</title>&#32; for text, so the port started the body there,
+    /// and gave a </head> after it "Stray end tag “head”." And, as in a
+    /// colgroup, a NUL doesn't count: upstream's tokenizer hands it to
+    /// zeroOriginatingReplacementCharacter, which adds a U+FFFD to the
+    /// current node without the mode's rules, so the head stays open. (A
+    /// reference to a NUL, which the tokenizer makes U+FFFD and passes on as
+    /// a character, does end it.)
+    static func textEndsHead(_ text: String) -> Bool {
         let decoded = text.contains("&") ? HTMLCharacterReferences.decode(text) : text
         return decoded.utf8.contains { 0x20 != $0 && 0x09 != $0 && 0x0A != $0 && 0x0C != $0 && 0x0D != $0 && 0x00 != $0 }
     }
