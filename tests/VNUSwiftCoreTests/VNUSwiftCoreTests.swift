@@ -5381,6 +5381,727 @@ func emptyOptionsMatchUpstreamWhereItSaysMore(document: String, expected: [(Stri
     #expect(actual == expected.map { "\($0.0): \($0.1)" }.sorted(), "\(document)")
 }
 
+// Case 554591 (A7): an attribute value as upstream's tokenizer hands it to
+// the checkers (see HTMLCharacterReferences): every reference, named or
+// numeric, read as upstream reads it. The expected values are vnu.jar's: each
+// value went into <p id="...">, whose "Bad value" message vnu.jar prints the
+// value in as its checkers saw it; they were picked from 4,000 random values
+// so that every rule has cases (named references with and without their
+// semicolons, the attribute exception, a longer name's prefix, no name, the
+// numeric rules, windows-1252 for C1, the five C1 values kept as they are,
+// &#12; as a space, &#13; kept, U+FFFD for zero, surrogates and anything past
+// U+10FFFF, "No digits" emptying the value so far, two-character and astral
+// names), and literal line breaks and NULs.
+@Test(arguments: [
+    ("x x&#xFFFEg&gtdot;&qq;", "x x\u{fffe}g\u{22d7}&qq;"),
+    ("x x&iuml.&Uarrocir;q&szlig.", "x x\u{ef}.\u{2949}q\u{df}."),
+    ("x x&Ofr;&thornx &#12 ", "x x\u{1d512}&thornx   "),
+    ("x x%20&sect=&ouml5", "x x%20&sect=&ouml5"),
+    ("x x&hyphen;&nsccue;&#1114112;&Egrave=", "x x\u{2010}\u{22e1}\u{fffd}&Egrave="),
+    ("x x&nbs=&quot=\u{e9}", "x x&nbs=&quot=\u{e9}"),
+    ("x x??&eumlZ", "x x??&eumlZ"),
+    ("x x&udhar;&times5&#1;", "x x\u{296e}&times5\u{1}"),
+    ("x x&Eumlit&straightepsilon;", "x x&Eumlit\u{3f5}"),
+    ("x x&Euml&&#x1FFFE&;", "x x\u{cb}&\u{1fffe}&;"),
+    ("x x/&gt&yacute-&amo=", "x x/>\u{fd}-&amo="),
+    ("x x&Aacute&&AMP=&uuml-&#xffffffff;", "x x\u{c1}&&AMP=\u{fc}-\u{fffd}"),
+    ("x x&ampion &#144 &uumlin", "x x&ampion \u{90} &uumlin"),
+    ("x x&notion;&npre;", "x x&notion;\u{2aaf}\u{338}"),
+    ("x x&precapprox;&notinva;&lesssim;", "x x\u{2ab7}\u{2209}\u{2272}"),
+    ("x x&ccirc;&T;", "x x\u{109}&T;"),
+    ("x x&LT_&icirc;&Amp;", "x x<_\u{ee}&Amp;"),
+    ("x x&AMP;&nbs=/", "x x&&nbs=/"),
+    ("x x&escr;?&nltrie;&#11;", "x x\u{212f}?\u{22ec}\u{b}"),
+    ("x x&#55296;&otildeion q", "x x\u{fffd}&otildeion q"),
+    ("x x&EmptySmallSquare;&#129;\u{e9}", "x x\u{25fb}\u{81}\u{e9}"),
+    ("x x?-&#X100000000;", "x x?-\u{fffd}"),
+    ("x x&#x26;", "x x&"),
+    ("x x&#X8D;&Ccedil &AElig=", "x x\u{8d}\u{c7} &AElig="),
+    ("x x&Ocirc_&#X90a&laquo#&T", "x x\u{d4}_\u{90a}\u{ab}#&T"),
+    ("x x &#X20&#xb", "x x  \u{b}"),
+    ("x x%20&zscr;&#Xdfff ", "x x%20\u{1d4cf}\u{fffd} "),
+    ("x x&#143;&iacute.&;", "x x\u{8f}\u{ed}.&;"),
+    ("x x&#143;&aacute&&oS;", "x x\u{8f}\u{e1}&\u{24c8}"),
+    ("x x&Auml_&precapprox;&#X80;q", "x x\u{c4}_\u{2ab7}\u{20ac}q"),
+    ("x x&#x20;&subsub;&#65534 &#X8F ", "x x \u{2ad5}\u{fffe} \u{8f} "),
+    ("x x&#a&#X8f a&acute_", "&#a\u{8f} a\u{b4}_"),
+    ("x x\u{e9}&#x8f;", "x x\u{e9}\u{8f}"),
+    ("x x&lotimes;&Oslash &#12 ", "x x\u{2a34}\u{d8}   "),
+    ("x x&#Xc;&AMPify&xopf;&DScy;", "x x &AMPify\u{1d569}\u{405}"),
+    ("x x&NotVerticalBar;&#12;", "x x\u{2224} "),
+    ("x x?&#xD;", "x x?\r"),
+    ("x xq-&#XD ", "x xq-\r "),
+    ("x x&#13;&#38;&xyz&currenify", "x x\r&&xyz&currenify"),
+    ("x x&#0 &aring=", "x x\u{fffd} &aring="),
+    ("x x&Oslash_&ethZ&#X0g", "x x\u{d8}_&ethZ\u{fffd}g"),
+    ("x x&#X0 &raquoin;=&middot1", "x x\u{fffd} &raquoin;=&middot1"),
+    ("x x&hksearow;&#55296;", "x x\u{2925}\u{fffd}"),
+    ("x x&ecirc#%20&#57344;", "x x\u{ea}#%20\u{e000}"),
+    ("x x&#57343;", "x x\u{fffd}"),
+    ("x x&#1a&#4294967296;", "x x\u{1}a\u{fffd}"),
+    ("x x&#143 \u{e9}&#1114112;&#X1;", "x x\u{8f} \u{e9}\u{fffd}\u{1}"),
+    ("x x&iexclion &#159;&#xffffffff;&nabla;", "x x&iexclion \u{178}\u{fffd}\u{2207}"),
+    ("x x&opar;/&#Xfffe;&#x0026;", "x x\u{29b7}/\u{fffe}&"),
+    ("x x&amo&#Xfffe;", "x x&amo\u{fffe}"),
+    ("x x\u{e9}&#XFFFF;", "x x\u{e9}\u{ffff}"),
+    ("x x&#127;&acircit ", "x x\u{7f}&acircit "),
+    ("x x&Ucircify &#31;-", "x x&Ucircify \u{1f}-"),
+    ("x x&#XB;", "x x\u{b}"),
+    ("x x&gt_&aring1;&#x;&#12 ", "&#x;  "),
+    ("x x&eumlion&#x &#x1a", "&#x \u{1a}"),
+    ("x x&#x;& &#128512;", "&#x;& \u{1f600}"),
+    ("x xb&nvgt;", "x xb>\u{20d2}"),
+    ("x xq&Ogravea&fjlig;&AMP;", "x xq&Ograveafj&"),
+    ("x x&order;&gt &#57343;&race;", "x x\u{2134}> \u{fffd}\u{223d}\u{331}"),
+    ("x x&Pfr;", "x x\u{1d513}"),
+    ("x x&Nscr;&eacute;", "x x\u{1d4a9}\u{e9}"),
+    ("x x &Vfr;", "x x \u{1d519}"),
+    ("x xb&#x0;&T;", "x xb\u{fffd}&T;"),
+    ("x x&lbrksld;&yen5&T;", "x x\u{298f}&yen5&T;"),
+    ("x x&xyz;&T;&Ncaron;=", "x x&xyz;&T;\u{147}="),
+    ("x x&eng;", "x x\u{14b}"),
+    ("x x&shy.", "x x\u{ad}."),
+    ("x x?&#160 &#127g&Egrave;", "x x?\u{a0} \u{7f}g\u{c8}"),
+    ("x x&#159g", "x x\u{178}g"),
+    ("x x&ordf;", "x x\u{aa}"),
+    ("x x&#Xffffg&#X8Da", "x x\u{ffff}g\u{8da}"),
+    ("x x&Ocirc=&ordf#", "x x&Ocirc=\u{aa}#"),
+    ("x x&thornion;&srarr;&aumlx ", "x x&thornion;\u{2192}&aumlx "),
+    ("x x&#X9 &laquoin ", "x x\t &laquoin "),
+    ("x x&thicksim;/q", "x x\u{223c}/q"),
+    ("x x&ssetmn; &swarrow;&section;", "x x\u{2216} \u{2199}&section;"),
+    ("x x?&ogt;%20&#x1Fg", "x x?\u{29c1}%20\u{1f}g"),
+    ("x x&#65535a", "x x\u{ffff}a"),
+    ("x x&Igrave ", "x x\u{cc} "),
+    ("x x&olcross;&sup3_", "x x\u{29bb}\u{b3}_"),
+    ("x x&GTion;&Euml=&reg-&cedil.", "x x&GTion;&Euml=\u{ae}-\u{b8}."),
+    ("x x&amp", "x x&"),
+    ("x x&uacutex;&Egrave&&#160;", "x x&uacutex;\u{c8}&\u{a0}"),
+    ("x x&ap;", "x x\u{2248}"),
+    ("x x&lozf;&vnsup;", "x x\u{29eb}\u{2283}\u{20d2}"),
+    ("x x&boxVl;", "x x\u{2562}"),
+    ("x x&#160", "x x\u{a0}"),
+    ("x x&frac12_&numsp;", "x x\u{bd}_\u{2007}"),
+    ("x x&THORN=&frac34&=%20", "x x&THORN=\u{be}&=%20"),
+    ("x x&ouml=&sube;", "x x&ouml=\u{2286}"),
+    ("x x&aacute&", "x x\u{e1}&"),
+    ("x x&LeftUpVector;", "x x\u{21bf}"),
+    ("x x&DifferentialD;\u{e9}&Oslash &uuml;", "x x\u{2146}\u{e9}\u{d8} \u{fc}"),
+    ("x x&Icirc.", "x x\u{ce}."),
+    ("x x%20&capbrcup;&Uacutea", "x x%20\u{2a49}&Uacutea"),
+    ("x x&aacute1 &copy;", "x x&aacute1 \u{a9}"),
+    ("x xa&amo;&natural;", "x xa&amo;\u{266e}"),
+    ("x x&Atilde", "x x\u{c3}"),
+    ("x x&Acy;&Ntilde-&amo;", "x x\u{410}\u{d1}-&amo;"),
+    ("x x&ograve &Iuml-&Agravein&upharpoonleft;", "x x\u{f2} \u{cf}-&Agravein\u{21bf}"),
+    ("x x&nbs;&racute;&rightthreetimes;", "x x&nbs;\u{155}\u{22cc}"),
+    ("x x&qq=&LT#&#x1fffe", "x x&qq=<#\u{1fffe}"),
+    ("x x&#39;", "x x'"),
+    ("x x&ouml-&ograve;", "x x\u{f6}-\u{f2}"),
+    ("x x&twixt;&AMP1&caret; ", "x x\u{226c}&AMP1\u{2041} "),
+    ("a\rb\r\nc", "a\nb\nc"),
+    ("a\u{0}b", "a\u{fffd}b"),
+] as [(String, String)])
+func characterReferencesDecodeAsUpstreamReadsThem(written: String, decoded: String) {
+    #expect(HTMLCharacterReferences.decodeAttributeValue(written) == decoded, "\(written)")
+}
+
+// Case 554591 (A7): text as upstream's tokenizer hands it on: as an
+// attribute value, but without the attribute exception, so a legacy name
+// before a letter, a digit or "=" is decoded (vnu.jar reports "Named character
+// reference was not terminated by a semicolon." for each, which it gives only
+// for a reference it has decoded), and with a literal NUL left for the
+// callers, which drop it where upstream's tree builder does.
+@Test(arguments: [
+    ("&copy2020", "\u{a9}2020"),
+    ("&notit;", "\u{ac}it;"),
+    ("&amp=1", "&=1"),
+    ("a&#0;b", "a\u{fffd}b"),
+    ("a\r\nb", "a\nb"),
+    ("a\u{0}b", "a\u{0}b"),
+] as [(String, String)])
+func textDecodesAsUpstreamReadsIt(written: String, decoded: String) {
+    #expect(HTMLCharacterReferences.decodeText(written) == decoded, "\(written)")
+}
+
+// Case 554591 (A7): a reference to U+FDD0 to U+FDEF keeps its character (with
+// its error), as vnu.jar's checkers see it. (Those can't be written in a
+// Swift string literal, so they're made here.)
+@Test func unassignedCodePointReferencesAreKept() {
+    let unassigned = String(Character(Unicode.Scalar(0xFDD0)!))
+    #expect(HTMLCharacterReferences.decodeAttributeValue("a&#xFDD0;b") == "a" + unassigned + "b")
+    #expect(HTMLCharacterReferences.decodeAttributeValue("a&#64976b") == "a" + unassigned + "b")
+}
+
+// Case 554591 (A7): the tokenizer's messages about character references,
+// made where upstream's tokenizer reads them (text, RCDATA, attribute values,
+// end tags' attribute values too; not raw text, script, comments or CDATA)
+// and as it makes them, at vnu.jar's places: in text, from the "&" (or just
+// past a reference without its semicolon that ended there) to where the
+// tokenizer stopped; in an attribute value, from the tag's "<", or just past
+// the tag's previous message. The port's pass over the whole source knew
+// five names, gave the text message in attribute values, and missed the
+// attribute exception, so href="/s?a=1&lt=2" got an error and the HTML
+// standard's entity table, where &gt; comes before a combining mark, got
+// false ones. And the Private Use Area warning, once per document, at the
+// first such character, a reference or not. The expected messages are
+// vnu.jar's, with their first and last lines and columns.
+@Test(arguments: [
+    // text-legacy
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p>&copy 2020, AT&T, &amp-x, &notit; &notin; &frac12x</p>\n", [("error", "Named character reference was not terminated by a semicolon. (Or \u{201c}&\u{201d} should have been escaped as \u{201c}&amp;\u{201d}.)", 2, 4, 2, 9), ("error", "Named character reference was not terminated by a semicolon. (Or \u{201c}&\u{201d} should have been escaped as \u{201c}&amp;\u{201d}.)", 2, 22, 2, 26), ("error", "Named character reference was not terminated by a semicolon. (Or \u{201c}&\u{201d} should have been escaped as \u{201c}&amp;\u{201d}.)", 2, 30, 2, 35), ("error", "Named character reference was not terminated by a semicolon. (Or \u{201c}&\u{201d} should have been escaped as \u{201c}&amp;\u{201d}.)", 2, 46, 2, 53)]),
+    // text-unknown
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p>&x; &nop; &xyz; &Amp; &hellip &; &= & a</p>\n", [("error", "\u{201c}&\u{201d} did not start a character reference. (\u{201c}&\u{201d} probably should have been escaped as \u{201c}&amp;\u{201d}.)", 2, 4, 2, 4), ("error", "\u{201c}&\u{201d} did not start a character reference. (\u{201c}&\u{201d} probably should have been escaped as \u{201c}&amp;\u{201d}.)", 2, 8, 2, 8)]),
+    // text-adjacent
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p>&amp&#11;&lt;&gt</p>\n", [("error", "Named character reference was not terminated by a semicolon. (Or \u{201c}&\u{201d} should have been escaped as \u{201c}&amp;\u{201d}.)", 2, 4, 2, 8), ("error", "Character reference expands to a control character (U+000b).", 2, 9, 2, 12), ("error", "Named character reference was not terminated by a semicolon. (Or \u{201c}&\u{201d} should have been escaped as \u{201c}&amp;\u{201d}.)", 2, 17, 2, 20)]),
+    // text-spec-combining
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p>&gt;\u{20d2} &lt;\u{20d2} &nvHarr; &copy;\u{301}</p>\n", []),
+    // text-numeric
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p>&#0; &#128; &#x81; &#xD800; &#x110000; &#4294967296; &#11; &#13; &#x7F;</p>\n", [("error", "Character reference expands to zero.", 2, 4, 2, 7), ("error", "A numeric character reference expanded to the C1 controls range.", 2, 9, 2, 14), ("error", "A numeric character reference expanded to the C1 controls range.", 2, 16, 2, 21), ("error", "Character reference expands to a surrogate.", 2, 23, 2, 30), ("error", "Character reference outside the permissible Unicode range.", 2, 32, 2, 41), ("error", "Character reference outside the permissible Unicode range.", 2, 43, 2, 55), ("error", "Character reference expands to a control character (U+000b).", 2, 57, 2, 61), ("error", "A numeric character reference expanded to carriage return.", 2, 63, 2, 67), ("error", "Character reference expands to a control character (U+007f).", 2, 69, 2, 74)]),
+    // text-noncharacters
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p>&#xFFFE; &#x1FFFE; &#xFDD0; &#xFDEF; &#65 x &#x41g</p>\n", [("error", "Character reference expands to a non-character (U+fffe).", 2, 4, 2, 11), ("error", "Character reference expands to an astral non-character (U+1fffe).", 2, 13, 2, 21), ("error", "Character reference expands to a permanently unassigned code point.", 2, 23, 2, 30), ("error", "Character reference expands to a permanently unassigned code point.", 2, 32, 2, 39), ("error", "Character reference was not terminated by a semicolon.", 2, 41, 2, 45), ("error", "Character reference was not terminated by a semicolon.", 2, 48, 2, 53)]),
+    // text-nodigits
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p>a&#; b&#x; c&#a d&#xg e&#-1;</p>\n", [("error", "No digits after \u{201c}\u{201d}.", 2, 5, 2, 7), ("error", "No digits after \u{201c}\u{201d}.", 2, 10, 2, 13), ("error", "No digits after \u{201c}\u{201d}.", 2, 16, 2, 18), ("error", "No digits after \u{201c}\u{201d}.", 2, 21, 2, 24), ("error", "No digits after \u{201c}\u{201d}.", 2, 27, 2, 29)]),
+    // rcdata
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<textarea>&copy x &#0;</textarea>\n", [("error", "Named character reference was not terminated by a semicolon. (Or \u{201c}&\u{201d} should have been escaped as \u{201c}&amp;\u{201d}.)", 2, 11, 2, 16), ("error", "Character reference expands to zero.", 2, 19, 2, 22)]),
+    // no-references
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<script>var a = \"&#0; &copy\";</script><style>a::after { content: \"&nbsp\" }</style><!-- &#0; &copy --><xmp>&#0;</xmp>\n", []),
+    // foreign-data
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<svg><title>&copy x</title><text>&#0;</text></svg><math><mi>&amp x</mi></math>\n", [("error", "Named character reference was not terminated by a semicolon. (Or \u{201c}&\u{201d} should have been escaped as \u{201c}&amp;\u{201d}.)", 2, 13, 2, 18), ("error", "Character reference expands to zero.", 2, 34, 2, 37), ("error", "Named character reference was not terminated by a semicolon. (Or \u{201c}&\u{201d} should have been escaped as \u{201c}&amp;\u{201d}.)", 2, 61, 2, 65)]),
+    // attr-exception
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<a href=\"/s?a=1&lt=2&copy=3&amp;b=4&notify=5\">x</a>\n", []),
+    // attr-wordpress
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<a href=\"https://example.com/?a=1&#038;b=2#top\">x</a><img src=\"https://secure.gravatar.com/avatar/abc?s=32&#038;d=mm&#038;r=g\" alt=\"\">\n", []),
+    // attr-interpreted
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p title=\"a&amp b\" class=\"x&lt\">x</p>\n", [("error", "The string following \u{201c}&\u{201d} was interpreted as a character reference. (\u{201c}&\u{201d} probably should have been escaped as \u{201c}&amp;\u{201d}.)", 2, 1, 2, 12), ("error", "The string following \u{201c}&\u{201d} was interpreted as a character reference. (\u{201c}&\u{201d} probably should have been escaped as \u{201c}&amp;\u{201d}.)", 2, 13, 2, 28)]),
+    // attr-unquoted
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p title=a&amp>x</p><p title=b&copy class=c>y</p>\n", [("error", "The string following \u{201c}&\u{201d} was interpreted as a character reference. (\u{201c}&\u{201d} probably should have been escaped as \u{201c}&amp;\u{201d}.)", 2, 1, 2, 11), ("error", "The string following \u{201c}&\u{201d} was interpreted as a character reference. (\u{201c}&\u{201d} probably should have been escaped as \u{201c}&amp;\u{201d}.)", 2, 21, 2, 31)]),
+    // attr-did-not-start
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p title=\"&noti; &x; &nop;\">x</p>\n", [("error", "\u{201c}&\u{201d} did not start a character reference. (\u{201c}&\u{201d} probably should have been escaped as \u{201c}&amp;\u{201d}.)", 2, 1, 2, 11), ("error", "\u{201c}&\u{201d} did not start a character reference. (\u{201c}&\u{201d} probably should have been escaped as \u{201c}&amp;\u{201d}.)", 2, 12, 2, 18), ("error", "\u{201c}&\u{201d} did not start a character reference. (\u{201c}&\u{201d} probably should have been escaped as \u{201c}&amp;\u{201d}.)", 2, 19, 2, 22)]),
+    // attr-nodigits
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p title=\"ab&#;cd&#;ef\" class=\"&#x;\">x</p>\n", [("error", "No digits after \u{201c}ab\u{201d}.", 2, 1, 2, 15), ("error", "No digits after \u{201c}&#;cd\u{201d}.", 2, 16, 2, 20), ("error", "No digits after \u{201c}\u{201d}.", 2, 21, 2, 35)]),
+    // attr-places
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p title=\"&#0;\" class=\"&#128;&#1;\"\n   lang=\"en&#11;\">x</p>\n", [("error", "Character reference expands to zero.", 2, 1, 2, 14), ("error", "A numeric character reference expanded to the C1 controls range.", 2, 15, 2, 29), ("error", "Character reference expands to a control character (U+0001).", 2, 30, 2, 33), ("error", "Character reference expands to a control character (U+000b).", 2, 34, 3, 16)]),
+    // attr-single-quoted
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p title='a&#0;' class='&amp'>x</p>\n", [("error", "Character reference expands to zero.", 2, 1, 2, 15), ("error", "The string following \u{201c}&\u{201d} was interpreted as a character reference. (\u{201c}&\u{201d} probably should have been escaped as \u{201c}&amp;\u{201d}.)", 2, 16, 2, 25)]),
+    // end-tag-attribute
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p>x</p title=\"a&#0;\" class=b&amp>\n", [("error", "Character reference expands to zero.", 2, 5, 2, 20), ("error", "The string following \u{201c}&\u{201d} was interpreted as a character reference. (\u{201c}&\u{201d} probably should have been escaped as \u{201c}&amp;\u{201d}.)", 2, 21, 2, 30)]),
+    // attr-numeric
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p title=\"&#xFFFE;&#13;&#xD800;&#x110000;&#5 \">x</p>\n", [("error", "Character reference expands to a non-character (U+fffe).", 2, 1, 2, 18), ("error", "A numeric character reference expanded to carriage return.", 2, 19, 2, 23), ("error", "Character reference expands to a surrogate.", 2, 24, 2, 31), ("error", "Character reference outside the permissible Unicode range.", 2, 32, 2, 41), ("error", "Character reference was not terminated by a semicolon.", 2, 42, 2, 45), ("error", "Character reference expands to a control character (U+0005).", 2, 42, 2, 45)]),
+    // private-use-references
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p>&#xE000; &#xF8FF; &#x10FFFD;</p><p title=\"&#xE001;\">x</p>\n", [("warning", "Document uses the Unicode Private Use Area(s), which should not be used in publicly exchanged documents. (Charmod C073)", 2, 4, 2, 11)]),
+    // private-use-literal-first
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p>\u{e001} &#xE000;</p>\n", [("warning", "Document uses the Unicode Private Use Area(s), which should not be used in publicly exchanged documents. (Charmod C073)", 2, 4, 2, 4)]),
+    // private-use-reference-first
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p>&#xE000; \u{e001}</p>\n", [("warning", "Document uses the Unicode Private Use Area(s), which should not be used in publicly exchanged documents. (Charmod C073)", 2, 4, 2, 11)]),
+    // private-use-in-attribute
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p title=\"&#xF0000;\">x</p>\n", [("warning", "Document uses the Unicode Private Use Area(s), which should not be used in publicly exchanged documents. (Charmod C073)", 2, 1, 2, 19)]),
+    // end-of-file
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p>&amp", [("error", "Named character reference was not terminated by a semicolon. (Or \u{201c}&\u{201d} should have been escaped as \u{201c}&amp;\u{201d}.)", 2, 4, 2, 7)]),
+] as [(String, [(String, String, Int, Int, Int, Int)])])
+func characterReferenceMessagesMatchUpstream(document: String, expected: [(String, String, Int, Int, Int, Int)]) {
+    let actual = checkHTML(document).messages
+        .filter { $0.message.hasPrefix("Named character reference was not terminated") || $0.message.hasPrefix("The string following \u{201c}&\u{201d} was interpreted") || $0.message.hasPrefix("\u{201c}&\u{201d} did not start a character reference") || $0.message.hasPrefix("No digits after \u{201c}") || $0.message.hasPrefix("Character reference") || $0.message.hasPrefix("A numeric character reference expanded to") || $0.message.hasPrefix("Document uses the Unicode Private Use Area") }
+        .map { "\("info" == $0.type ? "warning" : "error"): \($0.message) @ \($0.firstLine ?? $0.lastLine ?? 0):\($0.firstColumn ?? $0.lastColumn ?? 0)-\($0.lastLine ?? 0):\($0.lastColumn ?? 0)" }
+        .sorted()
+    #expect(actual == expected.map { "\($0.0): \($0.1) @ \($0.2):\($0.3)-\($0.4):\($0.5)" }.sorted(), "\(document)")
+}
+
+// Case 554591 (A7): the ID check reads the decoded value, as vnu.jar's does,
+// and prints it so (the support site's CLM page has ids with &nbsp; in
+// them); and the duplicate-ID check, which already decoded, now decodes as
+// upstream does: named references beyond ASCII (caf&eacute;), windows-1252
+// for C1 (&#128; is "€"), a legacy name at the end of a value. The expected
+// messages are vnu.jar's, all its errors and warnings, with its "Bad value"
+// message's reason left off, as the port words it.
+@Test(arguments: [
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p id=\"a&#32;b\">x</p>\n", [("error", "Bad value \u{201c}a b\u{201d} for attribute \u{201c}id\u{201d} on element \u{201c}p\u{201d}.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p id=\"a&#12;b\">x</p>\n", [("error", "Bad value \u{201c}a b\u{201d} for attribute \u{201c}id\u{201d} on element \u{201c}p\u{201d}.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p id=\"Open Strings&nbsp;1\">x</p>\n", [("error", "Bad value \u{201c}Open Strings\u{a0}1\u{201d} for attribute \u{201c}id\u{201d} on element \u{201c}p\u{201d}.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p id=\"caf&eacute;\">x</p><p id=\"caf\u{e9}\">y</p>\n", [("error", "Duplicate ID \u{201c}caf\u{e9}\u{201d}."), ("warning", "The first occurrence of ID \u{201c}caf\u{e9}\u{201d} was here.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p id=\"&#128;\">x</p><p id=\"\u{20ac}\">y</p>\n", [("error", "A numeric character reference expanded to the C1 controls range."), ("error", "Duplicate ID \u{201c}\u{20ac}\u{201d}."), ("warning", "The first occurrence of ID \u{201c}\u{20ac}\u{201d} was here.")]),
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p id=\"a&amp\">x</p><p id=\"a&amp;\">y</p>\n", [("error", "The string following \u{201c}&\u{201d} was interpreted as a character reference. (\u{201c}&\u{201d} probably should have been escaped as \u{201c}&amp;\u{201d}.)"), ("error", "Duplicate ID \u{201c}a&\u{201d}."), ("warning", "The first occurrence of ID \u{201c}a&\u{201d} was here.")]),
+] as [(String, [(String, String)])])
+func decodedIDsMatchUpstream(document: String, expected: [(String, String)]) {
+    let actual = checkHTML(document).messages
+        .filter { "info" != $0.type || "warning" == $0.subType }
+        .map { "\("info" == $0.type ? "warning" : "error"): \($0.message)" }
+        .sorted()
+    #expect(actual == expected.map { "\($0.0): \($0.1)" }.sorted(), "\(document)")
+}
+
+// Case 554591 (A21): URL attribute values as upstream's schema checks them
+// (see HTMLURLAttributeChecker), for every URL attribute the port checks:
+// decoded first (a CR written as is being an LF), and printed decoded, or
+// left out at 200 UTF-16 units or more; common.data.uri's white space alone
+// (space, LF, VT, FF, CR, not a tab) for an a, area or base href, a cite or an
+// itemid, and "Must be non-empty." for the other URL attributes; IriRef's
+// splitScheme, which skips HTML white space and takes no "-", so x-foo:bar
+// isn't an absolute URL; javascript: never checked; feed: and webcal: checked
+// as http:, any other scheme as "x-" and the value, so " tel:…" is bad;
+// galimatias's trimming (U+3000, not U+2007), its astral quirk after trimmed
+// white space, and a tab, LF or CR inside; the fixtures' literals (％,
+// %ef%bc%85, %ef%b7%90) in a host only; a scheme-relative URL's authority, as
+// http's, and a file: URL's host; the characters a path, a query, a fragment
+// or a host can't have; a C1 reference windows-1252 maps (to an en dash, say)
+// passing, and U+0091 and U+FDD0 written as is reported and then
+// judged; itemtype as a list of absolute URLs; formaction on a submit button
+// and on input type=submit or type=image; nothing checked in template
+// contents (where a forbidden code point is still reported), an SVG desc, an
+// annotation-xml with an HTML encoding, or on or under an element the schema
+// rejects or leaves unchecked; and a data: URL's fragment as a warning, after
+// galimatias's errors and before DataUri's "/". Each from both sides. The
+// expected messages are vnu.jar's, all its errors and warnings, with its "Bad
+// value" message's reason left off, as the port words it ("Potentially bad
+// value" as "Bad value", a warning).
+@Test(arguments: [
+    // WordPress's &#038; is an ampersand, not a second number sign
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<a href=\"https://fonts.googleapis.com/css?family=Roboto%3A400%2C700&#038;subset=latin&#038;display=swap#top\">x</a>\n", []),
+    // a reference to a space is a space, printed as such
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<a href=\"/a&#32;b\">x</a>\n", [("error", "Bad value \u{201c}/a b\u{201d} for attribute \u{201c}href\u{201d} on element \u{201c}a\u{201d}.")]),
+    // a reference to an apostrophe in a data: URL
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<a href=\"data:,a&#39;b\">x</a>\n", []),
+    // a reference in the scheme
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<a href=\"&#104;ttp://example.com/\">x</a><input type=url value=\"&#104;ttp://example.com/\">\n", []),
+    // a value of 199 UTF-16 units is printed
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<img src=\"\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}<\" alt=\"\">\n", [("error", "Bad value \u{201c}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}<\u{201d} for attribute \u{201c}src\u{201d} on element \u{201c}img\u{201d}.")]),
+    // a value of 200 UTF-16 units (101 scalars) is left out
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<img src=\"\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}\u{1f600}<b\" alt=\"\">\n", [("error", "Bad value  for attribute \u{201c}src\u{201d} on element \u{201c}img\u{201d}.")]),
+    // a data: URL with a fragment, 200 units long: a warning, without the value
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<a href=\"data:,aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa#b\">x</a>\n", [("warning", "Bad value  for attribute \u{201c}href\u{201d} on element \u{201c}a\u{201d}.")]),
+    // white space alone (space, LF, VT, FF) is a good a href, cite and itemid
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<a href=\"   \">x</a><blockquote cite=\" &#10; \"></blockquote><a href=\"&#12;\">y</a><div itemscope itemtype=\"https://schema.org/Thing\" itemid=\"&#10;\"></div>\n", []),
+    // a vertical tab alone is good too (the pattern has it), and a CR
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<a href=\"&#11;\">x</a><a href=\"&#13;\">y</a>\n", [("error", "A numeric character reference expanded to carriage return."), ("error", "Character reference expands to a control character (U+000b).")]),
+    // but a tab is no part of it
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<a href=\"&#9;\">x</a><q cite=\" &#9; \">y</q>\n", [("error", "Bad value \u{201c}\t\u{201d} for attribute \u{201c}href\u{201d} on element \u{201c}a\u{201d}."), ("error", "Bad value \u{201c} \t \u{201d} for attribute \u{201c}cite\u{201d} on element \u{201c}q\u{201d}.")]),
+    // a non-empty URL's white space is "Must be non-empty."
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<link rel=stylesheet href=\" \"><img src=\"\" alt=\"\">\n", [("error", "Bad value \u{201c} \u{201d} for attribute \u{201c}href\u{201d} on element \u{201c}link\u{201d}."), ("error", "Bad value \u{201c}\u{201d} for attribute \u{201c}src\u{201d} on element \u{201c}img\u{201d}.")]),
+    // unless galimatias trims it and HTML doesn't
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<img src=\"&#x3000;\" alt=\"\"><img src=\"&#11;\" alt=\"\">\n", [("error", "Character reference expands to a control character (U+000b).")]),
+    // an empty value for input type=url, but not white space
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<input type=url value=\"\"><input type=url value=\" \">\n", [("error", "Bad value \u{201c} \u{201d} for attribute \u{201c}value\u{201d} on element \u{201c}input\u{201d}.")]),
+    // splitScheme skips leading HTML white space
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<a href=\" mailto:someone@example.com\">x</a><a href=\"&#10;https://example.com/\">y</a><input type=url value=\" https://example.com/\">\n", []),
+    // a hyphen ends a scheme, so x-foo:bar isn't an absolute URL
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<input type=url value=\"x-foo:bar\"><input type=url value=\"xfoo:bar\"><div itemscope itemtype=\"ms-settings:display\"></div>\n", [("error", "Bad value \u{201c}ms-settings:display\u{201d} for attribute \u{201c}itemtype\u{201d} on element \u{201c}div\u{201d}."), ("error", "Bad value \u{201c}x-foo:bar\u{201d} for attribute \u{201c}value\u{201d} on element \u{201c}input\u{201d}.")]),
+    // galimatias takes the hyphen, though: scheme data
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<a href=\"x-foo:bar baz\">x</a><a href=\"x-foo:bar\">y</a>\n", [("error", "Bad value \u{201c}x-foo:bar baz\u{201d} for attribute \u{201c}href\u{201d} on element \u{201c}a\u{201d}.")]),
+    // javascript: is never checked
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<a href=\"javascript: void(0)\">x</a><a href=\" JavaScript:show(items[0])\">y</a><input type=url value=\"javascript:a b\">\n", []),
+    // unless what's before it isn't HTML white space
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<a href=\"&#x3000;javascript:a b\">x</a>\n", [("error", "Bad value \u{201c}\u{3000}javascript:a b\u{201d} for attribute \u{201c}href\u{201d} on element \u{201c}a\u{201d}.")]),
+    // feed: and webcal: are http: and the rest
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<a href=\"feed://example.com/rss\">x</a><a href=\"webcal://example.com/cal.ics\">y</a>\n", []),
+    // so feed:https://… and webcal:host are bad
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<a href=\"feed:https://example.com/rss\">x</a><a href=\"webcal:example.com\">y</a><a href=\"feed://u@example.com/\">z</a>\n", [("error", "Bad value \u{201c}feed://u@example.com/\u{201d} for attribute \u{201c}href\u{201d} on element \u{201c}a\u{201d}."), ("error", "Bad value \u{201c}feed:https://example.com/rss\u{201d} for attribute \u{201c}href\u{201d} on element \u{201c}a\u{201d}."), ("error", "Bad value \u{201c}webcal:example.com\u{201d} for attribute \u{201c}href\u{201d} on element \u{201c}a\u{201d}.")]),
+    // any other scheme is x- and the value
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<a href=\"tel:+1-555-0100\">x</a><a href=\"foo://\">y</a><a href=\"sms:+15550100?body=hi%20there\">z</a>\n", []),
+    // so a space before it, or in its data, is bad
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<a href=\" tel:+1-555-0100\">x</a><a href=\"tel:+1 555\">y</a><a href=\"mailto:a b@example.com\">z</a>\n", [("error", "Bad value \u{201c} tel:+1-555-0100\u{201d} for attribute \u{201c}href\u{201d} on element \u{201c}a\u{201d}."), ("error", "Bad value \u{201c}mailto:a b@example.com\u{201d} for attribute \u{201c}href\u{201d} on element \u{201c}a\u{201d}."), ("error", "Bad value \u{201c}tel:+1 555\u{201d} for attribute \u{201c}href\u{201d} on element \u{201c}a\u{201d}.")]),
+    // the hierarchical schemes need //
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<a href=\"http:example.com\">a</a><a href=\"https:example.com\">b</a><a href=\"ftp:example.com\">c</a><a href=\"ws:example.com\">d</a><a href=\"wss:example.com\">e</a><a href=\"file:/etc/hosts\">f</a>\n", [("error", "Bad value \u{201c}file:/etc/hosts\u{201d} for attribute \u{201c}href\u{201d} on element \u{201c}a\u{201d}."), ("error", "Bad value \u{201c}ftp:example.com\u{201d} for attribute \u{201c}href\u{201d} on element \u{201c}a\u{201d}."), ("error", "Bad value \u{201c}http:example.com\u{201d} for attribute \u{201c}href\u{201d} on element \u{201c}a\u{201d}."), ("error", "Bad value \u{201c}https:example.com\u{201d} for attribute \u{201c}href\u{201d} on element \u{201c}a\u{201d}."), ("error", "Bad value \u{201c}ws:example.com\u{201d} for attribute \u{201c}href\u{201d} on element \u{201c}a\u{201d}."), ("error", "Bad value \u{201c}wss:example.com\u{201d} for attribute \u{201c}href\u{201d} on element \u{201c}a\u{201d}.")]),
+    // and have them here
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<a href=\"ftp://example.com/\">a</a><a href=\"ws://example.com/\">b</a><a href=\"wss://example.com:8443/\">c</a><a href=\"file:///etc/hosts\">d</a><a href=\"HTTPS://EXAMPLE.COM/\">e</a>\n", []),
+    // file: hosts
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<a href=\"file://u@x/a\">a</a><a href=\"file://x:80/a\">b</a><a href=\"file://localhost/etc\">c</a><a href=\"file://c:/x\">d</a><a href=\"file://[::1]/x\">e</a>\n", [("error", "Bad value \u{201c}file://u@x/a\u{201d} for attribute \u{201c}href\u{201d} on element \u{201c}a\u{201d}."), ("error", "Bad value \u{201c}file://x:80/a\u{201d} for attribute \u{201c}href\u{201d} on element \u{201c}a\u{201d}.")]),
+    // galimatias trims white space at either end
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<a href=\"https://example.com/ \">x</a><a href=\"&#x3000;https://example.com/\">y</a><a href=\"/x&#10;\">z</a>\n", []),
+    // its set: U+3000 goes, U+2007 stays
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<a href=\"&#x3000;http:x\">x</a><a href=\"&#x2007;http:x\">y</a>\n", [("error", "Bad value \u{201c}\u{3000}http:x\u{201d} for attribute \u{201c}href\u{201d} on element \u{201c}a\u{201d}.")]),
+    // trimmed, but not absolute to splitScheme
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<input type=url value=\"&#x3000;https://example.com/\">\n", [("error", "Bad value \u{201c}\u{3000}https://example.com/\u{201d} for attribute \u{201c}value\u{201d} on element \u{201c}input\u{201d}.")]),
+    // a tab, LF or CR inside is bad
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<a href=\"a&#9;b\">x</a><a href=\"a&#10;b\">y</a><a href=\"a&#13;b\">z</a>\n", [("error", "A numeric character reference expanded to carriage return."), ("error", "Bad value \u{201c}a\tb\u{201d} for attribute \u{201c}href\u{201d} on element \u{201c}a\u{201d}."), ("error", "Bad value \u{201c}a\nb\u{201d} for attribute \u{201c}href\u{201d} on element \u{201c}a\u{201d}."), ("error", "Bad value \u{201c}a\u{d}b\u{201d} for attribute \u{201c}href\u{201d} on element \u{201c}a\u{201d}.")]),
+    // a CR written as is is an LF, and a CR LF one LF
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<a href=\"a\u{d}b\">x</a><a href=\"a\u{d}\nb\">y</a><a href=\"/x\u{d}\n\">z</a>\n", [("error", "Bad value \u{201c}a\nb\u{201d} for attribute \u{201c}href\u{201d} on element \u{201c}a\u{201d}."), ("error", "Bad value \u{201c}a\nb\u{201d} for attribute \u{201c}href\u{201d} on element \u{201c}a\u{201d}.")]),
+    // after trimmed white space, an astral first character is split
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<a href=\" &#x1F600;\">x</a><a href=\"&#x1F600;\">y</a>\n", [("error", "Bad value \u{201c} \u{1f600}\u{201d} for attribute \u{201c}href\u{201d} on element \u{201c}a\u{201d}.")]),
+    // the fixtures' literals are bad only in the host
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<a href=\"/sale/50\u{ff05}off\">a</a><a href=\"/a%EF%BC%85b\">b</a><a href=\"/x%ef%b7%90\">c</a><a href=\"?q=\u{ff05}\">d</a>\n", []),
+    // in the host
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<a href=\"http://\u{ff05}\u{ff14}\u{ff11}.com/\">a</a><a href=\"http://a%ef%bc%85b/\">b</a><a href=\"http://%EF%B7%90zyx.com/\">c</a>\n", [("error", "Bad value \u{201c}http://%EF%B7%90zyx.com/\u{201d} for attribute \u{201c}href\u{201d} on element \u{201c}a\u{201d}."), ("error", "Bad value \u{201c}http://a%ef%bc%85b/\u{201d} for attribute \u{201c}href\u{201d} on element \u{201c}a\u{201d}."), ("error", "Bad value \u{201c}http://\u{ff05}\u{ff14}\u{ff11}.com/\u{201d} for attribute \u{201c}href\u{201d} on element \u{201c}a\u{201d}.")]),
+    // a scheme-relative URL's authority, as http's
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<a href=\"//[::1]/\">a</a><a href=\"//example.com:8080/x\">b</a><a href=\"//example.com\">c</a>\n", []),
+    // its credentials, port, empty host and extra slash
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<a href=\"//u@example.com/\">a</a><a href=\"//example.com:99999/\">b</a><a href=\"//\">c</a><a href=\"///x\">d</a><a href=\"//example.com:8a/\">e</a>\n", [("error", "Bad value \u{201c}///x\u{201d} for attribute \u{201c}href\u{201d} on element \u{201c}a\u{201d}."), ("error", "Bad value \u{201c}//example.com:8a/\u{201d} for attribute \u{201c}href\u{201d} on element \u{201c}a\u{201d}."), ("error", "Bad value \u{201c}//example.com:99999/\u{201d} for attribute \u{201c}href\u{201d} on element \u{201c}a\u{201d}."), ("error", "Bad value \u{201c}//u@example.com/\u{201d} for attribute \u{201c}href\u{201d} on element \u{201c}a\u{201d}."), ("error", "Bad value \u{201c}//\u{201d} for attribute \u{201c}href\u{201d} on element \u{201c}a\u{201d}.")]),
+    // characters a path can't have
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<a href=\"/a<b\">a</a>\n<a href='/a\"b'>b</a>\n<a href=\"/a>b\">c</a>\n<a href=\"/a^b\">d</a>\n<a href=\"/a`b\">e</a>\n<a href=\"/a{b\">f</a>\n<a href=\"/a}b\">g</a>\n<a href=\"/a[b\">h</a>\n<a href=\"/a]b\">i</a>\n<a href=\"/a|b\">j</a>\n<a href=\"/a\\b\">k</a>\n", [("error", "Bad value \u{201c}/a\"b\u{201d} for attribute \u{201c}href\u{201d} on element \u{201c}a\u{201d}."), ("error", "Bad value \u{201c}/a<b\u{201d} for attribute \u{201c}href\u{201d} on element \u{201c}a\u{201d}."), ("error", "Bad value \u{201c}/a>b\u{201d} for attribute \u{201c}href\u{201d} on element \u{201c}a\u{201d}."), ("error", "Bad value \u{201c}/a[b\u{201d} for attribute \u{201c}href\u{201d} on element \u{201c}a\u{201d}."), ("error", "Bad value \u{201c}/a\\b\u{201d} for attribute \u{201c}href\u{201d} on element \u{201c}a\u{201d}."), ("error", "Bad value \u{201c}/a]b\u{201d} for attribute \u{201c}href\u{201d} on element \u{201c}a\u{201d}."), ("error", "Bad value \u{201c}/a^b\u{201d} for attribute \u{201c}href\u{201d} on element \u{201c}a\u{201d}."), ("error", "Bad value \u{201c}/a`b\u{201d} for attribute \u{201c}href\u{201d} on element \u{201c}a\u{201d}."), ("error", "Bad value \u{201c}/a{b\u{201d} for attribute \u{201c}href\u{201d} on element \u{201c}a\u{201d}."), ("error", "Bad value \u{201c}/a|b\u{201d} for attribute \u{201c}href\u{201d} on element \u{201c}a\u{201d}."), ("error", "Bad value \u{201c}/a}b\u{201d} for attribute \u{201c}href\u{201d} on element \u{201c}a\u{201d}.")]),
+    // and ones it can
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<a href=\"/a!$&amp;'()*+,;=:@~_.-b\">a</a><a href=\"/\u{e9}/\u{fc}/&#x1F600;\">b</a><a href=\"/a%20b\">c</a><a href=\"/a&#xFDF0;b\">d</a><a href=\"/a&#xFFEE;b\">e</a>\n", []),
+    // in a query and a fragment
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<a href=\"?a[b\">a</a><a href=\"?a]b\">b</a><a href=\"#a#b\">c</a><a href=\"#a[b\">d</a><a href=\"#a{b\">e</a>\n", [("error", "Bad value \u{201c}#a#b\u{201d} for attribute \u{201c}href\u{201d} on element \u{201c}a\u{201d}."), ("error", "Bad value \u{201c}#a[b\u{201d} for attribute \u{201c}href\u{201d} on element \u{201c}a\u{201d}."), ("error", "Bad value \u{201c}#a{b\u{201d} for attribute \u{201c}href\u{201d} on element \u{201c}a\u{201d}."), ("error", "Bad value \u{201c}?a[b\u{201d} for attribute \u{201c}href\u{201d} on element \u{201c}a\u{201d}."), ("error", "Bad value \u{201c}?a]b\u{201d} for attribute \u{201c}href\u{201d} on element \u{201c}a\u{201d}.")]),
+    // which take ? and /
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<a href=\"?a?b/c\">a</a><a href=\"#a?b/c\">b</a><a href=\"?a#b\">c</a>\n", []),
+    // a host takes { } " and `, but not < > ^
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<a href=\"http://a{b}/\">a</a><a href='http://a\"b`/'>b</a><a href=\"http://a<b/\">c</a><a href=\"http://a^b/\">d</a><a href=\"http://a>b/\">e</a>\n", [("error", "Bad value \u{201c}http://a<b/\u{201d} for attribute \u{201c}href\u{201d} on element \u{201c}a\u{201d}."), ("error", "Bad value \u{201c}http://a>b/\u{201d} for attribute \u{201c}href\u{201d} on element \u{201c}a\u{201d}."), ("error", "Bad value \u{201c}http://a^b/\u{201d} for attribute \u{201c}href\u{201d} on element \u{201c}a\u{201d}.")]),
+    // bad percent signs
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<a href=\"/a%zz\">a</a><a href=\"/a%2\">b</a><a href=\"?%\">c</a><a href=\"#%4g\">d</a><a href=\"http://a%zz/\">e</a>\n", [("error", "Bad value \u{201c}#%4g\u{201d} for attribute \u{201c}href\u{201d} on element \u{201c}a\u{201d}."), ("error", "Bad value \u{201c}/a%2\u{201d} for attribute \u{201c}href\u{201d} on element \u{201c}a\u{201d}."), ("error", "Bad value \u{201c}/a%zz\u{201d} for attribute \u{201c}href\u{201d} on element \u{201c}a\u{201d}."), ("error", "Bad value \u{201c}?%\u{201d} for attribute \u{201c}href\u{201d} on element \u{201c}a\u{201d}."), ("error", "Bad value \u{201c}http://a%zz/\u{201d} for attribute \u{201c}href\u{201d} on element \u{201c}a\u{201d}.")]),
+    // controls and noncharacters from references
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<a href=\"/a&#1;b\">a</a><a href=\"/a&#127;b\">b</a><a href=\"/a&#xFDD0;b\">c</a><a href=\"/a&#xFFFD;b\">d</a><a href=\"/a&#x1FFFE;b\">e</a>\n", [("error", "Bad value \u{201c}/a\u{1}b\u{201d} for attribute \u{201c}href\u{201d} on element \u{201c}a\u{201d}."), ("error", "Bad value \u{201c}/a\u{7f}b\u{201d} for attribute \u{201c}href\u{201d} on element \u{201c}a\u{201d}."), ("error", "Bad value \u{201c}/a\(a21Scalar(0xfdd0))b\u{201d} for attribute \u{201c}href\u{201d} on element \u{201c}a\u{201d}."), ("error", "Bad value \u{201c}/a\u{fffd}b\u{201d} for attribute \u{201c}href\u{201d} on element \u{201c}a\u{201d}."), ("error", "Bad value \u{201c}/a\u{1fffe}b\u{201d} for attribute \u{201c}href\u{201d} on element \u{201c}a\u{201d}."), ("error", "Character reference expands to a control character (U+0001)."), ("error", "Character reference expands to a control character (U+007f)."), ("error", "Character reference expands to a permanently unassigned code point."), ("error", "Character reference expands to an astral non-character (U+1fffe).")]),
+    // a C1 reference that windows-1252 maps is fine
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<a href=\"a&#150;b\">x</a><a href=\"a&#x91;b\">y</a>\n", [("error", "A numeric character reference expanded to the C1 controls range."), ("error", "A numeric character reference expanded to the C1 controls range.")]),
+    // one it doesn't map isn't
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<a href=\"a&#x81;b\">x</a><a href=\"a&#x9D;b\">y</a>\n", [("error", "A numeric character reference expanded to the C1 controls range."), ("error", "A numeric character reference expanded to the C1 controls range."), ("error", "Bad value \u{201c}a\u{81}b\u{201d} for attribute \u{201c}href\u{201d} on element \u{201c}a\u{201d}."), ("error", "Bad value \u{201c}a\u{9d}b\u{201d} for attribute \u{201c}href\u{201d} on element \u{201c}a\u{201d}.")]),
+    // U+0091 and U+FDD0 written as is: Forbidden code point, then the URL
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<a href=\"http://example.com/foo\u{91}\">x</a><a href=\"/a\(a21Scalar(0xfdd0))b\">y</a>\n", [("error", "Bad value \u{201c}/a\(a21Scalar(0xfdd0))b\u{201d} for attribute \u{201c}href\u{201d} on element \u{201c}a\u{201d}."), ("error", "Bad value \u{201c}http://example.com/foo\u{91}\u{201d} for attribute \u{201c}href\u{201d} on element \u{201c}a\u{201d}."), ("error", "Forbidden code point U+0091."), ("error", "Forbidden code point U+fdd0.")]),
+    // every URL attribute of the port's
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<base href=\"a b\"><link rel=stylesheet href=\"c d\"><script src=\"e f\"></script>\n<p><img src=\"a b\" alt=\"\"><iframe src=\"c d\"></iframe><embed src=\"e f\"><object data=\"g h\"></object>\n<audio src=\"a b\"></audio><video src=\"c d\" poster=\"e f\"></video><video><source src=\"g h\"><track src=\"i j\"></video>\n", [("error", "Bad value \u{201c}a b\u{201d} for attribute \u{201c}href\u{201d} on element \u{201c}base\u{201d}."), ("error", "Bad value \u{201c}a b\u{201d} for attribute \u{201c}src\u{201d} on element \u{201c}audio\u{201d}."), ("error", "Bad value \u{201c}a b\u{201d} for attribute \u{201c}src\u{201d} on element \u{201c}img\u{201d}."), ("error", "Bad value \u{201c}c d\u{201d} for attribute \u{201c}href\u{201d} on element \u{201c}link\u{201d}."), ("error", "Bad value \u{201c}c d\u{201d} for attribute \u{201c}src\u{201d} on element \u{201c}iframe\u{201d}."), ("error", "Bad value \u{201c}c d\u{201d} for attribute \u{201c}src\u{201d} on element \u{201c}video\u{201d}."), ("error", "Bad value \u{201c}e f\u{201d} for attribute \u{201c}poster\u{201d} on element \u{201c}video\u{201d}."), ("error", "Bad value \u{201c}e f\u{201d} for attribute \u{201c}src\u{201d} on element \u{201c}embed\u{201d}."), ("error", "Bad value \u{201c}e f\u{201d} for attribute \u{201c}src\u{201d} on element \u{201c}script\u{201d}."), ("error", "Bad value \u{201c}g h\u{201d} for attribute \u{201c}data\u{201d} on element \u{201c}object\u{201d}."), ("error", "Bad value \u{201c}g h\u{201d} for attribute \u{201c}src\u{201d} on element \u{201c}source\u{201d}."), ("error", "Bad value \u{201c}i j\u{201d} for attribute \u{201c}src\u{201d} on element \u{201c}track\u{201d}.")]),
+    // and the rest
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<map name=m><area href=\"a b\" alt=x></map><form action=\"c d\"></form><blockquote cite=\"e f\"></blockquote><q cite=\"g h\">x</q><ins cite=\"i j\">y</ins><del cite=\"k l\">z</del><a href=\"m n\">w</a>\n", [("error", "Bad value \u{201c}a b\u{201d} for attribute \u{201c}href\u{201d} on element \u{201c}area\u{201d}."), ("error", "Bad value \u{201c}c d\u{201d} for attribute \u{201c}action\u{201d} on element \u{201c}form\u{201d}."), ("error", "Bad value \u{201c}e f\u{201d} for attribute \u{201c}cite\u{201d} on element \u{201c}blockquote\u{201d}."), ("error", "Bad value \u{201c}g h\u{201d} for attribute \u{201c}cite\u{201d} on element \u{201c}q\u{201d}."), ("error", "Bad value \u{201c}i j\u{201d} for attribute \u{201c}cite\u{201d} on element \u{201c}ins\u{201d}."), ("error", "Bad value \u{201c}k l\u{201d} for attribute \u{201c}cite\u{201d} on element \u{201c}del\u{201d}."), ("error", "Bad value \u{201c}m n\u{201d} for attribute \u{201c}href\u{201d} on element \u{201c}a\u{201d}.")]),
+    // itemid, on any element
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p itemid=\"x y\">q</p><div itemscope itemtype=\"https://schema.org/Thing\" itemid=\"urn:isbn:0-306-40615-2\"></div>\n", [("error", "Bad value \u{201c}x y\u{201d} for attribute \u{201c}itemid\u{201d} on element \u{201c}p\u{201d}."), ("error", "The \u{201c}itemid\u{201d} attribute must not be specified on elements that do not have both an \u{201c}itemscope\u{201d} attribute and an \u{201c}itemtype\u{201d} attribute specified.")]),
+    // a forbidden code point in template contents is still reported, the URL not
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<template><a href=\"/a\u{91}b\">x</a></template>\n", [("error", "Forbidden code point U+0091.")]),
+    // itemtype is a list of absolute URLs
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<div itemscope itemtype=\"https://schema.org/LocalBusiness https://schema.org/Restaurant\"></div><div itemscope itemtype=\"https://schema.org/Thing&#12;https://schema.org/Place\"></div>\n", []),
+    // so an empty one, or one with a relative URL in it, is bad
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<div itemscope itemtype=\"\"></div><div itemscope itemtype=\" \"></div><div itemscope itemtype=\"https://schema.org/Thing a\"></div>\n", [("error", "Bad value \u{201c} \u{201d} for attribute \u{201c}itemtype\u{201d} on element \u{201c}div\u{201d}."), ("error", "Bad value \u{201c}https://schema.org/Thing a\u{201d} for attribute \u{201c}itemtype\u{201d} on element \u{201c}div\u{201d}."), ("error", "Bad value \u{201c}\u{201d} for attribute \u{201c}itemtype\u{201d} on element \u{201c}div\u{201d}.")]),
+    // formaction on a submit button
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<button formaction=\"a b\">a</button><button type=submit formaction=\"c d\">b</button><button type=SUBMIT formaction=\"e f\">c</button>\n", [("error", "Bad value \u{201c}a b\u{201d} for attribute \u{201c}formaction\u{201d} on element \u{201c}button\u{201d}."), ("error", "Bad value \u{201c}c d\u{201d} for attribute \u{201c}formaction\u{201d} on element \u{201c}button\u{201d}."), ("error", "Bad value \u{201c}e f\u{201d} for attribute \u{201c}formaction\u{201d} on element \u{201c}button\u{201d}.")]),
+    // on input type=submit and type=image
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<input type=submit formaction=\"a b\"><input type=image alt=x formaction=\"c d\"><input type=IMAGE alt=x src=\"e f\">\n", [("error", "Bad value \u{201c}a b\u{201d} for attribute \u{201c}formaction\u{201d} on element \u{201c}input\u{201d}."), ("error", "Bad value \u{201c}c d\u{201d} for attribute \u{201c}formaction\u{201d} on element \u{201c}input\u{201d}."), ("error", "Bad value \u{201c}e f\u{201d} for attribute \u{201c}src\u{201d} on element \u{201c}input\u{201d}.")]),
+    // template contents, nested templates too
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<template><a href=\"a b\">x</a><img src=\"\" alt=\"\"><template><q cite=\"c d\">y</q></template></template>\n", []),
+    // an SVG desc
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<svg><desc><a href=\"a b\">x</a></desc></svg>\n", []),
+    // a MathML annotation-xml with an HTML encoding
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<math><semantics><mi>x</mi><annotation-xml encoding=\"text/html\"><a href=\"a b\">x</a></annotation-xml></semantics></math><math><semantics><mi>y</mi><annotation-xml encoding=\"application/xhtml+xml\"><img src=\"\" alt=\"\"></annotation-xml></semantics></math>\n", []),
+    // but an SVG foreignObject or title is checked
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<svg><foreignObject><a href=\"a b\">x</a></foreignObject></svg><svg><title><a href=\"c d\">y</a></title></svg>\n", [("error", "Bad value \u{201c}a b\u{201d} for attribute \u{201c}href\u{201d} on element \u{201c}a\u{201d}."), ("error", "Bad value \u{201c}c d\u{201d} for attribute \u{201c}href\u{201d} on element \u{201c}a\u{201d}.")]),
+    // inside a rejected element, and again after it
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<span><div><a href=\"a b\">x</a></div></span><a href=\"c d\">y</a>\n", [("error", "Bad value \u{201c}c d\u{201d} for attribute \u{201c}href\u{201d} on element \u{201c}a\u{201d}."), ("error", "Element \u{201c}div\u{201d} not allowed as child of \u{201c}span\u{201d} in this context.")]),
+    // an HTML element a MathML token element rejects
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<math><mi><a href=\"a b\">x</a></mi></math>\n", [("error", "Element \u{201c}a\u{201d} not allowed as child of \u{201c}mi\u{201d} in this context.")]),
+    // on or inside an obsolete element the legacy schema takes anything in, or an unknown one
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<center itemid=\"a b\"><a href=\"c d\">x</a></center><foo itemid=\"e f\">y</foo>\n", [("error", "Element \u{201c}foo\u{201d} not allowed as child of \u{201c}body\u{201d} in this context."), ("error", "The \u{201c}center\u{201d} element is obsolete. Use CSS instead."), ("error", "The \u{201c}foo\u{201d} element is a completely-unknown element that is not allowed anywhere in any HTML content."), ("error", "The \u{201c}itemid\u{201d} attribute must not be specified on elements that do not have both an \u{201c}itemscope\u{201d} attribute and an \u{201c}itemtype\u{201d} attribute specified."), ("error", "The \u{201c}itemid\u{201d} attribute must not be specified on elements that do not have both an \u{201c}itemscope\u{201d} attribute and an \u{201c}itemtype\u{201d} attribute specified.")]),
+    // an element a figure rejects
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<figure><p>x</p><figcaption>c</figcaption><div><a href=\"a b\">x</a></div></figure>\n", [("error", "Element \u{201c}div\u{201d} not allowed as child of \u{201c}figure\u{201d} in this context.")]),
+    // a data: URL with a fragment is a warning
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<a href=\"data:text/plain,a#b\">a</a><a href=\" data:,x#y\">b</a><input type=url value=\"data:,a#b\"><div itemscope itemtype=\"data:,a#b\"></div>\n", [("warning", "Bad value \u{201c} data:,x#y\u{201d} for attribute \u{201c}href\u{201d} on element \u{201c}a\u{201d}."), ("warning", "Bad value \u{201c}data:,a#b\u{201d} for attribute \u{201c}itemtype\u{201d} on element \u{201c}div\u{201d}."), ("warning", "Bad value \u{201c}data:,a#b\u{201d} for attribute \u{201c}value\u{201d} on element \u{201c}input\u{201d}."), ("warning", "Bad value \u{201c}data:text/plain,a#b\u{201d} for attribute \u{201c}href\u{201d} on element \u{201c}a\u{201d}.")]),
+    // but galimatias's errors come first, and DataUri's after
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<a href=\"data:,a#b#c\">a</a><a href=\"data:,a b#c\">b</a><a href=\"data:/x\">c</a><a href=\"data:/x#y\">d</a>\n", [("error", "Bad value \u{201c}data:,a b#c\u{201d} for attribute \u{201c}href\u{201d} on element \u{201c}a\u{201d}."), ("error", "Bad value \u{201c}data:,a#b#c\u{201d} for attribute \u{201c}href\u{201d} on element \u{201c}a\u{201d}."), ("error", "Bad value \u{201c}data:/x\u{201d} for attribute \u{201c}href\u{201d} on element \u{201c}a\u{201d}."), ("warning", "Bad value \u{201c}data:/x#y\u{201d} for attribute \u{201c}href\u{201d} on element \u{201c}a\u{201d}.")]),
+    // and a good one
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<a href=\"data:text/html,%3Ch1%3EHi%3C/h1%3E\">a</a><img src=\"data:image/png;base64,iVBORw0KGgo=\" alt=\"\"><a href=\"&#x3000;data:,a#b\">c</a>\n", []),
+] as [(String, [(String, String)])])
+func urlAttributesMatchUpstream(document: String, expected: [(String, String)]) {
+    let actual = checkHTML(document).messages
+        .filter { "info" != $0.type || "warning" == $0.subType }
+        .map { "\("info" == $0.type ? "warning" : "error"): \($0.message)" }
+        .sorted()
+    #expect(actual == expected.map { "\($0.0): \($0.1)" }.sorted(), "\(document)")
+}
+
+/// Case 554591 (A21): a code point as a string, for the noncharacters from
+/// U+FDD0 to U+FDEF in the documents above, which a Swift string literal can't
+/// spell as an escape.
+private func a21Scalar(_ value: UInt32) -> String {
+    String(Unicode.Scalar(value)!)
+}
+
+// Case 554591 (A21): URL attribute values where vnu.jar also reports
+// something the port doesn't yet (an old-IE warning for an attribute without
+// a value, "Attribute “formaction” not allowed …" or another attribute the
+// schema doesn't allow there, a bad button type, an annotation-xml encoding
+// in the wrong case, a NUL, a forbidden code point other than U+0091 and
+// U+FDD0, the XML 1.0 warning for a form feed), or the port reports
+// something vnu.jar doesn't (the tokenizer's reading of a quoted value that
+// starts with a ZWNJ or a ZWJ), so only the URL messages are compared, with
+// vnu.jar's answers: an attribute written without a value is the empty
+// string; formaction isn't checked on a reset or button button, and is on one
+// with any other type; an annotation-xml's HTML encoding counts in any case,
+// and without one its a is MathML; a form feed alone is white space to
+// common.data.uri; a NUL is U+FFFD; a C1 control written as is is bad; a form
+// feed written as is doesn't split an itemtype list; a value the tokenizer
+// misreads with its quotes is judged without them (see
+// HTMLURLAttributeChecker.valueAsUpstreamSeesIt); and an attribute the schema
+// doesn't allow there isn't checked. From the A21 review: a form feed in a
+// host is fine; an IDNA error about a hyphen hides U+FDD0's; and there's no
+// Bad value on or in an element a later checker rejects, nor for an attribute
+// it doesn't allow there (see HTMLValidator.dropURLMessagesTheSchemaWouldNotGive).
+// From A21's second review: nor in such an element closed implicitly, nor for
+// a value of 200 UTF-16 units or more; a body link with an itemprop takes an
+// empty or white-space href, unless an attribute only the other link patterns
+// take comes before it (see linkPhrasingPatternTakesHref); a picture in a
+// noscript in the head is checked, as upstream's parser puts it in the body;
+// and the hyphen rule reads the host without its port, an xn-- label decoded,
+// and labels divided where ICU divides them.
+@Test(arguments: [
+    // an attribute written without a value is empty (vnu.jar also warns about it, for old IE)
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<img src alt=\"\"><a href>x</a><form action></form>\n", [("error", "Bad value \u{201c}\u{201d} for attribute \u{201c}action\u{201d} on element \u{201c}form\u{201d}."), ("error", "Bad value \u{201c}\u{201d} for attribute \u{201c}src\u{201d} on element \u{201c}img\u{201d}.")]),
+    // formaction on a reset or button button isn't allowed (vnu.jar says so), so isn't checked
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<button type=reset formaction=\"a b\">a</button><button type=Button formaction=\"c d\">b</button>\n", []),
+    // an invalid type is still a submit button (vnu.jar also reports the type)
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<button type=foo formaction=\"a b\">a</button><button type=\"\" formaction=\"c d\">b</button>\n", [("error", "Bad value \u{201c}a b\u{201d} for attribute \u{201c}formaction\u{201d} on element \u{201c}button\u{201d}."), ("error", "Bad value \u{201c}c d\u{201d} for attribute \u{201c}formaction\u{201d} on element \u{201c}button\u{201d}.")]),
+    // an annotation-xml's HTML encoding in any case (vnu.jar also reports the encoding's case)
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<math><semantics><mi>x</mi><annotation-xml encoding=\"Text/HTML\"><a href=\"a b\">x</a></annotation-xml></semantics></math>\n", []),
+    // a form feed written as is, alone, is white space to common.data.uri (vnu.jar warns about XML 1.0)
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<a href=\"\u{c}\">x</a><q cite=\" \u{c} \">y</q>\n", []),
+    // a NUL written as is is U+FFFD (vnu.jar also reports the NUL)
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<a href=\"/a\u{0}b\">x</a>\n", [("error", "Bad value \u{201c}/a\u{fffd}b\u{201d} for attribute \u{201c}href\u{201d} on element \u{201c}a\u{201d}.")]),
+    // an annotation-xml without an HTML encoding: the a is MathML
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<math><semantics><mi>x</mi><annotation-xml><a href=\"a b\">x</a></annotation-xml></semantics></math>\n", []),
+    // a literal U+0081, which the port doesn't report as a forbidden code point yet
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<a href=\"/a\u{81}b\">x</a>\n", [("error", "Bad value \u{201c}/a\u{81}b\u{201d} for attribute \u{201c}href\u{201d} on element \u{201c}a\u{201d}.")]),
+    // a form feed written as is in itemtype doesn't split the list (vnu.jar warns about XML 1.0)
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<div itemscope itemtype=\"https://schema.org/Thing\u{c}https://schema.org/Place\"></div>\n", [("error", "Bad value \u{201c}https://schema.org/Thing\u{c}https://schema.org/Place\u{201d} for attribute \u{201c}itemtype\u{201d} on element \u{201c}div\u{201d}.")]),
+    // the tokenizer's reading of a quoted value starting with a ZWNJ
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<img src=\"\u{200c}x\" alt=z><img src=\"\u{200d}\u{1f600}\" alt=z>\n", []),
+    // an attribute the schema doesn't allow there isn't checked
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<input type=text formaction=\"a b\"><input type=hidden src=\"a b\">\n", []),
+    // a form feed in a host is fine (galimatias rejects only tab and line breaks there; vnu.jar warns about XML 1.0)
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<a href=\"http://a\u{c}b/\">x</a><a href=\"https://www.example.com\u{c}/about\">y</a>\n", []),
+    // galimatias stops at an IDNA error about a hyphen, before the disallowed U+FDD0
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<a href=\"http://-a%ef%b7%90b/\">x</a><a href=\"http://ab--%ef%b7%90/\">y</a><a href=\"http://a%ef%b7%90b/\">z</a><a href=\"http://a-b%ef%b7%90/\">w</a>\n", [("error", "Bad value \u{201c}http://a%ef%b7%90b/\u{201d} for attribute \u{201c}href\u{201d} on element \u{201c}a\u{201d}."), ("error", "Bad value \u{201c}http://a-b%ef%b7%90/\u{201d} for attribute \u{201c}href\u{201d} on element \u{201c}a\u{201d}.")]),
+    // no Bad value in an element a later checker rejects (vnu.jar: the a isn't allowed in a dl)
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<dl><a href=\"a b\">x</a><dt>t</dt><dd>d</dd></dl>\n", []),
+    // nor for an attribute a later checker doesn't allow there (a picture's source's src)
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<picture><source src=\"a b\" type=\"image/webp\"><img src=\"x.jpg\" alt=\"\"></picture>\n", []),
+    // nor in a second summary
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<details><summary>a</summary><summary><a href=\"a b\">x</a></summary></details>\n", []),
+    // nothing in a rejected element closed by its parent's end tag
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<dl><p><a href=\"a b\">x</a></dl>\n", []),
+    // a void element in it
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<dl><p><img src=\"a b\" alt=\"\"></dl>\n", []),
+    // a span
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<dl><span><a href=\"a b\">x</a></dl>\n", []),
+    // closed by an optional end tag
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<dl><p><a href=\"a b\">x</a><p>y</p></dl>\n", []),
+    // in a second summary, implicitly closed
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<details><summary>a</summary><summary><span><a href=\"a b\">x</a></summary></details>\n", []),
+    // but a p in a dd is checked
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<dl><dt>t<dd><p><a href=\"a b\">x</a></dd></dl>\n", [("error", "Bad value \u{201c}a b\u{201d} for attribute \u{201c}href\u{201d} on element \u{201c}a\u{201d}.")]),
+    // a value of 200 units or more in one
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<dl><a href=\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx y\">x</a></dl>\n", []),
+    // and for an attribute a later checker rejects
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<picture><source src=\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx y\" srcset=x.png><img src=x.png alt=\"\"></picture>\n", []),
+    // but checked elsewhere
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p><a href=\"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx y\">x</a></p>\n", [("error", "Bad value  for attribute \u{201c}href\u{201d} on element \u{201c}a\u{201d}.")]),
+    // a body link with an itemprop takes an empty href
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<div itemscope itemtype=\"https://schema.org/Offer\"><link itemprop=\"availability\" href=\"\"></div>\n", []),
+    // or white space
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<div itemscope><link itemprop=url href=\" \"><link itemprop=url href=\"&#10;\"><link itemprop=url href></div>\n", []),
+    // but not a tab
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<div itemscope><link itemprop=url href=\"&#9;\"></div>\n", [("error", "Bad value \u{201c}\t\u{201d} for attribute \u{201c}href\u{201d} on element \u{201c}link\u{201d}.")]),
+    // nor after an attribute only the other link patterns take
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<div itemscope><link itemprop=url as=style href=\"\"><link itemprop=url property=x href=\"\"></div>\n", [("error", "Bad value \u{201c}\u{201d} for attribute \u{201c}href\u{201d} on element \u{201c}link\u{201d}."), ("error", "Bad value \u{201c}\u{201d} for attribute \u{201c}href\u{201d} on element \u{201c}link\u{201d}.")]),
+    // nor after a rel before the itemprop
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<div itemscope><link rel=author itemprop=url href=\"\"></div>\n", [("error", "Bad value \u{201c}\u{201d} for attribute \u{201c}href\u{201d} on element \u{201c}link\u{201d}.")]),
+    // but a rel after it changes nothing, nor a role
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<div itemscope><link itemprop=url rel=author href=\"\"><link itemprop=url role=button href=\"\"></div>\n", []),
+    // in the head, an href must not be empty
+    ("<!doctype html><html lang=en><head><meta charset=utf-8><title>T</title>\n<link itemprop=url href=\"\"></head><body><p>x</p></body></html>\n", [("error", "Bad value \u{201c}\u{201d} for attribute \u{201c}href\u{201d} on element \u{201c}link\u{201d}.")]),
+    // a picture in a noscript in the head is checked
+    ("<!doctype html><html lang=en><head><meta charset=utf-8><title>T</title>\n<noscript><picture><img src=\"a b\" alt=\"\"></picture></noscript></head><body><p>x</p></body></html>\n", [("error", "Bad value \u{201c}a b\u{201d} for attribute \u{201c}src\u{201d} on element \u{201c}img\u{201d}.")]),
+    // the hyphen rule: not the port
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<a href=\"http://ab%ef%b7%90.c-:80/\">x</a><a href=\"//ab%ef%b7%90.c-:8080/x.png\">y</a>\n", []),
+    // an xn-- label is judged decoded
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<a href=\"http://xn--abc.%ef%b7%90/\">x</a><a href=\"http://xn--bcher-kva.example%ef%b7%90/\">y</a><a href=\"http://xn--.ab%ef%b7%90/\">z</a><a href=\"http://xn--abc-.ab%ef%b7%90/\">w</a><a href=\"http://xn---ber-0ra.ab%ef%b7%90/\">v</a><a href=\"http://xn--ber--zra.ab%ef%b7%90/\">u</a>\n", [("error", "Bad value \u{201c}http://xn--.ab%ef%b7%90/\u{201d} for attribute \u{201c}href\u{201d} on element \u{201c}a\u{201d}."), ("error", "Bad value \u{201c}http://xn--abc-.ab%ef%b7%90/\u{201d} for attribute \u{201c}href\u{201d} on element \u{201c}a\u{201d}."), ("error", "Bad value \u{201c}http://xn--abc.%ef%b7%90/\u{201d} for attribute \u{201c}href\u{201d} on element \u{201c}a\u{201d}."), ("error", "Bad value \u{201c}http://xn--bcher-kva.example%ef%b7%90/\u{201d} for attribute \u{201c}href\u{201d} on element \u{201c}a\u{201d}.")]),
+    // labels divided at %2e and U+3002
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<a href=\"http://ab%2ecd--e%ef%b7%90/\">x</a><a href=\"http://cd-\u{3002}ab%ef%b7%90/\">y</a>\n", []),
+    // an xn-- label of two characters past ASCII ("üö--a", "aüö-")
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<a href=\"http://xn----a-rna3a.ab%ef%b7%90/\">x</a><a href=\"http://xn--a--fkax.ab%ef%b7%90/\">y</a>\n", []),
+] as [(String, [(String, String)])])
+func urlAttributesMatchUpstreamWhereItSaysMore(document: String, expected: [(String, String)]) {
+    let actual = checkHTML(document).messages
+        .filter { ("info" != $0.type || "warning" == $0.subType) && isURLAttributeMessage($0.message) }
+        .map { "\("info" == $0.type ? "warning" : "error"): \($0.message)" }
+        .sorted()
+    #expect(actual == expected.map { "\($0.0): \($0.1)" }.sorted(), "\(document)")
+}
+
+/// Case 554591 (A21): whether a message is a URL attribute's bad value (see
+/// urlAttributesMatchUpstreamWhereItSaysMore): HTMLURLAttributeChecker's
+/// attributes. (No other check in those documents gives a Bad value for a
+/// "value" attribute.)
+private func isURLAttributeMessage(_ message: String) -> Bool {
+    message.hasPrefix("Bad value ") && ["href", "src", "cite", "action", "formaction", "data", "poster", "value", "itemid", "itemtype"].contains { message.contains("for attribute \u{201c}\($0)\u{201d}") }
+}
+
+// Case 554591 (A7's review): the tokenizer's messages as vnu.jar gives them,
+// in its order, which TestRunner's first-error comparison and BBEdit's results
+// list both see: the references' messages, the code points' (U+000B, the
+// astral noncharacters, the literal Private Use Area warning), "End tag had
+// attributes." and an unquoted value's messages about its characters, each
+// at vnu.jar's place but for the last, which keep the port's older places
+// (0s here). The code points' messages went in front of all the others, each
+// placed on its character; an unquoted value's characters' messages came
+// before its references'; "End tag had attributes." before the end tag's
+// references, at its first attribute, and at the end of the file too; and a
+// value's messages started at the tag's "<" after a duplicate attribute, a
+// code point or a text reference that ran into the "<", and on the LF of a
+// CR LF. And from the fuzz that followed: in text, a carriage return is noted
+// (upstream's tokenizer hands on what it has there), but not one the tree
+// builder ignores or drops, nor the text an "&" hands on that it drops; and a
+// code point that ends a name comes before the message placed at its "&".
+// The expected messages are vnu.jar's.
+@Test(arguments: [
+    // a literal Private Use Area character in text: from the run's start
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p>ab\u{e000}cd</p>\n", [("warning", "Document uses the Unicode Private Use Area(s), which should not be used in publicly exchanged documents. (Charmod C073)", 2, 4, 2, 6)]),
+    // in a value: from the tag's "<"
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p title=\"ab\u{e000}\">x</p>\n", [("warning", "Document uses the Unicode Private Use Area(s), which should not be used in publicly exchanged documents. (Charmod C073)", 2, 1, 2, 13)]),
+    // in a comment
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<!--a\u{e000}b-->\n", [("warning", "Document uses the Unicode Private Use Area(s), which should not be used in publicly exchanged documents. (Charmod C073)", 2, 1, 2, 6)]),
+    // in a script
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<script>var a = \"\u{e000}\";</script>\n", [("warning", "Document uses the Unicode Private Use Area(s), which should not be used in publicly exchanged documents. (Charmod C073)", 2, 9, 2, 18)]),
+    // an astral one ends on its low surrogate
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p>a\u{f0000}b</p>\n", [("warning", "Document uses the Unicode Private Use Area(s), which should not be used in publicly exchanged documents. (Charmod C073)", 2, 4, 2, 6)]),
+    // in reading order, after an earlier message
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p>&#1;</p><p>\u{e000}</p>\n", [("error", "Character reference expands to a control character (U+0001).", 2, 4, 2, 7), ("warning", "Document uses the Unicode Private Use Area(s), which should not be used in publicly exchanged documents. (Charmod C073)", 2, 15, 2, 15)]),
+    // a literal that ends a reference is read first
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p>&#xE000\u{f8ff}</p>\n", [("warning", "Document uses the Unicode Private Use Area(s), which should not be used in publicly exchanged documents. (Charmod C073)", 2, 4, 2, 11), ("error", "Character reference was not terminated by a semicolon.", 2, 4, 2, 11)]),
+    // an astral one, after the reference
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p>&#xE000\u{f0001}</p>\n", [("error", "Character reference was not terminated by a semicolon.", 2, 4, 2, 11), ("warning", "Document uses the Unicode Private Use Area(s), which should not be used in publicly exchanged documents. (Charmod C073)", 2, 4, 2, 11)]),
+    // noted for a reference after it in the tag
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p title=\"x\u{e000}\" class=\"&#1;\">x</p>\n", [("warning", "Document uses the Unicode Private Use Area(s), which should not be used in publicly exchanged documents. (Charmod C073)", 2, 1, 2, 12), ("error", "Character reference expands to a control character (U+0001).", 2, 13, 2, 25)]),
+    // a reference's message, then the literal's warning
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p>&amp x \u{e000}</p>\n", [("error", "Named character reference was not terminated by a semicolon. (Or \u{201c}&\u{201d} should have been escaped as \u{201c}&amp;\u{201d}.)", 2, 4, 2, 8), ("warning", "Document uses the Unicode Private Use Area(s), which should not be used in publicly exchanged documents. (Charmod C073)", 2, 9, 2, 11)]),
+    // from the run's start, lines before
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<div>\n  hello \u{e000} world</div>\n", [("warning", "Document uses the Unicode Private Use Area(s), which should not be used in publicly exchanged documents. (Charmod C073)", 2, 6, 3, 9)]),
+    // U+000B, noted for a reference after it
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p title=\"\u{b}x&#1;\">a</p>\n", [("error", "Forbidden code point U+000b.", 2, 1, 2, 11), ("error", "Character reference expands to a control character (U+0001).", 2, 12, 2, 16)]),
+    // an astral noncharacter, too
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p title=\"\u{1fffe}x&#1;\">a</p>\n", [("error", "Astral non-character.", 2, 1, 2, 12), ("error", "Character reference expands to a control character (U+0001).", 2, 13, 2, 17)]),
+    // U+000B in text, from the run's start
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p>a\u{b}b</p>\n", [("error", "Forbidden code point U+000b.", 2, 4, 2, 5)]),
+    // in an attribute name, before a value's reference
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p a\u{b}b=\"&#1;\">x</p>\n", [("error", "Forbidden code point U+000b.", 2, 1, 2, 5), ("error", "Character reference expands to a control character (U+0001).", 2, 6, 2, 12)]),
+    // in bogus markup
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<?pi \u{b}><p>x</p>\n", [("error", "Forbidden code point U+000b.", 2, 3, 2, 6)]),
+    // a reference in the text that ran into the tag's "<"
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p>AT&T<b title=\"&#1;\">x</b></p>\n", [("error", "Character reference expands to a control character (U+0001).", 2, 9, 2, 21)]),
+    // and into an end tag's
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p>&copy</p title=\"&#1;\">\n", [("error", "Named character reference was not terminated by a semicolon. (Or \u{201c}&\u{201d} should have been escaped as \u{201c}&amp;\u{201d}.)", 2, 4, 2, 9), ("error", "Character reference expands to a control character (U+0001).", 2, 10, 2, 23), ("error", "End tag had attributes.", 2, 24, 2, 25)]),
+    // and from RCDATA
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<textarea>A&T</textarea title=\"&#1;\">\n", [("error", "Character reference expands to a control character (U+0001).", 2, 15, 2, 35), ("error", "End tag had attributes.", 2, 36, 2, 37)]),
+    // a CR LF after a message: the next line's start
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\r\n<p title=\"&#1\r\n&#1;\">x</p>\r\n", [("error", "Character reference was not terminated by a semicolon.", 2, 1, 2, 14), ("error", "Character reference expands to a control character (U+0001).", 2, 1, 2, 14), ("error", "Character reference expands to a control character (U+0001).", 3, 1, 3, 4)]),
+    // and in the next attribute
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\r\n<p title=\"&#1\r\n\" class=\"&#2;\">x</p>\r\n", [("error", "Character reference was not terminated by a semicolon.", 2, 1, 2, 14), ("error", "Character reference expands to a control character (U+0001).", 2, 1, 2, 14), ("error", "Character reference expands to a control character (U+0002).", 3, 1, 3, 13)]),
+    // an unquoted value's characters in reading order
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p title=&#1;\"x>y</p>\n", [("error", "Character reference expands to a control character (U+0001).", 2, 1, 2, 13), ("error", "\u{201c}\"\u{201d} in an unquoted attribute value. Probable causes: Attributes running together or a URL query string in an unquoted attribute value.", 0, 0, 0, 0)]),
+    // the reference's messages before the character's that ends it
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p title=&#1\"x>y</p>\n", [("error", "Character reference was not terminated by a semicolon.", 2, 1, 2, 13), ("error", "Character reference expands to a control character (U+0001).", 2, 1, 2, 13), ("error", "\u{201c}\"\u{201d} in an unquoted attribute value. Probable causes: Attributes running together or a URL query string in an unquoted attribute value.", 0, 0, 0, 0)]),
+    // a warning, then the quote
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p title=&#xE000;\"x>y</p>\n", [("warning", "Document uses the Unicode Private Use Area(s), which should not be used in publicly exchanged documents. (Charmod C073)", 2, 1, 2, 17), ("error", "\u{201c}\"\u{201d} in an unquoted attribute value. Probable causes: Attributes running together or a URL query string in an unquoted attribute value.", 0, 0, 0, 0)]),
+    // several
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p title=&#1;\"&#2;\"x>y</p>\n", [("error", "Character reference expands to a control character (U+0001).", 2, 1, 2, 13), ("error", "\u{201c}\"\u{201d} in an unquoted attribute value. Probable causes: Attributes running together or a URL query string in an unquoted attribute value.", 0, 0, 0, 0), ("error", "Character reference expands to a control character (U+0002).", 2, 15, 2, 18), ("error", "\u{201c}\"\u{201d} in an unquoted attribute value. Probable causes: Attributes running together or a URL query string in an unquoted attribute value.", 0, 0, 0, 0)]),
+    // "<" at a value's start, reported once
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p title=<x>y</p>\n", [("error", "\u{201c}<\u{201d} at the start of an unquoted attribute value. Probable cause: Missing \u{201c}>\u{201d} immediately before.", 0, 0, 0, 0)]),
+    // "End tag had attributes." after the end tag's references, at its ">"
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p>x</p title=\"&#1;\">\n", [("error", "Character reference expands to a control character (U+0001).", 2, 5, 2, 19), ("error", "End tag had attributes.", 2, 20, 2, 21)]),
+    // two values
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p>x</p a=\"&#1;\" b=\"&#2;\">\n", [("error", "Character reference expands to a control character (U+0001).", 2, 5, 2, 15), ("error", "Character reference expands to a control character (U+0002).", 2, 16, 2, 24), ("error", "End tag had attributes.", 2, 25, 2, 26)]),
+    // none at the end of the file
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p>x</p title=a", []),
+    // a duplicate attribute's name end is noted
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<a class=\"btn\" class=\"primary\" title=\"Tom &amp Jerry\" href=\"/\">x</a>\n", [("error", "The string following \u{201c}&\u{201d} was interpreted as a character reference. (\u{201c}&\u{201d} probably should have been escaped as \u{201c}&amp;\u{201d}.)", 2, 22, 2, 43)]),
+    // before its own value's reference
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p title=x title=&#;>y</p>\n", [("error", "No digits after \u{201c}\u{201d}.", 2, 18, 2, 20)]),
+    // a name ended by a space
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p title=\"x\" title class=\"&copy 2019\">y</p>\n", [("error", "The string following \u{201c}&\u{201d} was interpreted as a character reference. (\u{201c}&\u{201d} probably should have been escaped as \u{201c}&amp;\u{201d}.)", 2, 20, 2, 27)]),
+    // a carriage return in text is noted, so a code point after it starts past it
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n\r\n\u{e000}<p>x</p>\n", [("warning", "Document uses the Unicode Private Use Area(s), which should not be used in publicly exchanged documents. (Charmod C073)", 3, 1, 3, 1)]),
+    // in a run with a reference too
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p>&amp;\r\n\u{b}</p>\n", [("error", "Forbidden code point U+000b.", 3, 1, 3, 1)]),
+    // and in raw text
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<script>\r\n\u{b}</script>\n", [("error", "Forbidden code point U+000b.", 3, 1, 3, 1)]),
+    // but not where the tree builder ignores white space
+    ("<!doctype html>\r\n\u{b}<p>x</p>\n", [("error", "Forbidden code point U+000b.", 1, 16, 2, 1)]),
+    // nor the newline it drops after a pre
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<pre>\r\n\u{e000}</pre>\n", [("warning", "Document uses the Unicode Private Use Area(s), which should not be used in publicly exchanged documents. (Charmod C073)", 2, 6, 3, 1)]),
+    // though a later one counts
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<pre>x\r\n\u{e000}</pre>\n", [("warning", "Document uses the Unicode Private Use Area(s), which should not be used in publicly exchanged documents. (Charmod C073)", 3, 1, 3, 1)]),
+    // nor the newline after a textarea
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<textarea>\r\n\u{f0000}</textarea>\n", [("warning", "Document uses the Unicode Private Use Area(s), which should not be used in publicly exchanged documents. (Charmod C073)", 2, 11, 3, 2)]),
+    // nor the line feed an "&" hands on after a textarea
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<textarea>\n&#x;</textarea>\n", [("error", "No digits after \u{201c}\u{201d}.", 2, 11, 3, 4)]),
+    // nor the white space it hands on before the head
+    ("<!doctype html>\n&#1;<p>x</p>\n", [("error", "Character reference expands to a control character (U+0001).", 1, 16, 2, 4)]),
+    // a code point that ends a name is read before the message given at its "&"
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p lang=&copy\u{e000}>x</p>\n", [("warning", "Document uses the Unicode Private Use Area(s), which should not be used in publicly exchanged documents. (Charmod C073)", 2, 1, 2, 14), ("error", "The string following \u{201c}&\u{201d} was interpreted as a character reference. (\u{201c}&\u{201d} probably should have been escaped as \u{201c}&amp;\u{201d}.)", 2, 1, 2, 9)]),
+    // nor, after a textarea's dropped CR LF, the text an "&" hands on
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<textarea>\r\n&#x;</textarea>\n", [("error", "No digits after \u{201c}\u{201d}.", 2, 11, 3, 4)]),
+    // a code point after a bare "<", from the "<"
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p>a<\u{b}b</p>\n", [("error", "Forbidden code point U+000b.", 2, 5, 2, 6)]),
+    // a text reference that doesn't reach the tag's "<" leaves its place alone
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p>&amp; <b title=\"&#1;\">x</b></p>\n", [("error", "Character reference expands to a control character (U+0001).", 2, 10, 2, 23)]),
+    // a literal Private Use Area character after a reference's warning gets none
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p>&#xE000;</p><!--\u{e000}-->\n", [("warning", "Document uses the Unicode Private Use Area(s), which should not be used in publicly exchanged documents. (Charmod C073)", 2, 4, 2, 11)]),
+    // a tag's error is noted for the messages after it
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p title=\"a\"class=\"&#1;\">x</p>\n", [("error", "Character reference expands to a control character (U+0001).", 2, 14, 2, 23)]),
+    // a code point in a name comes before the tag's error after it
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p \u{e000}\"x>y</p>\n", [("warning", "Document uses the Unicode Private Use Area(s), which should not be used in publicly exchanged documents. (Charmod C073)", 2, 1, 2, 4)]),
+] as [(String, [(String, String, Int, Int, Int, Int)])])
+func tokenizerMessagesMatchUpstreamInOrder(document: String, expected: [(String, String, Int, Int, Int, Int)]) {
+    let actual = checkHTML(document).messages
+        .filter { ("info" != $0.type || "warning" == $0.subType) && isTokenizerMessagePlacedInOrder($0.message) }
+        .map { message -> String in
+            let kind = "info" == message.type ? "warning" : "error"
+            if hasPortPlace(message.message) {
+                return "\(kind): \(message.message) @ 0:0-0:0"
+            }
+            return "\(kind): \(message.message) @ \(message.firstLine ?? message.lastLine ?? 0):\(message.firstColumn ?? message.lastColumn ?? 0)-\(message.lastLine ?? 0):\(message.lastColumn ?? 0)"
+        }
+    #expect(actual == expected.map { "\($0.0): \($0.1) @ \($0.2):\($0.3)-\($0.4):\($0.5)" }, "\(document)")
+}
+
+/// Case 554591 (A7's review): see tokenizerMessagesMatchUpstreamInOrder.
+private func isTokenizerMessagePlacedInOrder(_ message: String) -> Bool {
+    ["Named character reference was not terminated", "The string following \u{201c}&\u{201d} was interpreted", "\u{201c}&\u{201d} did not start a character reference", "No digits after \u{201c}", "Character reference", "A numeric character reference expanded to", "Document uses the Unicode Private Use Area", "Forbidden code point U+000b.", "Astral non-character.", "End tag had attributes."].contains { message.hasPrefix($0) } || hasPortPlace(message)
+}
+
+/// Case 554591 (A7's review): the messages tokenizerMessagesMatchUpstreamInOrder
+/// compares without their places.
+private func hasPortPlace(_ message: String) -> Bool {
+    message.contains("in an unquoted attribute value") || message.contains("at the start of an unquoted attribute value")
+}
+
+// Case 554591 (A7's review): a MIME type (area, link, object and embed) and a
+// language tag (lang and hreflang) are judged and printed decoded, as
+// upstream's schema reads them and vnu.jar prints them; they were read as
+// written, so Hugo's RSS link, type="application/rss&#43;xml", on every page
+// its themes make, was a false Bad value. The expected messages are vnu.jar's,
+// all its errors and warnings, with its "Bad value" message's reason left off.
+@Test(arguments: [
+    // a MIME type decoded (Hugo's RSS link)
+    ("<!doctype html><html lang=en><head><meta charset=utf-8><title>T</title>\n<link rel=\"alternate\" type=\"application/rss&#43;xml\" href=\"https://example.org/index.xml\" title=\"Example\"></head><body><p>x</p></body></html>\n", []),
+    // on object and embed
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<object data=\"a.svg\" type=\"image/svg&#43;xml\"></object><embed src=\"a.svg\" type=\"image/svg&#43;xml\">\n", []),
+    // and printed decoded
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<object data=\"a.svg\" type=\"image&#47;\"></object>\n", [("error", "Bad value \u{201c}image/\u{201d} for attribute \u{201c}type\u{201d} on element \u{201c}object\u{201d}.")]),
+    // lang and hreflang decoded
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p lang=\"en&#45;GB\">x</p><a href=\"/en\" hreflang=\"en&#45;GB\">y</a>\n", []),
+    // and printed decoded
+    ("<!doctype html><html lang=en><meta charset=utf-8><title>T</title>\n<p lang=\"en&#45;&#45;\">x</p>\n", [("error", "Bad value \u{201c}en--\u{201d} for attribute \u{201c}lang\u{201d} on element \u{201c}p\u{201d}.")]),
+] as [(String, [(String, String)])])
+func decodedTypesAndLanguagesMatchUpstream(document: String, expected: [(String, String)]) {
+    let actual = checkHTML(document).messages
+        .filter { "info" != $0.type || "warning" == $0.subType }
+        .map { "\("info" == $0.type ? "warning" : "error"): \($0.message)" }
+        .sorted()
+    #expect(actual == expected.map { "\($0.0): \($0.1)" }.sorted(), "\(document)")
+}
+
+// Case 554591 (A7's review): text in the head is read as text, a NUL left
+// for the tree builder, which drops it, so it doesn't end the head, and the
+// </head> after it isn't stray. (Decoded as a value is, it would be U+FFFD,
+// which ends the head. Only the stray tags are compared, as vnu.jar's other
+// message there, "Saw U+0000 in stream.", isn't the port's yet.) The expected
+// messages are vnu.jar's.
+@Test(arguments: [
+    // a NUL in the head is text the tree builder drops, so it doesn't end the head
+    ("<!doctype html><html lang=en><head><meta charset=utf-8><title>T</title>\n\u{0}</head><body><p>x</p></body></html>\n", []),
+    // nor with a reference to a space before it, which has the text decoded
+    ("<!doctype html><html lang=en><head><meta charset=utf-8><title>T</title>\n&#32;\u{0}</head><body><p>x</p></body></html>\n", []),
+] as [(String, [(String, String)])])
+func headTextReadAsUpstreamReadsIt(document: String, expected: [(String, String)]) {
+    let actual = checkHTML(document).messages
+        .filter { ("info" != $0.type || "warning" == $0.subType) && $0.message.hasPrefix("Stray ") }
+        .map { "\("info" == $0.type ? "warning" : "error"): \($0.message)" }
+        .sorted()
+    #expect(actual == expected.map { "\($0.0): \($0.1)" }.sorted(), "\(document)")
+}
+
 // Case 554591 (item 12, from its review): in an XHTML document, the schema
 // checks nothing inside a colgroup it rejects (here, one in a <div>), so the
 // figure rules don't either: vnu.jar reports the colgroup alone, which the XML

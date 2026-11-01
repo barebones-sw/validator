@@ -1,245 +1,1027 @@
 import Foundation
 import VNUCore
 
+/// Case 554591 (A21): upstream's URL attributes, as its schema checks them.
+/// Each HTML attribute here has one of the URL datatypes of
+/// schema/html5/common.rnc (see URLDatatype), which hands the value to
+/// IriRef (nu/validator/datatype/IriRef.java), which runs galimatias, a WHATWG
+/// URL parser, in its strict mode, where any error it finds is the value's
+/// (see iriRefVerdict and galimatiasParse). The port used to judge the value
+/// as written with rules of its own: its references undecoded, so the
+/// "&#038;" of WordPress's URLs counted as a second "#", and javascript: URLs,
+/// white space around a value, an itemtype list and //[::1]/ were all bad
+/// values that vnu.jar accepts, while "<", "{" or "^" in a path went
+/// unreported. The message keeps TestRunner's wording, without upstream's
+/// reason after the colon, as the port's other datatype messages do.
 struct HTMLURLAttributeChecker {
-    private struct URLAttributeRule {
-        var attributeName: String
-        var requiresAbsoluteURL: Bool
-        var requiresNonEmptyValue: Bool
+    /// Case 554591 (A21): the schema's URL datatypes (common.rnc), which
+    /// decide what a value may be before IriRef sees it.
+    private enum URLDatatype {
+        /// common.data.uri (a, area and base href; cite; itemid; and, from
+        /// A21's review, the href of a link in the body that microdata's
+        /// pattern for one takes, see rules(for:isInBody:)): an IRI
+        /// reference, or nothing but space, LF, VT, FF and CR, which the
+        /// pattern [ \x{0A}-\x{0D}]* takes without IriRef ever seeing it.
+        /// (Not a tab, though the pattern's comment says it means HTML's
+        /// white space: "\t" goes to IriRef, which says "Must be
+        /// non-empty.".)
+        case uri
+        /// common.data.uri.non-empty (link href, but as above; the src
+        /// attributes, object data, form action, formaction, video poster):
+        /// an IRI reference, so an empty value is "Must be non-empty.".
+        case nonEmptyURI
+        /// input type=url's value: "" | common.data.uri.absolute
+        /// (web-forms2.rnc). WordPress's comment form has <input type="url"
+        /// value="">.
+        case emptyOrAbsoluteURL
+        /// itemtype: list { common.data.uri.absolute+ } (microdata.rnc), each
+        /// token an absolute URL, and at least one of them.
+        case absoluteURLList
     }
 
-    func validate(document: HTMLParsedDocument, locations: SourceLocationMap) -> [ValidationMessage] {
-        var messages: [ValidationMessage] = []
+    private struct URLAttributeRule {
+        var attributeName: String
+        var datatype: URLDatatype
+        /// Case 554591 (A21): whether the schema allows the attribute on this
+        /// element at all, and so checks its value: not a formaction on a
+        /// button whose type is button or reset, which vnu.jar reports as
+        /// "Attribute “formaction” not allowed on element “button” at this
+        /// point." (a message the port doesn't give yet) without checking the
+        /// URL. (The rule is kept for such a button anyway, for the
+        /// "Forbidden code point" message; see appendURLMessages.)
+        var valueIsChecked: Bool
+    }
 
-        for event in document.events {
+    /// Case 554591 (A21): what upstream makes of a value: no message, a Bad
+    /// value error, or the warning for a data: URL with a fragment.
+    private enum URLVerdict {
+        case valid
+        case error
+        case warning
+    }
+
+    /// Case 554591 (A21's review): a message and what it's about, for
+    /// HTMLValidator.dropURLMessagesTheSchemaWouldNotGive, which drops the
+    /// Bad values upstream's schema wouldn't give, on or in an element, or
+    /// for an attribute, that a later checker rejects. It used to find the
+    /// element and the attribute again in the message's text, which a value
+    /// of 200 UTF-16 units or more, left out of the message with its quotes,
+    /// defeated: <dl><a href="…"> with a long bad URL kept a false error.
+    struct URLMessage {
+        var message: ValidationMessage
+        /// The offset of the element's start tag.
+        var elementOffset: Int
+        /// The attribute whose value the message judges; nil for the
+        /// "Forbidden code point" error, which upstream's tokenizer gives
+        /// wherever it reads one, so that nothing drops it.
+        var badValueAttribute: String?
+    }
+
+    /// Case 554591 (A21): uncheckedStartTags is HTMLValidator's list of the
+    /// start tags (by offset) of the elements whose attributes upstream's
+    /// schema doesn't check, as that walk's flags have it (see its
+    /// uncheckedURLStartTags): those in template contents, in an SVG desc's
+    /// or a MathML annotation-xml's any-element content, or in or under an
+    /// element the walk finds the schema rejecting or leaving unchecked (the
+    /// later checkers' rejections are dropURLMessagesTheSchemaWouldNotGive's).
+    /// Jing checks an attribute's value only as part of checking the element,
+    /// so vnu.jar gives no Bad value there; the port gave one for
+    /// <template><a href="a b">, which vnu.jar doesn't check at all, and for
+    /// <span><div><a href="a b">, where it reports only the div. (That walk
+    /// has the context; taking its answer keeps this checker, and its
+    /// messages, where they are in the order, which TestRunner's first-error
+    /// comparison sees, rather than moving the checks into one of the walks.
+    /// From A21's review: A5's media and A20's date and time checks don't go
+    /// by it, but by HTMLGeneralAttributeChecker's foreignSchemaChecksApply,
+    /// which has no case for a rejected HTML element, so they still check in
+    /// one, as in <span><div><time datetime=x>, an older false error.)
+    func validate(document: HTMLParsedDocument, uncheckedStartTags: Set<Int>, locations: SourceLocationMap) -> [URLMessage] {
+        var messages: [URLMessage] = []
+
+        for (eventIndex, event) in document.events.enumerated() {
             // Review item A2 (U16): these are HTML's URL attributes; an SVG
             // <a href> or <image href> isn't checked by these rules upstream.
             guard case let .startElement(element) = event, .html == element.namespace else { continue }
-            for rule in rules(for: element) {
-                guard let value = element.attributeValue(rule.attributeName) else { continue }
-                appendURLMessages(value: value, rule: rule, element: element, locations: locations, messages: &messages)
+            // (Case 554591, A21's review: whether the body has started, by the
+            // parser's model, for a link's href; see rules(for:isInBody:).)
+            let isInBody = document.bodyStartEvent.map { $0 <= eventIndex } ?? false
+            let elementRules = rules(for: element, isInBody: isInBody)
+            if elementRules.isEmpty {
+                continue
+            }
+            let schemaChecksElement = !uncheckedStartTags.contains(element.range.offset)
+            // Case 554591 (A21): an attribute written without a value, as in
+            // <img src>, is the empty string to the schema, so <img src> is
+            // "Must be non-empty."; the port skipped it, as if it weren't
+            // there.
+            for rule in elementRules where element.hasAttribute(rule.attributeName) {
+                appendURLMessages(
+                    rawValue: element.attributeValue(rule.attributeName) ?? "",
+                    rule: rule,
+                    valueIsChecked: schemaChecksElement && rule.valueIsChecked,
+                    element: element,
+                    locations: locations,
+                    messages: &messages
+                )
             }
         }
 
         return messages
     }
 
-    private func rules(for element: HTMLStartElement) -> [URLAttributeRule] {
+    private func rules(for element: HTMLStartElement, isInBody: Bool) -> [URLAttributeRule] {
         var rules: [URLAttributeRule] = []
 
         switch element.name {
         case "a", "area", "base":
-            rules.append(URLAttributeRule(attributeName: "href", requiresAbsoluteURL: false, requiresNonEmptyValue: false))
+            rules.append(URLAttributeRule(attributeName: "href", datatype: .uri, valueIsChecked: true))
         case "link":
-            rules.append(URLAttributeRule(attributeName: "href", requiresAbsoluteURL: false, requiresNonEmptyValue: true))
+            // Case 554591 (A21's review): a link's href is
+            // common.data.uri.non-empty in the head's pattern (meta.rnc's
+            // link.elem), but in the body microdata's pattern for a link with
+            // an itemprop (microdata.rnc's link.elem.phrasing) takes
+            // shared-hyperlink.attrs.href, a common.data.uri, so an empty or
+            // white-space href is fine there, as in schema.org's <link
+            // itemprop="availability" href="">, while Jing still has that
+            // pattern when it gets to the href (see
+            // linkPhrasingPatternTakesHref). The port took every link's href
+            // for a non-empty one, a false error.
+            let datatype: URLDatatype = isInBody && Self.linkPhrasingPatternTakesHref(element) ? .uri : .nonEmptyURI
+            rules.append(URLAttributeRule(attributeName: "href", datatype: datatype, valueIsChecked: true))
         case "audio", "embed", "iframe", "img", "script", "source", "track", "video":
-            rules.append(URLAttributeRule(attributeName: "src", requiresAbsoluteURL: false, requiresNonEmptyValue: true))
+            rules.append(URLAttributeRule(attributeName: "src", datatype: .nonEmptyURI, valueIsChecked: true))
         case "object":
-            rules.append(URLAttributeRule(attributeName: "data", requiresAbsoluteURL: false, requiresNonEmptyValue: true))
+            rules.append(URLAttributeRule(attributeName: "data", datatype: .nonEmptyURI, valueIsChecked: true))
         case "form":
-            rules.append(URLAttributeRule(attributeName: "action", requiresAbsoluteURL: false, requiresNonEmptyValue: true))
+            rules.append(URLAttributeRule(attributeName: "action", datatype: .nonEmptyURI, valueIsChecked: true))
         case "button":
-            rules.append(URLAttributeRule(attributeName: "formaction", requiresAbsoluteURL: false, requiresNonEmptyValue: true))
+            // Case 554591 (A21): the schema takes formaction only on a submit
+            // button (web-forms2.rnc): one whose type is submit, matched
+            // without regard to case, or which has no type, or a type that's
+            // neither button nor reset, which it reports as a bad type and
+            // still checks as a submit button (vnu.jar gives both messages for
+            // <button type=foo formaction="a b">). The port checked it on
+            // every button.
+            let type = Self.lowercasedDecodedValue("type", of: element)
+            rules.append(URLAttributeRule(attributeName: "formaction", datatype: .nonEmptyURI, valueIsChecked: "button" != type && "reset" != type))
         case "blockquote", "del", "ins", "q":
-            rules.append(URLAttributeRule(attributeName: "cite", requiresAbsoluteURL: false, requiresNonEmptyValue: false))
+            rules.append(URLAttributeRule(attributeName: "cite", datatype: .uri, valueIsChecked: true))
         default:
             break
         }
 
-        if element.name == "input" {
-            let type = element.attributeValue("type")?.lowercased()
-            if type == "image" {
-                rules.append(URLAttributeRule(attributeName: "src", requiresAbsoluteURL: false, requiresNonEmptyValue: true))
+        if "input" == element.name {
+            // Case 554591 (A21): the type as the schema reads it, its
+            // references decoded, so type="&#105;mage" is an image button.
+            let type = Self.lowercasedDecodedValue("type", of: element)
+            if "image" == type {
+                rules.append(URLAttributeRule(attributeName: "src", datatype: .nonEmptyURI, valueIsChecked: true))
             }
-            if type == "image" || type == "submit" {
-                rules.append(URLAttributeRule(attributeName: "formaction", requiresAbsoluteURL: false, requiresNonEmptyValue: true))
+            if "image" == type || "submit" == type {
+                rules.append(URLAttributeRule(attributeName: "formaction", datatype: .nonEmptyURI, valueIsChecked: true))
             }
-            if type == "url" {
-                rules.append(URLAttributeRule(attributeName: "value", requiresAbsoluteURL: true, requiresNonEmptyValue: false))
+            if "url" == type {
+                rules.append(URLAttributeRule(attributeName: "value", datatype: .emptyOrAbsoluteURL, valueIsChecked: true))
             }
         }
 
-        if element.name == "video" {
-            rules.append(URLAttributeRule(attributeName: "poster", requiresAbsoluteURL: false, requiresNonEmptyValue: true))
+        if "video" == element.name {
+            rules.append(URLAttributeRule(attributeName: "poster", datatype: .nonEmptyURI, valueIsChecked: true))
         }
 
+        // Case 554591 (A21): itemid is checked on any element, with or without
+        // itemscope, which upstream's microdata checker reports apart; and
+        // itemtype is a list of absolute URLs, which the port took for one
+        // URL, so schema.org's "https://schema.org/LocalBusiness
+        // https://schema.org/Restaurant" was a bad value.
         if element.hasAttribute("itemid") {
-            rules.append(URLAttributeRule(attributeName: "itemid", requiresAbsoluteURL: false, requiresNonEmptyValue: false))
+            rules.append(URLAttributeRule(attributeName: "itemid", datatype: .uri, valueIsChecked: true))
         }
         if element.hasAttribute("itemtype") {
-            rules.append(URLAttributeRule(attributeName: "itemtype", requiresAbsoluteURL: true, requiresNonEmptyValue: true))
+            rules.append(URLAttributeRule(attributeName: "itemtype", datatype: .absoluteURLList, valueIsChecked: true))
         }
 
         return rules
     }
 
-    private func appendURLMessages(
-        value: String,
-        rule: URLAttributeRule,
-        element: HTMLStartElement,
-        locations: SourceLocationMap,
-        messages: inout [ValidationMessage]
-    ) {
-        if let codePoint = forbiddenCodePoint(in: value) {
-            messages.append(.error(
-                "Forbidden code point \(formatCodePoint(codePoint)).",
-                location: locations.location(offset: element.range.offset, length: element.range.length),
-                extract: locations.extract(offset: element.range.offset, length: element.range.length)
-            ))
-            return
+    /// Case 554591 (A21's review): whether microdata's body pattern for a
+    /// link (link.elem.phrasing) is still one Jing can match when it gets to
+    /// the href. Jing reads the attributes in the order written, and one that
+    /// another of the link patterns takes but this one doesn't leaves only
+    /// those, whose href must be non-empty: the head pattern's own attributes
+    /// (as, integrity, referrerpolicy and the rest) and RDFa's (property,
+    /// about and the rest); and a rel before any itemprop. (After an itemprop,
+    /// a rel is a second relation, which the head pattern, taking one or the
+    /// other, won't have, so no pattern takes it, and Jing, having reported
+    /// it, goes on with the patterns it had.) An attribute no link pattern
+    /// takes (role="button", foo, aria-label, each of which vnu.jar reports
+    /// on its own) changes nothing. (From 154 probes run through vnu.jar, in
+    /// the case's a7/fix/linkprobe.)
+    private static func linkPhrasingPatternTakesHref(_ element: HTMLStartElement) -> Bool {
+        var sawItemprop = false
+        for attribute in element.attributes {
+            switch attribute.name {
+            case "href":
+                return true
+            case "itemprop":
+                sawItemprop = true
+            case "rel":
+                if !sawItemprop {
+                    return false
+                }
+            default:
+                if attributesOnlyOtherLinkPatternsTake.contains(attribute.name) {
+                    return false
+                }
+            }
         }
-
-        if !isAcceptableURLValue(value, rule: rule) {
-            let displayValue = value
-                .replacingOccurrences(of: "\r\n", with: "\n")
-                .replacingOccurrences(of: "\r", with: "\n")
-            messages.append(.error(
-                "Bad value \u{201c}\(displayValue)\u{201d} for attribute \u{201c}\(rule.attributeName)\u{201d} on element \u{201c}\(element.name)\u{201d}.",
-                location: locations.location(offset: element.range.offset, length: element.range.length),
-                extract: locations.extract(offset: element.range.offset, length: element.range.length)
-            ))
-        }
-    }
-
-    private func isAcceptableURLValue(_ value: String, rule: URLAttributeRule) -> Bool {
-        // Review item A15: whether an empty value is allowed is now up to
-        // requiresNonEmptyValue alone. It used to be refused whenever an
-        // absolute URL was required too, but the only such rule that allows
-        // empty is input type=url's value, whose schema (web-forms2.rnc) is
-        // `"" | common.data.uri.absolute`: WordPress's comment form, for
-        // one, has <input type="url" value="">. (itemtype, the other
-        // absolute-URL rule, still requires a value.)
-        if value.isEmpty {
-            return !rule.requiresNonEmptyValue
-        }
-        if rule.requiresNonEmptyValue && value.unicodeScalars.allSatisfy(isASCIIWhitespace) {
-            return false
-        }
-        if value.unicodeScalars.contains(where: isASCIIWhitespace) {
-            return false
-        }
-        if value.contains("\\") || value.contains("|") || value.contains("％") {
-            return false
-        }
-        if hasMalformedPercentEscape(value) {
-            return false
-        }
-        if value.filter({ $0 == "#" }).count > 1 {
-            return false
-        }
-
-        let lowercasedValue = value.lowercased()
-        if lowercasedValue.contains("%ef%bc%85") || lowercasedValue.contains("%ef%b7%90") {
-            return false
-        }
-
-        guard let scheme = scheme(in: value) else {
-            guard !rule.requiresAbsoluteURL else { return false }
-            return !containsSquareBracket(value)
-        }
-
-        if scheme == "data" {
-            return !lowercasedValue.hasPrefix("data:/") && !value.contains("#")
-        }
-        if scheme == "file" {
-            return lowercasedValue.hasPrefix("file://")
-        }
-        if Self.specialSchemes.contains(scheme) {
-            guard lowercasedValue.hasPrefix("\(scheme)://") else { return false }
-            return hasValidSpecialAuthority(in: value, scheme: scheme)
-        }
-        if containsSquareBracket(value) {
-            return false
-        }
-
         return true
     }
 
-    private func hasValidSpecialAuthority(in value: String, scheme: String) -> Bool {
-        guard let colon = value.firstIndex(of: ":") else { return false }
-        let authorityStart = value.index(colon, offsetBy: 3, limitedBy: value.endIndex) ?? value.endIndex
-        let authorityEnd = value[authorityStart...].firstIndex { $0 == "/" || $0 == "?" || $0 == "#" } ?? value.endIndex
-        let authority = String(value[authorityStart..<authorityEnd])
-        guard !authority.isEmpty, !authority.contains("@") else { return false }
+    /// Case 554591 (A21's review): see linkPhrasingPatternTakesHref.
+    private static let attributesOnlyOtherLinkPatternsTake: Set<String> = [
+        "as", "blocking", "color", "disabled", "fetchpriority", "imagesizes", "imagesrcset", "integrity",
+        "referrerpolicy", "scope", "updateviacache", "workertype",
+        "about", "content", "datatype", "inlist", "prefix", "property", "resource", "rev", "typeof", "vocab",
+    ]
 
-        if authority.first == "[" {
+    /// Case 554591 (A21): an attribute's value with its references decoded
+    /// and lowercased, as the schema compares an input's or a button's type;
+    /// nil without one.
+    private static func lowercasedDecodedValue(_ name: String, of element: HTMLStartElement) -> String? {
+        element.attributeValue(name).map { HTMLCharacterReferences.decodeAttributeValue($0).lowercased() }
+    }
+
+    private func appendURLMessages(
+        rawValue: String,
+        rule: URLAttributeRule,
+        valueIsChecked: Bool,
+        element: HTMLStartElement,
+        locations: SourceLocationMap,
+        messages: inout [URLMessage]
+    ) {
+        // Case 554591 (A21): upstream's tokenizer reports these characters,
+        // written as is, wherever they are, in template contents too, where
+        // the URL isn't checked, so this comes first, for every rule's
+        // attribute; the port reports them only here so far. It used to stop
+        // here; vnu.jar goes on to the URL, which then has a character a path
+        // can't have, as in <a href="/a&#xFDD0;b">'s literal twin.
+        if let codePoint = forbiddenCodePoint(in: rawValue) {
+            messages.append(URLMessage(
+                message: .error(
+                    "Forbidden code point \(formatCodePoint(codePoint)).",
+                    location: locations.location(offset: element.range.offset, length: element.range.length),
+                    extract: locations.extract(offset: element.range.offset, length: element.range.length)
+                ),
+                elementOffset: element.range.offset,
+                badValueAttribute: nil
+            ))
+        }
+        guard valueIsChecked else { return }
+
+        let value = Self.valueAsUpstreamSeesIt(rawValue)
+        let verdict = Self.verdict(for: value, datatype: rule.datatype)
+        guard .valid != verdict else { return }
+        // Case 554591 (A21): the decoded value, as vnu.jar prints it, and
+        // none at all once it's 200 UTF-16 units or more, as vnu.jar leaves
+        // it out then (MessageEmitterAdapter), quotes and all: "Bad value
+        // for attribute “src” on element “img”.", with two spaces. The port
+        // printed the value as written, so &#038; showed as written.
+        let shownValue = value.utf16.count < 200 ? "\u{201c}\(value)\u{201d}" : ""
+        let message = "Bad value \(shownValue) for attribute \u{201c}\(rule.attributeName)\u{201d} on element \u{201c}\(element.name)\u{201d}."
+        let location = locations.location(offset: element.range.offset, length: element.range.length)
+        let extract = locations.extract(offset: element.range.offset, length: element.range.length)
+        // Case 554591 (A21): a data: URL with a fragment is only a warning,
+        // in TestRunner's words for the port's other datatype warnings (see
+        // HTMLGeneralAttributeChecker.appendDatetimeAttributeMessage);
+        // vnu.jar says "Potentially bad value …: Fragment is not allowed for
+        // data: URIs according to RFC 2397." The port gave an error.
+        let urlMessage: ValidationMessage
+        if .warning == verdict {
+            urlMessage = .warning(message, location: location, extract: extract)
+        } else {
+            urlMessage = .error(message, location: location, extract: extract)
+        }
+        messages.append(URLMessage(message: urlMessage, elementOffset: element.range.offset, badValueAttribute: rule.attributeName))
+    }
+
+    /// Case 554591 (A21): the value as upstream's tokenizer hands it to the
+    /// schema: with its line breaks as the input stream normalizes them (a CR
+    /// or a CR LF is an LF; a CR from &#13; stays one), a NUL as U+FFFD, and
+    /// its character references decoded, all of which
+    /// HTMLCharacterReferences.decodeAttributeValue does. The port judged
+    /// the value as written. (From A21's review: this did the line breaks
+    /// and the NULs itself, then decoded, a second pass over the value since
+    /// A7's decoder does them too.)
+    private static func valueAsUpstreamSeesIt(_ rawValue: String) -> String {
+        // Case 554591 (A21): a value whose first Character is a quote and
+        // more is HTMLTokenizer misreading a quoted value whose first
+        // character is a combining mark, a ZWJ or a ZWNJ, as in
+        // src="&#x200C;…" written as is: it
+        // compares Characters, and the quote with what follows it is one,
+        // which isn't a quote, so it takes the value for an unquoted one,
+        // quotes and all, up to the next space or ">". The value between the
+        // quotes is what upstream's tokenizer has, if nothing in it ended the
+        // unquoted one early. Judged with its quotes, it was a bad value for
+        // the double quote, which the URL rules here reject; the port's older
+        // rules didn't, so this only showed once they did. A properly quoted
+        // value that itself starts with the other quote and such a mark, as
+        // in href="'&#x301;…" written as is, loses that quote here too, a
+        // URL too unlikely to matter.
+        var value = rawValue
+        if let first = value.unicodeScalars.first, "\"" == first || "'" == first, let character = value.first, 1 < character.unicodeScalars.count {
+            value.unicodeScalars.removeFirst()
+            if first == value.unicodeScalars.last {
+                value.unicodeScalars.removeLast()
+            }
+        }
+        return HTMLCharacterReferences.decodeAttributeValue(value)
+    }
+
+    /// Case 554591 (A21): the datatype's judgment of a decoded value (see
+    /// URLDatatype).
+    private static func verdict(for value: String, datatype: URLDatatype) -> URLVerdict {
+        let scalars = Array(value.unicodeScalars)
+        switch datatype {
+        case .uri:
+            if scalars.allSatisfy({ " " == $0 || (0x0A...0x0D).contains($0.value) }) {
+                return .valid
+            }
+            return iriRefVerdict(scalars[...], isAbsolute: false)
+        case .nonEmptyURI:
+            return iriRefVerdict(scalars[...], isAbsolute: false)
+        case .emptyOrAbsoluteURL:
+            if scalars.isEmpty {
+                return .valid
+            }
+            return iriRefVerdict(scalars[...], isAbsolute: true)
+        case .absoluteURLList:
+            // (A RELAX NG list splits at XML's white space, space, tab, LF
+            // and CR, not at a form feed, which stays in its token. The first
+            // token that isn't valid decides, as Jing reports the first.)
+            let tokens = scalars.split { " " == $0 || "\t" == $0 || "\n" == $0 || "\r" == $0 }
+            guard !tokens.isEmpty else { return .error }
+            for token in tokens {
+                let tokenVerdict = iriRefVerdict(token, isAbsolute: true)
+                if .valid != tokenVerdict {
+                    return tokenVerdict
+                }
+            }
+            return .valid
+        }
+    }
+
+    /// Case 554591 (A21): IriRef.checkValid (Iri's, when isAbsolute): "Must
+    /// be non-empty." for nothing but HTML white space; then the scheme, as
+    /// splitScheme finds it; without one, "not an absolute URL" for Iri, and
+    /// for IriRef a parse against the base http://example.org/foo/bar. With
+    /// one: http, https, ftp, mailto, file, ws and wss are parsed as written;
+    /// javascript: is never checked, however it's written (javascript:
+    /// void(0) is fine); data: is parsed, then read by DataUri, of which the
+    /// port has its fragment rule and one more (see below); feed: and webcal:
+    /// are parsed as "http:" and what follows the colon, so feed:https://x/
+    /// is bad; and any other scheme is parsed as "x-" and the value as
+    /// written, so " tel:123", whose space then ends the scheme, is bad.
+    private static func iriRefVerdict(_ value: ArraySlice<Unicode.Scalar>, isAbsolute: Bool) -> URLVerdict {
+        guard value.contains(where: { !isHTMLSpace($0) }) else { return .error }
+        guard let split = splitScheme(value) else {
+            if isAbsolute {
+                return .error
+            }
+            return galimatiasParse(value, hasBase: true).isAccepted ? .valid : .error
+        }
+        switch split.scheme {
+        case "ftp", "file", "http", "https", "mailto", "ws", "wss":
+            return galimatiasParse(value, hasBase: false).isAccepted ? .valid : .error
+        case "javascript":
+            return .valid
+        case "data":
+            // (DataUri reads the URL galimatias made, so galimatias's errors
+            // come first; then a fragment, which is only a warning, as
+            // vnu.jar's command line sets nu.validator.datatype.warn; then
+            // the media type, of which the port checks only that it doesn't
+            // start with "/", as in data:/x, which DataUri rejects, as it
+            // wants a token character or a semicolon first. Its other rules
+            // aren't ported yet.)
+            let parse = galimatiasParse(value, hasBase: false)
+            guard parse.isAccepted else { return .error }
+            if parse.hasFragment {
+                return .warning
+            }
+            return parse.schemeDataStartsWithSlash ? .error : .valid
+        case "feed", "webcal":
+            return galimatiasParse((httpPrefix + value[split.tailStart...])[...], hasBase: false).isAccepted ? .valid : .error
+        default:
+            return galimatiasParse((unknownSchemePrefix + value)[...], hasBase: false).isAccepted ? .valid : .error
+        }
+    }
+
+    private static let httpPrefix: [Unicode.Scalar] = ["h", "t", "t", "p", ":"]
+    private static let unknownSchemePrefix: [Unicode.Scalar] = ["x", "-"]
+
+    /// Case 554591 (A21): IriRef's splitScheme: past any leading HTML white
+    /// space, an ASCII letter and then letters, digits, "+" or "." up to a
+    /// colon; the scheme lowercased, and where what follows the colon starts.
+    /// Anything else, a "-" included, is no scheme, so x-foo:bar and
+    /// ms-settings:display aren't absolute URLs to the schema (galimatias
+    /// takes them as schemes, though; see galimatiasParse). The port allowed
+    /// "-", and didn't skip white space.
+    private static func splitScheme(_ value: ArraySlice<Unicode.Scalar>) -> (scheme: String, tailStart: Int)? {
+        var index = value.startIndex
+        while index < value.endIndex, isHTMLSpace(value[index]) {
+            index += 1
+        }
+        guard index < value.endIndex, isASCIILetter(value[index]) else { return nil }
+        let schemeStart = index
+        index += 1
+        while index < value.endIndex {
+            let scalar = value[index]
+            if ":" == scalar {
+                return (lowercasedASCII(value[schemeStart..<index]), index + 1)
+            }
+            guard isASCIILetter(scalar) || isASCIIDigit(scalar) || "+" == scalar || "." == scalar else { return nil }
+            index += 1
+        }
+        return nil
+    }
+
+    /// Case 554591 (A21): what galimatiasParse found.
+    private struct GalimatiasParse {
+        var isAccepted: Bool
+        /// The URL has a fragment (a "#"), which DataUri warns about.
+        var hasFragment: Bool
+        /// Its scheme data (after a scheme that isn't hierarchical) starts
+        /// with "/", which DataUri rejects (see iriRefVerdict).
+        var schemeDataStartsWithSlash: Bool
+
+        static let rejected = GalimatiasParse(isAccepted: false, hasFragment: false, schemeDataStartsWithSlash: false)
+    }
+
+    /// Case 554591 (A21): galimatias's URLParser.parse in strict mode, where
+    /// its first error is the value's, as far as the port follows it. First
+    /// it trims what Java's Character.isWhitespace calls white space from
+    /// both ends (see isJavaWhitespace), which isn't HTML's: U+3000 goes, a
+    /// no-break space stays. Then its own scheme, which may have a "-", and
+    /// with that:
+    /// - a hierarchical scheme (ftp, http, https, ws, wss) must be followed
+    ///   by "//" and an authority (see authorityEnd), and file: by "//" and
+    ///   a host, before the path;
+    /// - any other scheme is followed by its scheme data, checked as a path
+    ///   is;
+    /// - with no scheme, there must be a base ("Missing scheme." otherwise),
+    ///   and two slashes at the start begin an authority, as http's do (a
+    ///   backslash for either is an error), so //[::1]/ is fine, and //u@x/,
+    ///   //x:99999/ and // aren't.
+    /// Then the path, query and fragment: "%" must be followed by two hex
+    /// digits, and every other character must be one of the URL code points
+    /// (see isURLCodePoint), which leaves out white space, controls, " < > [
+    /// \ ] ^ ` { | } and some noncharacters; in the fragment, "#" too. (A
+    /// tab, LF or CR is "Tab, new line or carriage return found.", which is
+    /// as bad.) The reason upstream gives isn't kept.
+    ///
+    /// A C1 control is a URL code point to none of them. (A7's decoder maps
+    /// a C1 reference through windows-1252, as upstream's tokenizer does, so
+    /// &#150; is an en dash here, and a C1 control is one written as is or a
+    /// reference to one of the five windows-1252 has no character for, which
+    /// upstream keeps; either way, upstream has it. From A21's review: an
+    /// exception for the C1 controls only a reference made, from before the
+    /// decoder mapped them, could no longer apply, and is gone.)
+    ///
+    /// One quirk is kept: after trimmed white space, a value without a
+    /// scheme whose first character is astral, as in " 😀", is bad, as
+    /// galimatias steps back one UTF-16 unit there and then reads the second
+    /// half of the pair alone ("“?” is not allowed").
+    ///
+    /// Not followed yet (missed errors): a host's IDNA mapping and checks,
+    /// its percent-decoding, and IPv6's own rules (see
+    /// hostAndPortAreAcceptable and fileHostIsAcceptable for what is).
+    private static func galimatiasParse(_ input: ArraySlice<Unicode.Scalar>, hasBase: Bool) -> GalimatiasParse {
+        var start = input.startIndex
+        var end = input.endIndex
+        while start < end, isJavaWhitespace(input[start]) {
+            start += 1
+        }
+        while start < end, isJavaWhitespace(input[end - 1]) {
+            end -= 1
+        }
+
+        var position = start
+        var scheme: String?
+        if position < end, isASCIILetter(input[position]) {
+            var cursor = position + 1
+            while cursor < end, isASCIILetter(input[cursor]) || isASCIIDigit(input[cursor]) || "+" == input[cursor] || "-" == input[cursor] || "." == input[cursor] {
+                cursor += 1
+            }
+            if cursor < end, ":" == input[cursor] {
+                scheme = lowercasedASCII(input[position..<cursor])
+                position = cursor + 1
+            }
+        }
+
+        var schemeDataStartsWithSlash = false
+        if let scheme {
+            if "file" == scheme {
+                // ("file" scheme is not followed by "//"; then the host,
+                // which ends at the path, query or fragment.)
+                guard startsWithTwoSlashes(input, at: position, end: end) else { return .rejected }
+                position += 2
+                var hostEnd = position
+                while hostEnd < end, !isAuthorityDelimiter(input[hostEnd]) {
+                    hostEnd += 1
+                }
+                guard fileHostIsAcceptable(input[position..<hostEnd]) else { return .rejected }
+                position = hostEnd
+            } else if hierarchicalSchemes.contains(scheme) {
+                // (Expected a slash ("/"), twice, or, for http against the
+                // base, Relative scheme (http) is not followed by "://".)
+                guard startsWithTwoSlashes(input, at: position, end: end) else { return .rejected }
+                guard let authorityEnd = authorityEnd(input, from: position + 2, end: end) else { return .rejected }
+                position = authorityEnd
+            } else {
+                schemeDataStartsWithSlash = position < end && "/" == input[position]
+            }
+        } else {
+            guard hasBase else { return .rejected }
+            if start > input.startIndex, position < end, 0xFFFF < input[position].value {
+                return .rejected
+            }
+            // (A backslash for either slash is "Backslash ("\") used as path
+            // segment delimiter.", as one anywhere else in a path is.)
+            if position + 1 < end, isSlashOrBackslash(input[position]), isSlashOrBackslash(input[position + 1]) {
+                guard "/" == input[position], "/" == input[position + 1] else { return .rejected }
+                guard let authorityEnd = authorityEnd(input, from: position + 2, end: end) else { return .rejected }
+                position = authorityEnd
+            }
+        }
+
+        // The path (or scheme data), then the query and the fragment.
+        var inQuery = false
+        var inFragment = false
+        while position < end {
+            let scalar = input[position]
+            if !inFragment {
+                if "#" == scalar {
+                    inFragment = true
+                    position += 1
+                    continue
+                }
+                if "?" == scalar, !inQuery {
+                    inQuery = true
+                    position += 1
+                    continue
+                }
+            }
+            if "%" == scalar {
+                guard position + 2 < end, isASCIIHexDigit(input[position + 1]), isASCIIHexDigit(input[position + 2]) else { return .rejected }
+                position += 3
+                continue
+            }
+            guard isURLCodePoint(scalar) else { return .rejected }
+            position += 1
+        }
+        return GalimatiasParse(isAccepted: true, hasFragment: inFragment, schemeDataStartsWithSlash: schemeDataStartsWithSlash)
+    }
+
+    /// Case 554591 (A21): galimatias's relative schemes but file, whose
+    /// URLs have an authority after "//".
+    private static let hierarchicalSchemes: Set<String> = ["ftp", "http", "https", "ws", "wss"]
+
+    /// Case 554591 (A21): the authority after a hierarchical scheme's "//"
+    /// (or a scheme-relative URL's), as galimatias reads it: everything up to
+    /// the path, query or fragment, which mustn't have an "@" ("URL includes
+    /// credentials."), and is a host and maybe a port (see
+    /// hostAndPortAreAcceptable). Returns where it ends, or nil for a bad
+    /// one. (A third slash, which galimatias reports as "Unexpected slash or
+    /// backslash.", leaves the authority empty here, which is as bad.) The
+    /// port checked an authority only after a hierarchical scheme, so ///x
+    /// and //u@x/ went unreported, and the bracket rule meant for paths
+    /// rejected //[::1]/.
+    private static func authorityEnd(_ input: ArraySlice<Unicode.Scalar>, from start: Int, end: Int) -> Int? {
+        var index = start
+        while index < end, !isAuthorityDelimiter(input[index]) {
+            if "@" == input[index] {
+                return nil
+            }
+            index += 1
+        }
+        return hostAndPortAreAcceptable(input[start..<index]) ? index : nil
+    }
+
+    /// Case 554591 (A21): the port's host and port rules (they were
+    /// hasValidSpecialAuthority's), which galimatias agrees with: a host that
+    /// isn't empty; an IPv6 address in brackets (one with a colon in it;
+    /// galimatias's IPv6 rules go further, which the port doesn't yet);
+    /// otherwise no brackets and at most one colon, before a port that's
+    /// nothing but digits, below 65536; and now none of the characters
+    /// upstream rejects in a host, and in a port (see
+    /// hostCharactersAreAcceptable). They apply to a scheme-relative URL now
+    /// too.
+    private static func hostAndPortAreAcceptable(_ authority: ArraySlice<Unicode.Scalar>) -> Bool {
+        guard !authority.isEmpty, hostCharactersAreAcceptable(authority) else { return false }
+
+        if "[" == authority.first {
             guard let closeBracket = authority.firstIndex(of: "]") else { return false }
-            let hostStart = authority.index(after: authority.startIndex)
-            let host = authority[hostStart..<closeBracket]
-            guard host.contains(":") else { return false }
-
-            let restStart = authority.index(after: closeBracket)
-            let rest = authority[restStart...]
+            guard authority[(authority.startIndex + 1)..<closeBracket].contains(":") else { return false }
+            let rest = authority[(closeBracket + 1)...]
             if rest.isEmpty {
                 return true
             }
-            guard rest.first == ":" else { return false }
-            return isValidPort(String(rest.dropFirst()))
+            guard ":" == rest.first else { return false }
+            return isValidPort(rest.dropFirst())
         }
 
-        guard !containsSquareBracket(authority) else { return false }
-        let colons = authority.filter { $0 == ":" }.count
-        guard colons <= 1 else { return false }
-        guard colons == 1 else { return true }
-
-        let pieces = authority.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
-        guard pieces.count == 2, !pieces[0].isEmpty else { return false }
-        return isValidPort(String(pieces[1]))
+        guard !authority.contains("["), !authority.contains("]") else { return false }
+        guard let colon = authority.firstIndex(of: ":") else { return true }
+        let port = authority[(colon + 1)...]
+        guard !port.contains(":"), colon > authority.startIndex else { return false }
+        return isValidPort(port)
     }
 
-    private func isValidPort(_ port: String) -> Bool {
-        guard port.unicodeScalars.allSatisfy({ $0.value >= 48 && $0.value <= 57 }) else {
-            return false
+    /// Case 554591 (A21): a file: URL's host, as galimatias's FILE_HOST state
+    /// takes it: nothing (file:///etc), a drive letter (c: or c|, which is
+    /// then the path's, the "|" being an error), an IPv6 address in brackets,
+    /// or a domain, which can't have an "@", a ":" or a bracket in it, as
+    /// there's no userinfo or port in a file: URL. (The port took any file:
+    /// URL with its "//", so file://u@x/a and file://x:80/a passed.)
+    private static func fileHostIsAcceptable(_ host: ArraySlice<Unicode.Scalar>) -> Bool {
+        guard hostCharactersAreAcceptable(host) else { return false }
+        if host.isEmpty || (2 == host.count && isASCIILetter(host[host.startIndex]) && ":" == host[host.startIndex + 1]) {
+            return true
         }
-        let significantDigits = port.drop { $0 == "0" }
-        guard !significantDigits.isEmpty else { return true }
-        guard significantDigits.count <= 5 else { return false }
-        return (Int(significantDigits) ?? Int.max) <= 65_535
-    }
-
-    private func scheme(in value: String) -> String? {
-        guard let colon = value.firstIndex(of: ":") else { return nil }
-        let candidate = value[..<colon]
-        guard let first = candidate.unicodeScalars.first, isASCIILetter(first) else { return nil }
-        guard candidate.unicodeScalars.allSatisfy({ isASCIILetter($0) || isASCIIDigit($0) || $0.value == 43 || $0.value == 45 || $0.value == 46 }) else {
-            return nil
+        if "[" == host.first {
+            return "]" == host.last && host.contains(":")
         }
-        return candidate.lowercased()
+        return !host.contains { "@" == $0 || ":" == $0 || "[" == $0 || "]" == $0 }
     }
 
-    private func hasMalformedPercentEscape(_ value: String) -> Bool {
-        let scalars = Array(value.unicodeScalars)
-        var index = 0
-        while index < scalars.count {
-            if scalars[index].value == 37 {
-                guard index + 2 < scalars.count,
-                      isASCIIHexDigit(scalars[index + 1]),
-                      isASCIIHexDigit(scalars[index + 2]) else {
-                    return true
+    /// Case 554591 (A21): the characters a host can't have, which the port
+    /// rejected anywhere in a value (the three fixture literals since the
+    /// upstream fixtures for hosts): tab, line breaks and space (from its
+    /// review: not a form feed, which galimatias's host states and Domain.java
+    /// let through, so http://a<FF>b/ is good; and a no-break space or U+3000,
+    /// which IDNA maps to a space, isn't caught yet); "<", ">", "^"
+    /// and "|", from galimatias's list for a domain (Domain.java; "\", "/",
+    /// "?", "#", "@", ":" and the brackets, the rest of it, end or divide the
+    /// authority); a "%" that isn't followed by two hex digits; and the
+    /// fullwidth percent sign, U+FF05, which IDNA maps to "%", and the
+    /// percent-encoded U+FF05 and U+FDD0, %ef%bc%85 and %ef%b7%90, in any
+    /// case, which galimatias decodes before IDNA rejects them. They're fine
+    /// in a path, so /sale/50％off is a good URL, which the port rejected.
+    /// (Other controls, noncharacters and the like are left to IDNA, which
+    /// the port doesn't follow yet: galimatias passes on its errors only
+    /// until the first about a hyphen, so http://-a\u{1}b/ is good.)
+    private static func hostCharactersAreAcceptable(_ host: ArraySlice<Unicode.Scalar>) -> Bool {
+        // (Case 554591, A21's review: the hyphen rule's answer, which depends
+        // on the host alone, found at the first percent-encoded U+FDD0 and
+        // kept; it was found again at each, so a host of thousands of labels
+        // like "-%ef%b7%90" took quadratic time, 5 s for 8,000.)
+        var hyphenErrorHides: Bool?
+        var index = host.startIndex
+        while index < host.endIndex {
+            switch host[index] {
+            case "\t", "\n", "\r", " ", "<", ">", "^", "|", "\u{FF05}":
+                return false
+            case "%":
+                guard index + 2 < host.endIndex, isASCIIHexDigit(host[index + 1]), isASCIIHexDigit(host[index + 2]) else { return false }
+                // (Case 554591, A21's review: U+FDD0 is an error IDNA reports,
+                // which galimatias passes on only if no error about a hyphen
+                // comes before it in ICU's order; the fullwidth percent sign,
+                // which IDNA maps to a "%" that Domain.java then rejects,
+                // isn't one of its errors.)
+                if startsWithASCIICaseInsensitive(host, at: index, Self.fullwidthPercentEncoded) {
+                    return false
+                }
+                if startsWithASCIICaseInsensitive(host, at: index, Self.nonCharacterEncoded) {
+                    let hides = hyphenErrorHides ?? Self.hyphenErrorHidesIDNAErrors(Self.hostBeforePort(host))
+                    hyphenErrorHides = hides
+                    if !hides {
+                        return false
+                    }
                 }
                 index += 3
-            } else {
-                index += 1
+                continue
+            default:
+                break
+            }
+            index += 1
+        }
+        return true
+    }
+
+    /// Case 554591 (A21's review): an authority's host without its port, for
+    /// the hyphen rule: up to the colon before the port, outside an IPv6
+    /// address's brackets. hostCharactersAreAcceptable is given the whole
+    /// authority, so "c-:80" was the last label of http://ab%ef%b7%90.c-:80/,
+    /// which doesn't end with a hyphen, and a port's characters counted
+    /// toward a label's 63 bytes: false errors. (A file: URL's host has no
+    /// port; a colon makes it bad there, but for a drive letter's.)
+    private static func hostBeforePort(_ authority: ArraySlice<Unicode.Scalar>) -> ArraySlice<Unicode.Scalar> {
+        if "[" == authority.first, let closeBracket = authority.firstIndex(of: "]") {
+            return authority[...closeBracket]
+        }
+        guard let colon = authority.firstIndex(of: ":") else { return authority }
+        return authority[..<colon]
+    }
+
+    /// Case 554591 (A21, from its review): whether galimatias stops at an
+    /// error about a hyphen before it gets to IDNA's others for this host:
+    /// URLUtils.processIdnaInfo walks ICU's errors in their order and returns,
+    /// with no error, at the first about a hyphen (a label starting or ending
+    /// with "-", or with "--" as its third and fourth characters), unless an
+    /// empty label or one over 63 bytes comes before it, which it reports. So
+    /// http://-a%ef%b7%90b/ and http://ab--%ef%b7%90/ are good, while
+    /// http://a%ef%b7%90b/ isn't. Labels are read as galimatias hands them to
+    /// ICU, percent-decoded, and divided where ICU divides them: at "." and at
+    /// the three other full stops UTS 46 maps to one (see dotLength), so at
+    /// %2e too. ICU judges an "xn--" label by the label its Punycode stands
+    /// for (see labelHasHyphenError). (From A21's second review: the port
+    /// divided labels only at ".", and read an "xn--" label as written, which
+    /// always has a hyphen error, so http://xn--abc.%ef%b7%90/ was good, a
+    /// missed error. A label's 63 bytes are counted in UTF-8, which is right
+    /// for the ASCII labels a hyphen rule usually concerns.)
+    private static func hyphenErrorHidesIDNAErrors(_ host: ArraySlice<Unicode.Scalar>) -> Bool {
+        // The host as bytes: a character as its UTF-8, a "%" and two hex
+        // digits as the byte they stand for.
+        var bytes: [UInt8] = []
+        bytes.reserveCapacity(host.count)
+        var index = host.startIndex
+        while index < host.endIndex {
+            let scalar = host[index]
+            if "%" == scalar, index + 2 < host.endIndex, let high = hexValue(host[index + 1]), let low = hexValue(host[index + 2]) {
+                bytes.append(UInt8(high * 16 + low))
+                index += 3
+                continue
+            }
+            UTF8.encode(scalar) { bytes.append($0) }
+            index += 1
+        }
+        // The labels, between the full stops.
+        var labels: [ArraySlice<UInt8>] = []
+        var labelStart = 0
+        var cursor = 0
+        while cursor < bytes.count {
+            let dot = dotLength(bytes, at: cursor)
+            if 0 < dot {
+                labels.append(bytes[labelStart..<cursor])
+                cursor += dot
+                labelStart = cursor
+                continue
+            }
+            cursor += 1
+        }
+        labels.append(bytes[labelStart...])
+        // (A trailing dot ends the host with an empty label, which IDNA
+        // allows: "example.com.".)
+        if 1 < labels.count, true == labels.last?.isEmpty {
+            labels.removeLast()
+        }
+        var hyphen = false
+        for label in labels {
+            if label.isEmpty || 63 < label.count {
+                return false
+            }
+            if !hyphen, labelHasHyphenError(label) {
+                hyphen = true
             }
         }
-        return false
+        return hyphen
     }
 
-    private func forbiddenCodePoint(in value: String) -> UInt32? {
-        value.unicodeScalars.first { scalar in
-            scalar.value == 0x0091 || scalar.value == 0xFDD0
-        }?.value
+    /// Case 554591 (A21's review): the length of the full stop that divides
+    /// labels at bytes[index], or 0: "." or the UTF-8 of one of the three UTS
+    /// 46 maps to it, U+3002 IDEOGRAPHIC FULL STOP, U+FF0E FULLWIDTH FULL STOP
+    /// and U+FF61 HALFWIDTH IDEOGRAPHIC FULL STOP.
+    private static func dotLength(_ bytes: [UInt8], at index: Int) -> Int {
+        if UInt8(ascii: ".") == bytes[index] {
+            return 1
+        }
+        guard index + 2 < bytes.count else { return 0 }
+        let (first, second, third) = (bytes[index], bytes[index + 1], bytes[index + 2])
+        if (0xE3 == first && 0x80 == second && 0x82 == third)
+            || (0xEF == first && 0xBC == second && 0x8E == third)
+            || (0xEF == first && 0xBD == second && 0xA1 == third) {
+            return 3
+        }
+        return 0
     }
 
-    private func formatCodePoint(_ value: UInt32) -> String {
-        "U+" + String(format: "%04x", value)
+    /// Case 554591 (A21's review): whether ICU reports a hyphen error for a
+    /// label (UTS46::processLabel's LEADING_HYPHEN, TRAILING_HYPHEN and
+    /// HYPHEN_3_4), which it tests on the label's UTF-16 units, and for an
+    /// "xn--" label (in any case, as ICU has lowercased the label by then) on
+    /// those of the label its Punycode decodes to. It tests none for an
+    /// "xn--" label that's INVALID_ACE_LABEL, being "xn--" alone, or ending
+    /// with "-" after more than one character of Punycode, or decoding to
+    /// a label not in the form UTS 46 maps to; nor for one whose Punycode
+    /// doesn't decode, a PUNYCODE error. (So xn--abc and xn--bcher-kva have
+    /// no hyphen error, nor xn--abc-, while xn---ber-0ra, "-über", has one.)
+    private static func labelHasHyphenError(_ label: ArraySlice<UInt8>) -> Bool {
+        let units: [UInt16]
+        let start = label.startIndex
+        if 4 <= label.count, UInt8(ascii: "x") == label[start] | 0x20, UInt8(ascii: "n") == label[start + 1] | 0x20,
+           UInt8(ascii: "-") == label[start + 2], UInt8(ascii: "-") == label[start + 3] {
+            guard 4 < label.count, !(5 < label.count && UInt8(ascii: "-") == label.last), let decoded = punycodeDecodedLabel(label.dropFirst(4)) else {
+                return false
+            }
+            units = decoded
+        } else {
+            units = Array(String(decoding: label, as: UTF8.self).utf16)
+        }
+        let dash: UInt16 = 0x2D
+        guard let first = units.first, let last = units.last else { return false }
+        return dash == first || dash == last || (4 <= units.count && dash == units[2] && dash == units[3])
     }
 
-    private func containsSquareBracket(_ value: some StringProtocol) -> Bool {
-        value.contains("[") || value.contains("]")
+    /// Case 554591 (A21's review): an "xn--" label's Punycode (RFC 3492, as
+    /// ICU's u_strFromPunycode decodes it, with its overflow checks), as the
+    /// UTF-16 units of the label it stands for; nil where ICU reports an
+    /// error: a character that isn't ASCII among the basic ones before the
+    /// last "-", one after it that isn't a Punycode digit, an overflow, or a
+    /// code point that's a surrogate or past U+10FFFF; and where the label
+    /// isn't in the form UTS 46 maps to (its normalizer's isNormalized), an
+    /// INVALID_ACE_LABEL, which is told here only roughly, by NFC and lower
+    /// case, as the port doesn't have UTS 46's mapping (so a decoded label
+    /// with a character UTS 46 disallows is still tested for hyphens).
+    private static func punycodeDecodedLabel(_ input: ArraySlice<UInt8>) -> [UInt16]? {
+        let base = 36
+        let tMin = 1
+        let tMax = 26
+        let maxInt = Int(Int32.max)
+        // (The basic code points are those before the last "-", if there's
+        // one past the first character; one there is a digit, and not one.)
+        var basicEnd = input.startIndex
+        if let delimiter = input.lastIndex(of: UInt8(ascii: "-")) {
+            basicEnd = delimiter
+        }
+        var output: [Int] = []
+        for byte in input[input.startIndex..<basicEnd] {
+            guard byte < 0x80 else { return nil }
+            output.append(Int(byte))
+        }
+        var position = input.startIndex < basicEnd ? basicEnd + 1 : input.startIndex
+        var n = 0x80
+        var i = 0
+        var bias = 72
+        while position < input.endIndex {
+            let oldI = i
+            var w = 1
+            var k = base
+            while true {
+                guard position < input.endIndex else { return nil }
+                let digit = punycodeDigit(input[position])
+                position += 1
+                guard digit < base, digit <= (maxInt - i) / w else { return nil }
+                i += digit * w
+                let t = k <= bias ? tMin : (k >= bias + tMax ? tMax : k - bias)
+                if digit < t {
+                    break
+                }
+                guard w <= maxInt / (base - t) else { return nil }
+                w *= base - t
+                k += base
+            }
+            let count = output.count + 1
+            bias = punycodeAdaptedBias(delta: i - oldI, count: count, isFirst: 0 == oldI)
+            guard i / count <= maxInt - n else { return nil }
+            n += i / count
+            i %= count
+            guard n <= 0x10FFFF, !(0xD800...0xDFFF).contains(n) else { return nil }
+            output.insert(n, at: i)
+            i += 1
+        }
+        var scalars = String.UnicodeScalarView()
+        for codePoint in output {
+            guard let scalar = Unicode.Scalar(UInt32(codePoint)) else { return nil }
+            scalars.append(scalar)
+        }
+        let decoded = String(scalars)
+        // (Compared scalar by scalar: == on Strings is canonical equivalence,
+        // which would take any label for its NFC form.)
+        guard decoded.unicodeScalars.elementsEqual(decoded.precomposedStringWithCanonicalMapping.unicodeScalars),
+              decoded.unicodeScalars.elementsEqual(decoded.lowercased().unicodeScalars) else {
+            return nil
+        }
+        return Array(decoded.utf16)
     }
 
-    private func isASCIIWhitespace(_ scalar: Unicode.Scalar) -> Bool {
+    /// Case 554591 (A21's review): a Punycode digit's value (a to z, in any
+    /// case, 0 to 25; 0 to 9, 26 to 35), or 36 for a character that isn't one.
+    private static func punycodeDigit(_ byte: UInt8) -> Int {
+        switch byte {
+        case UInt8(ascii: "a")...UInt8(ascii: "z"):
+            return Int(byte - UInt8(ascii: "a"))
+        case UInt8(ascii: "A")...UInt8(ascii: "Z"):
+            return Int(byte - UInt8(ascii: "A"))
+        case UInt8(ascii: "0")...UInt8(ascii: "9"):
+            return Int(byte - UInt8(ascii: "0")) + 26
+        default:
+            return 36
+        }
+    }
+
+    /// Case 554591 (A21's review): RFC 3492's bias adaptation (ICU's
+    /// adaptBias).
+    private static func punycodeAdaptedBias(delta: Int, count: Int, isFirst: Bool) -> Int {
+        let base = 36
+        let tMin = 1
+        let tMax = 26
+        var delta = isFirst ? delta / 700 : delta / 2
+        delta += delta / count
+        var k = 0
+        while delta > ((base - tMin) * tMax) / 2 {
+            delta /= base - tMin
+            k += base
+        }
+        return k + ((base - tMin + 1) * delta) / (delta + 38)
+    }
+
+    private static func hexValue(_ scalar: Unicode.Scalar) -> Int? {
+        switch scalar.value {
+        case 0x30...0x39:
+            return Int(scalar.value - 0x30)
+        case 0x41...0x46:
+            return Int(scalar.value - 0x41 + 10)
+        case 0x61...0x66:
+            return Int(scalar.value - 0x61 + 10)
+        default:
+            return nil
+        }
+    }
+
+    private static let fullwidthPercentEncoded: [Unicode.Scalar] = ["%", "e", "f", "%", "b", "c", "%", "8", "5"]
+    private static let nonCharacterEncoded: [Unicode.Scalar] = ["%", "e", "f", "%", "b", "7", "%", "9", "0"]
+
+    private static func startsWithASCIICaseInsensitive(_ text: ArraySlice<Unicode.Scalar>, at index: Int, _ prefix: [Unicode.Scalar]) -> Bool {
+        guard prefix.count <= text.endIndex - index else { return false }
+        for (offset, expected) in prefix.enumerated() where lowercasedASCII(text[index + offset]) != expected {
+            return false
+        }
+        return true
+    }
+
+    private static func isValidPort(_ port: ArraySlice<Unicode.Scalar>) -> Bool {
+        guard port.allSatisfy({ isASCIIDigit($0) }) else {
+            return false
+        }
+        let significantDigits = port.drop { "0" == $0 }
+        guard !significantDigits.isEmpty else { return true }
+        guard significantDigits.count <= 5 else { return false }
+        let number = significantDigits.reduce(0) { $0 * 10 + Int($1.value - 48) }
+        return number <= 65_535
+    }
+
+    private static func startsWithTwoSlashes(_ input: ArraySlice<Unicode.Scalar>, at index: Int, end: Int) -> Bool {
+        index + 1 < end && "/" == input[index] && "/" == input[index + 1]
+    }
+
+    private static func isSlashOrBackslash(_ scalar: Unicode.Scalar) -> Bool {
+        "/" == scalar || "\\" == scalar
+    }
+
+    /// What ends an authority or a host: the path ("/", or "\", which is
+    /// then an error), the query or the fragment.
+    private static func isAuthorityDelimiter(_ scalar: Unicode.Scalar) -> Bool {
+        "/" == scalar || "\\" == scalar || "?" == scalar || "#" == scalar
+    }
+
+    /// Case 554591 (A21): galimatias's URL code points (URLUtils.java):
+    /// ASCII letters and digits, the punctuation !$&'()*+,-./:;=?@_~, and
+    /// every code point from U+00A0 on but the surrogates, U+FDD0 to U+FDEF,
+    /// U+FFF0 to U+FFFF (U+FFFD among them, which a NUL or a bad reference
+    /// becomes) and the last two code points of every astral plane.
+    private static func isURLCodePoint(_ scalar: Unicode.Scalar) -> Bool {
+        switch scalar.value {
+        case 0x30...0x39, 0x41...0x5A, 0x61...0x7A:
+            return true
+        case 0x21, 0x24, 0x26...0x2F, 0x3A, 0x3B, 0x3D, 0x3F, 0x40, 0x5F, 0x7E:
+            return true
+        case 0xA0...0xD7FF, 0xE000...0xFDCF, 0xFDF0...0xFFEF:
+            return true
+        case 0x10000...0x10FFFD:
+            return 0xFFFE > (scalar.value & 0xFFFF)
+        default:
+            return false
+        }
+    }
+
+    /// Case 554591 (A21): Java's Character.isWhitespace, which galimatias
+    /// trims from both ends of a URL, as measured with vnu.jar: U+0009 to
+    /// U+000D, U+001C to U+001F, the space, and the Unicode spaces but the
+    /// no-break ones (U+00A0, U+2007, U+202F) and U+180E and U+200B. So
+    /// "&#x3000;" alone is a good src, and " tel:1" isn't trimmed, as its
+    /// space follows "x-" (see iriRefVerdict).
+    private static func isJavaWhitespace(_ scalar: Unicode.Scalar) -> Bool {
+        switch scalar.value {
+        case 0x09...0x0D, 0x1C...0x20, 0x1680, 0x2000...0x2006, 0x2008...0x200A, 0x2028, 0x2029, 0x205F, 0x3000:
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// HTML's white space (space, tab, LF, FF, CR), which IriRef trims before
+    /// "Must be non-empty." and splitScheme skips.
+    private static func isHTMLSpace(_ scalar: Unicode.Scalar) -> Bool {
         switch scalar.value {
         case 0x09, 0x0A, 0x0C, 0x0D, 0x20:
             return true
@@ -248,21 +1030,41 @@ struct HTMLURLAttributeChecker {
         }
     }
 
-    private func isASCIILetter(_ scalar: Unicode.Scalar) -> Bool {
+    private static func lowercasedASCII(_ scalars: ArraySlice<Unicode.Scalar>) -> String {
+        var text = String.UnicodeScalarView()
+        for scalar in scalars {
+            text.append(lowercasedASCII(scalar))
+        }
+        return String(text)
+    }
+
+    private static func lowercasedASCII(_ scalar: Unicode.Scalar) -> Unicode.Scalar {
+        (0x41...0x5A).contains(scalar.value) ? Unicode.Scalar(scalar.value + 32)! : scalar
+    }
+
+    private func forbiddenCodePoint(in value: String) -> UInt32? {
+        value.unicodeScalars.first { scalar in
+            0x0091 == scalar.value || 0xFDD0 == scalar.value
+        }?.value
+    }
+
+    private func formatCodePoint(_ value: UInt32) -> String {
+        "U+" + String(format: "%04x", value)
+    }
+
+    private static func isASCIILetter(_ scalar: Unicode.Scalar) -> Bool {
         (scalar.value >= 65 && scalar.value <= 90) || (scalar.value >= 97 && scalar.value <= 122)
     }
 
-    private func isASCIIDigit(_ scalar: Unicode.Scalar) -> Bool {
+    private static func isASCIIDigit(_ scalar: Unicode.Scalar) -> Bool {
         scalar.value >= 48 && scalar.value <= 57
     }
 
-    private func isASCIIHexDigit(_ scalar: Unicode.Scalar) -> Bool {
+    private static func isASCIIHexDigit(_ scalar: Unicode.Scalar) -> Bool {
         isASCIIDigit(scalar)
             || (scalar.value >= 65 && scalar.value <= 70)
             || (scalar.value >= 97 && scalar.value <= 102)
     }
-
-    private static let specialSchemes: Set<String> = ["ftp", "http", "https", "ws", "wss"]
 }
 
 struct HTMLMicrodataAttributeChecker {
@@ -1496,7 +2298,7 @@ struct HTMLGeneralAttributeChecker {
                             written = Self.droppingLeadingLineFeed(content)
                         }
                     }
-                    let seen = context.textDecodesReferences && !Self.isCDATASection(range, locations: locations) ? HTMLCharacterReferences.decodeAttributeValue(written) : written
+                    let seen = context.textDecodesReferences && !Self.isCDATASection(range, locations: locations) ? HTMLCharacterReferences.decodeText(written) : written
                     timeText.append(contentsOf: seen.unicodeScalars.lazy.filter { !(context.textDropsNUL && "\u{0}" == $0) })
                 }
                 let currentIsHTML = .html == (namespaceStack.last ?? .html)
@@ -2347,7 +3149,7 @@ struct HTMLGeneralAttributeChecker {
                 } else {
                     var piece = String.UnicodeScalarView()
                     piece.append(contentsOf: scalars[index..<end])
-                    if !HTMLCharacterReferences.decode(String(piece)).unicodeScalars.allSatisfy({ isXMLSpace($0) || ("&" == scalars[index] && "\u{0C}" == $0) }) {
+                    if !HTMLCharacterReferences.decodeText(String(piece)).unicodeScalars.allSatisfy({ isXMLSpace($0) || ("&" == scalars[index] && "\u{0C}" == $0) }) {
                         pieces.append(offsets[index]..<offsets[end])
                     }
                 }
@@ -2713,10 +3515,14 @@ struct HTMLGeneralAttributeChecker {
         if element.name == "a", element.hasAttribute("href"), stack.contains("button") {
             appendMessage("The element \u{201c}a\u{201d} with the attribute \u{201c}href\u{201d} must not appear as a descendant of the \u{201c}button\u{201d} element.", for: element, locations: locations, messages: &messages)
         }
-        if element.name == "area", let type = element.attributeValue("type"), !isValidMIMEType(type) {
+        // (Case 554591, A7's review: a MIME type is judged and printed
+        // decoded, as the schema reads it and vnu.jar prints it. It was read as
+        // written, so Hugo's RSS link, type="application/rss&#43;xml", on every
+        // page its themes make, was a false Bad value.)
+        if "area" == element.name, let type = element.attributeValue("type").map(HTMLCharacterReferences.decodeAttributeValue), !isValidMIMEType(type) {
             appendBadAttributeValue(type, attribute: "type", for: element, locations: locations, messages: &messages)
         }
-        if element.name == "link", let type = element.attributeValue("type"), !isValidMIMEType(type) {
+        if "link" == element.name, let type = element.attributeValue("type").map(HTMLCharacterReferences.decodeAttributeValue), !isValidMIMEType(type) {
             appendBadAttributeValue(type, attribute: "type", for: element, locations: locations, messages: &messages)
         }
         if element.name == "audio", let loading = element.attributeValue("loading"), loading.lowercased() != "lazy" {
@@ -2912,7 +3718,10 @@ struct HTMLGeneralAttributeChecker {
         locations: SourceLocationMap,
         messages: inout [ValidationMessage]
     ) {
-        if let lang = element.attributeValue("lang") {
+        // (Case 554591, A7's review: lang and hreflang are judged and printed
+        // decoded, as the schema reads them and vnu.jar prints them; they were
+        // read as written, so lang="en&#45;GB" was a false Bad value.)
+        if let lang = element.attributeValue("lang").map(HTMLCharacterReferences.decodeAttributeValue) {
             if lang.isEmpty {
                 // The empty string is an allowed language value.
             } else if Self.deprecatedLanguageTags.contains(lang.lowercased()) {
@@ -2934,7 +3743,7 @@ struct HTMLGeneralAttributeChecker {
             }
         }
 
-        if let hreflang = element.attributeValue("hreflang"), !isPlausibleLanguageTag(hreflang) {
+        if let hreflang = element.attributeValue("hreflang").map(HTMLCharacterReferences.decodeAttributeValue), !isPlausibleLanguageTag(hreflang) {
             appendBadAttributeValue(hreflang, attribute: "hreflang", for: element, locations: locations, messages: &messages)
         }
     }
@@ -2944,7 +3753,11 @@ struct HTMLGeneralAttributeChecker {
         locations: SourceLocationMap,
         messages: inout [ValidationMessage]
     ) {
-        if let id = element.attributeValue("id"), !isValidIDValue(id) {
+        // Case 554591 (A7): judged and printed decoded, as vnu.jar has it, so
+        // id="a&#32;b" is a bad value and id="Strings&nbsp;1" is printed with
+        // its no-break space (as on the support site's CLM page), where both
+        // used to be read as written.
+        if let id = element.attributeValue("id").map(HTMLCharacterReferences.decodeAttributeValue), !isValidIDValue(id) {
             appendBadAttributeValue(id, attribute: "id", for: element, locations: locations, messages: &messages)
         }
 
@@ -3715,7 +4528,8 @@ struct HTMLGeneralAttributeChecker {
         if text.unicodeScalars.contains("\u{0C}") {
             return true
         }
-        let seen = decodingReferences ? HTMLCharacterReferences.decode(text) : text
+        // (Case 554591, A7: as text, with no attribute exception.)
+        let seen = decodingReferences ? HTMLCharacterReferences.decodeText(text) : text
         return seen.unicodeScalars.contains { !(" " == $0 || "\t" == $0 || "\r" == $0 || "\n" == $0 || "\u{0C}" == $0 || (droppingNUL && "\u{0}" == $0)) }
     }
 
@@ -5184,7 +5998,9 @@ struct HTMLGeneralAttributeChecker {
                 }
             }
         }
-        if let type = element.attributeValue("type"), !isValidMIMEType(type) {
+        // (Case 554591, A7's review: decoded; see appendElementSpecificMessages'
+        // area and link type.)
+        if let type = element.attributeValue("type").map(HTMLCharacterReferences.decodeAttributeValue), !isValidMIMEType(type) {
             appendBadAttributeValue(type, attribute: "type", for: element, locations: locations, messages: &messages)
         }
     }

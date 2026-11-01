@@ -52,9 +52,11 @@ public final class HTMLValidator: Sendable {
             /// takes with anything at all in them (see legacyAnythingElements);
             /// or (item 12) a colgroup after the table's rows, which it rejects
             /// though the port doesn't report it yet (see TableColumnSection).
-            /// Only the figure rules and item 12's colgroup rule look at this
-            /// so far (see schemaChecksChildren); the older rules predate it,
-            /// and still check inside such elements.
+            /// Only the figure rules, item 12's colgroup rule (see
+            /// schemaChecksChildren) and the URL attribute checks (Case
+            /// 554591, A21: they skip such an element and what's in it; see
+            /// uncheckedURLStartTags in validate()) look at this so far; the
+            /// older rules predate it, and still check inside such elements.
             static let inUncheckedElement = Flags(rawValue: 1 << 7)
         }
 
@@ -400,6 +402,23 @@ public final class HTMLValidator: Sendable {
         // spans and children of the colgroups after it went unchecked, and the
         // outer </colgroup> was "stray".)
         var impliedColgroupTables: Set<Int> = []
+        // Case 554591 (A21): the start-tag offsets of the HTML elements whose
+        // attributes upstream's schema doesn't check, as this walk's flags
+        // have it (see OpenElement.Flags): in template contents, in an SVG
+        // desc's or a MathML annotation-xml's any-element content, or in or
+        // under an element the schema rejects or leaves unchecked. Jing
+        // checks a URL attribute's value only where it checks the element,
+        // so HTMLURLAttributeChecker, which runs after this walk and has no
+        // stack of its own, skips these (see its validate). The port checked
+        // URLs everywhere, so <template><a href="a b"> and
+        // <span><div><a href="a b"> got a Bad value that vnu.jar doesn't
+        // give. (Only the elements in such a place are kept, which in most
+        // documents is none. From A21's review: as this walk has it, which
+        // has errors of its own, such as a selectedcontent, which the port's
+        // vocabulary doesn't know yet, so its itemid isn't checked; and not
+        // the rejections the checkers after it find, which
+        // dropURLMessagesTheSchemaWouldNotGive deals with.)
+        var uncheckedURLStartTags: Set<Int> = []
         appendSourcePatternDiagnostics(source: source, locations: locations, messages: &messages)
 
         for token in tokens {
@@ -414,6 +433,12 @@ public final class HTMLValidator: Sendable {
                 appendError("Saw \u{201c}<\u{201d}. Probable cause: Unescaped \u{201c}<\u{201d}.", offset: offset, length: length, locations: locations, messages: &messages)
             case let .parseError(message, offset, length):
                 appendError(message, offset: offset, length: length, locations: locations, messages: &messages)
+            case let .diagnostic(message, isWarning, firstOffset, lastOffset):
+                // (Case 554591, A7: placed as vnu.jar places it; see
+                // HTMLToken.diagnostic.)
+                let location = locations.location(firstOffset: firstOffset, lastOffset: lastOffset)
+                let extract = locations.extract(offset: firstOffset, length: lastOffset - firstOffset + 1)
+                messages.append(isWarning ? .warning(message, location: location, extract: extract) : .error(message, location: location, extract: extract))
             case .comment:
                 continue
             case let .text(content, offset, _):
@@ -781,6 +806,12 @@ public final class HTMLValidator: Sendable {
                     }
                     flags.insert(.inRejectedSubtree)
                 }
+                // Case 554591 (A21): see uncheckedURLStartTags. (Here, once
+                // the flags are final, for a void element too, which isn't
+                // pushed: an <img>'s src is the usual URL attribute.)
+                if .html == namespace, !flags.isDisjoint(with: [.inTemplateContents, .inAnyElementContent, .inRejectedSubtree, .inUncheckedElement]) {
+                    uncheckedURLStartTags.insert(offset)
+                }
                 if pushesElement {
                     stack.append(OpenElement(name: name, offset: offset, length: length, namespace: namespace, templateMode: .inTemplate, flags: flags))
                 } else if selfClosing && .html == namespace && HTMLVocabulary.voidElements.contains(name) {
@@ -1040,12 +1071,15 @@ public final class HTMLValidator: Sendable {
         }
 
         messages.append(contentsOf: HTMLRequiredAttributeChecker().validate(document: document, locations: locations))
-        messages.append(contentsOf: HTMLURLAttributeChecker().validate(document: document, locations: locations))
+        let urlMessagesStart = messages.count
+        let urlMessages = HTMLURLAttributeChecker().validate(document: document, uncheckedStartTags: uncheckedURLStartTags, locations: locations)
+        messages.append(contentsOf: urlMessages.map(\.message))
         messages.append(contentsOf: HTMLMicrodataAttributeChecker().validate(document: document, locations: locations))
         messages.append(contentsOf: HTMLMetaChecker().validate(document: document, locations: locations))
         messages.append(contentsOf: HTMLDefinitionListChecker().validate(document: document, locations: locations))
         messages.append(contentsOf: HTMLTableChecker().validate(document: document, locations: locations))
         messages.append(contentsOf: HTMLGeneralAttributeChecker().validate(document: document, locations: locations))
+        Self.dropURLMessagesTheSchemaWouldNotGive(&messages, urlMessages: urlMessages, at: urlMessagesStart, document: document, locations: locations)
 
         if sawStartTag, !sawHTMLLang {
             if let htmlToken = tokens.firstHTMLStart {
@@ -1055,6 +1089,99 @@ public final class HTMLValidator: Sendable {
             }
         }
         return messages
+    }
+
+    /// Case 554591 (A21, from its review): upstream's schema checks no
+    /// attribute of an element it rejects, nor anything in that element, nor
+    /// an attribute it doesn't allow on its element. The URL checker skips
+    /// what this walk knows (uncheckedURLStartTags), but checkers that run
+    /// after it reject more: HTMLDefinitionListChecker (a dl's children) and
+    /// HTMLGeneralAttributeChecker (a picture's, details' and summary's, and
+    /// attributes such as the src of a picture's source, a common mistake).
+    /// Their verdicts are in their messages, so the URL checker's "Bad value"
+    /// messages (its errors and its data: warnings) on those elements, in
+    /// them, or for those attributes are dropped here, once they've run, and
+    /// in place, as the messages' order matters (TestRunner compares the first
+    /// error). It used to report them beside the rejection, as in
+    /// <dl><a href="a b"> and <picture><source src="a b">, which vnu.jar
+    /// doesn't. (Elements, as messages give them, are found by their first
+    /// line and column; the rejections the port doesn't report, such as a
+    /// non-li child of a list, are still missed. From A21's second review:
+    /// what's in a rejected element is found by nesting, as the events nest,
+    /// rather than by the source the element spans, since an element closed
+    /// implicitly, by its parent's end tag, an optional end tag or the end of
+    /// the file, has its end event at its start tag; and each message comes
+    /// with its element and attribute, rather than read back out of its text,
+    /// which leaves out a value of 200 UTF-16 units or more. Both kept false
+    /// errors, as in <dl><p><a href="a b">x</a></dl>, and the spans cost a
+    /// look at each rejected element for each message.)
+    private static func dropURLMessagesTheSchemaWouldNotGive(_ messages: inout [ValidationMessage], urlMessages: [HTMLURLAttributeChecker.URLMessage], at urlMessagesStart: Int, document: HTMLParsedDocument, locations: SourceLocationMap) {
+        struct Place: Hashable {
+            var line: Int
+            var column: Int
+        }
+        func place(of message: ValidationMessage) -> Place {
+            Place(line: message.firstLine ?? message.lastLine ?? 0, column: message.firstColumn ?? message.lastColumn ?? 0)
+        }
+        let urlMessagesEnd = urlMessagesStart + urlMessages.count
+        guard urlMessages.contains(where: { nil != $0.badValueAttribute }), urlMessagesEnd < messages.count else {
+            return
+        }
+        var rejectedElements: Set<Place> = []
+        var rejectedAttributes: [Place: Set<String>] = [:]
+        for message in messages[urlMessagesEnd...] {
+            let text = message.message
+            if text.hasPrefix("Element \u{201c}"), text.contains("\u{201d} not allowed as child of \u{201c}") {
+                rejectedElements.insert(place(of: message))
+            } else if text.hasPrefix("Attribute \u{201c}"), text.hasSuffix("\u{201d} at this point."), let nameEnd = text.range(of: "\u{201d} not allowed on element \u{201c}") {
+                let name = String(text[text.index(text.startIndex, offsetBy: 11)..<nameEnd.lowerBound])
+                rejectedAttributes[place(of: message), default: []].insert(name)
+            }
+        }
+        guard !rejectedElements.isEmpty || !rejectedAttributes.isEmpty else {
+            return
+        }
+        // The start tags (by offset) of the rejected elements and of what's
+        // in them: what starts while one is open, until its end event,
+        // implicit or not, closes it. (The events nest: a void or self-closed
+        // element has its end event too.)
+        var inRejectedElement: Set<Int> = []
+        if !rejectedElements.isEmpty {
+            var openIsRejected: [Bool] = []
+            var openRejectedCount = 0
+            for event in document.events {
+                switch event {
+                case let .startElement(element):
+                    let location = locations.location(offset: element.range.offset, length: element.range.length)
+                    let isRejected = rejectedElements.contains(Place(line: location.firstLine, column: location.firstColumn))
+                    if isRejected || 0 < openRejectedCount {
+                        inRejectedElement.insert(element.range.offset)
+                    }
+                    openIsRejected.append(isRejected)
+                    if isRejected {
+                        openRejectedCount += 1
+                    }
+                case .endElement:
+                    if true == openIsRejected.popLast() {
+                        openRejectedCount -= 1
+                    }
+                default:
+                    continue
+                }
+            }
+        }
+        var kept: [ValidationMessage] = []
+        kept.reserveCapacity(urlMessages.count)
+        for urlMessage in urlMessages {
+            // (A message about no attribute's value, the "Forbidden code
+            // point" error, stays.)
+            if let attribute = urlMessage.badValueAttribute,
+               inRejectedElement.contains(urlMessage.elementOffset) || true == rejectedAttributes[place(of: urlMessage.message)]?.contains(attribute) {
+                continue
+            }
+            kept.append(urlMessage.message)
+        }
+        messages.replaceSubrange(urlMessagesStart..<urlMessagesEnd, with: kept)
     }
 
     /// Review item A2: for </p> without a <p> in scope, and for </br>, upstream
@@ -1544,10 +1671,16 @@ public final class HTMLValidator: Sendable {
                 // have. Otherwise a figcaption in, say, the <div> of
                 // <span><div>, which vnu.jar doesn't report, was. The one
                 // message here that's the parser's rather than a rejection,
-                // for a <picture> in a <noscript> in the head, makes no
-                // difference: upstream's schema rejects anything in a
-                // picture but what the figure rules don't check.)
-                elementFlags.insert(.inUncheckedElement)
+                // for a <picture> in a <noscript> in the head, isn't one:
+                // upstream's parser ends the noscript and the head there and
+                // puts the picture in the body, where its schema checks it.
+                // That made no difference to the figure rules, but A21's URL
+                // checks go by this flag too (see uncheckedURLStartTags), and,
+                // from A21's review, <noscript><picture><img src="a b"> in the
+                // head lost the img's Bad value, which vnu.jar gives.)
+                if Self.pictureInHeadNoscriptMessage != parentMessage {
+                    elementFlags.insert(.inUncheckedElement)
+                }
             } else if let figureMessage = figureContentModelMessage(for: name, namespace: namespace, stack: contentStack, inHead: inHead, isFosterParented: isFosterParented, figureContents: &figureContents) {
                 appendError(figureMessage, offset: offset, length: length, locations: locations, messages: &messages)
                 elementFlags.insert(.inRejectedSubtree)
@@ -1563,6 +1696,11 @@ public final class HTMLValidator: Sendable {
         }
         return elementFlags
     }
+
+    /// Case 554591 (A21's review): the parser's message for a <picture> in a
+    /// <noscript> in the head, the one message of contentModelMessage's that
+    /// isn't the schema's (see validateStartTag).
+    private static let pictureInHeadNoscriptMessage = "Bad start tag in \u{201c}picture\u{201d} in \u{201c}noscript\u{201d} in \u{201c}head\u{201d}."
 
     private func contentModelMessage(for child: String, stack: ArraySlice<OpenElement>, inHead: Bool) -> String? {
         if child == "li" {
@@ -1581,7 +1719,7 @@ public final class HTMLValidator: Sendable {
             // takes one in a <template> in the head for one in the head,
             // though upstream's parser takes it as in a body.)
             if stack.last?.name == "noscript", inHead {
-                return "Bad start tag in \u{201c}picture\u{201d} in \u{201c}noscript\u{201d} in \u{201c}head\u{201d}."
+                return Self.pictureInHeadNoscriptMessage
             }
             if let parent = stack.last?.name, Self.invalidPictureParents.contains(parent) {
                 return "Element \u{201c}picture\u{201d} not allowed as child of \u{201c}\(parent)\u{201d} in this context."

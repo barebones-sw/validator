@@ -238,6 +238,15 @@ struct HTMLTreeEventBuilder {
         return HTMLForeignContent.rootNamespace(of: name) ?? .html
     }
 
+    /// Case 554591 (A7's review): whether upstream's tree builder ignores
+    /// white space in the mode it's in: before the head ("initial", "before
+    /// html" and "before head"), so that a carriage return's line feed there
+    /// never reaches vnu.jar's recorder (see HTMLTokenizer's
+    /// appendTextReferenceDiagnostics).
+    var ignoresWhiteSpace: Bool {
+        !sections.headStarted && !sections.bodyStarted && !sections.framesetStarted
+    }
+
     /// Review item A2: whether "<![CDATA[" starts a CDATA section rather than
     /// a bogus comment: whenever the current node isn't an HTML element, as in
     /// upstream (and the spec). That includes an integration point itself, so
@@ -263,6 +272,8 @@ struct HTMLTreeEventBuilder {
         switch token {
         case let .startTag(_, _, _, _, offset, length), let .endTag(_, offset, length), let .doctype(offset, length), let .comment(_, offset, length), let .bogusMarkup(offset, length), let .parseError(_, offset, length):
             currentTokenRange = HTMLSourceRange(offset: offset, length: length)
+        case let .diagnostic(_, _, firstOffset, lastOffset):
+            currentTokenRange = HTMLSourceRange(offset: firstOffset, length: lastOffset - firstOffset + 1)
         case let .text(_, offset, _):
             // (From U11's review: text that ends a colgroup is placed where it
             // starts, as vnu.jar has it, but not as the whole run, which can
@@ -422,7 +433,7 @@ struct HTMLTreeEventBuilder {
             events.append(.characters(content, range: HTMLSourceRange(offset: offset, length: length)))
         case let .comment(content, offset, length):
             events.append(.comment(content, range: HTMLSourceRange(offset: offset, length: length)))
-        case .bogusMarkup, .parseError:
+        case .bogusMarkup, .parseError, .diagnostic:
             return
         }
     }
@@ -1118,7 +1129,8 @@ enum HTMLImplicitClosures {
     /// (zeroOriginatingReplacementCharacter). (A reference to a NUL, which
     /// the tokenizer makes U+FFFD, does end it.)
     static func textEndsColumnGroup(_ text: String) -> Bool {
-        let decoded = text.contains("&") ? HTMLCharacterReferences.decode(text) : text
+        // (Case 554591, A7: as text, with no attribute exception.)
+        let decoded = text.contains("&") ? HTMLCharacterReferences.decodeText(text) : text
         return decoded.utf8.contains { 0x20 != $0 && 0x09 != $0 && 0x0A != $0 && 0x0C != $0 && 0x0D != $0 && 0x00 != $0 }
     }
 
@@ -1137,7 +1149,8 @@ enum HTMLImplicitClosures {
     /// reference to a NUL, which the tokenizer makes U+FFFD and passes on as
     /// a character, does end it.)
     static func textEndsHead(_ text: String) -> Bool {
-        let decoded = text.contains("&") ? HTMLCharacterReferences.decode(text) : text
+        // (Case 554591, A7: as text, with no attribute exception.)
+        let decoded = text.contains("&") ? HTMLCharacterReferences.decodeText(text) : text
         return decoded.utf8.contains { 0x20 != $0 && 0x09 != $0 && 0x0A != $0 && 0x0C != $0 && 0x0D != $0 && 0x00 != $0 }
     }
 

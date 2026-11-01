@@ -124,14 +124,6 @@
       "category" : "invalid",
       "failure" : "Expected “Bad value “badvalue” for attribute “sizes” on element “img”.” but instead encountered “An “img” element must have an “alt” attribute, except under certain conditions. For details, consult guidance on providing text alternatives for images.”."
     },
-    "html/elements/a/href/scheme-data-contains-fragment-haswarn.html" : {
-      "category" : "haswarn",
-      "failure" : "Expected a warning only but encountered error “Bad value “data:text/html,test#test” for attribute “href” on element “a”.”."
-    },
-    "html/elements/area/href/scheme-data-contains-fragment-haswarn.html" : {
-      "category" : "haswarn",
-      "failure" : "Expected a warning only but encountered error “Bad value “data:text/html,test#test” for attribute “href” on element “area”.”."
-    },
     "html/elements/area/model-novalid.html" : {
       "category" : "invalid",
       "failure" : "Expected “Attribute “coords” not allowed on element “area” at this point.” but instead encountered “Element “area” is missing required attribute “href”.”."
@@ -139,10 +131,6 @@
     "html/elements/audio/loading-eager-isvalid.html" : {
       "category" : "valid",
       "failure" : "Expected no errors or warnings but encountered error “Bad value “eager” for attribute “loading” on element “audio”.”."
-    },
-    "html/elements/audio/src/scheme-data-contains-fragment-haswarn.html" : {
-      "category" : "haswarn",
-      "failure" : "Expected a warning only but encountered error “Bad value “data:text/html,test#test” for attribute “src” on element “audio”.”."
     },
     "html/elements/autofocus/dialog-scoped-isvalid.html" : {
       "category" : "valid",
@@ -156,21 +144,9 @@
       "category" : "valid",
       "failure" : "Expected no errors or warnings but encountered error “There must not be two elements with the same \"nearest ancestor autofocus scoping root element\" that both have the “autofocus” attribute specified.”."
     },
-    "html/elements/base/href/scheme-data-contains-fragment-haswarn.html" : {
-      "category" : "haswarn",
-      "failure" : "Expected a warning only but encountered error “Bad value “data:text/html,test#test” for attribute “href” on element “base”.”."
-    },
     "html/elements/bdo/model-novalid.html" : {
       "category" : "invalid",
       "failure" : "Expected “Element “bdo” must have attribute “dir”.” but instead encountered “End tag “p” implied, but there were open elements.”."
-    },
-    "html/elements/blockquote/cite/scheme-data-contains-fragment-haswarn.html" : {
-      "category" : "haswarn",
-      "failure" : "Expected a warning only but encountered error “Bad value “data:text/html,test#test” for attribute “cite” on element “blockquote”.”."
-    },
-    "html/elements/button/formaction/scheme-data-contains-fragment-haswarn.html" : {
-      "category" : "haswarn",
-      "failure" : "Expected a warning only but encountered error “Bad value “data:text/html,test#test” for attribute “formaction” on element “button”.”."
     },
     "html/elements/button/popover-isvalid.html" : {
       "category" : "valid",
@@ -180,10 +156,6 @@
       "category" : "valid",
       "failure" : "Expected no errors or warnings but encountered error “Element “andy-custom:menu” not allowed.”."
     },
-    "html/elements/del/cite/scheme-data-contains-fragment-haswarn.html" : {
-      "category" : "haswarn",
-      "failure" : "Expected a warning only but encountered error “Bad value “data:text/html,test#test” for attribute “cite” on element “del”.”."
-    },
     "html/elements/dl/div-contains-dl-novalid.html" : {
       "category" : "invalid",
       "failure" : "Expected “Element “dl” not allowed as child of “div” in this context.” but instead encountered “Stray end tag “div”.”."
@@ -192,25 +164,13 @@
       "category" : "invalid",
       "failure" : "Expected “Text not allowed in “div” in this context.” but instead encountered “Stray end tag “div”.”."
     },
-    "html/elements/embed/src/scheme-data-contains-fragment-haswarn.html" : {
-      "category" : "haswarn",
-      "failure" : "Expected a warning only but encountered error “Bad value “data:text/html,test#test” for attribute “src” on element “embed”.”."
-    },
     "html/elements/footer/role-contentinfo-section-scope-isvalid.html" : {
       "category" : "valid",
       "failure" : "Expected no errors or warnings but encountered warning “The “contentinfo” role is unnecessary for element “footer”.”."
     },
-    "html/elements/form/action/scheme-data-contains-fragment-haswarn.html" : {
-      "category" : "haswarn",
-      "failure" : "Expected a warning only but encountered error “Bad value “data:text/html,test#test” for attribute “action” on element “form”.”."
-    },
     "html/elements/header/role-banner-section-scope-isvalid.html" : {
       "category" : "valid",
       "failure" : "Expected no errors or warnings but encountered warning “The “banner” role is unnecessary for element “header”.”."
-    },
-    "html/elements/iframe/src/scheme-data-contains-fragment-haswarn.html" : {
-      "category" : "haswarn",
-      "failure" : "Expected a warning only but encountered error “Bad value “data:text/html,test#test” for attribute “src” on element “iframe”.”."
     },
     "html/elements/img/controls-without-alt-novalid.html" : {
       "category" : "invalid",
@@ -228,10 +188,6 @@
       "category" : "valid",
       "failure" : "Expected no errors or warnings but encountered error “Bad value “auto, 100vw” for attribute “sizes” on element “img”.”."
     },
-    "html/elements/img/src/scheme-data-contains-fragment-haswarn.html" : {
-      "category" : "haswarn",
-      "failure" : "Expected a warning only but encountered error “Bad value “data:text/html,test#test” for attribute “src” on element “img”.”."
-    },
     "html/elements/img/usemap-bad-value-novalid.html" : {
       "category" : "invalid",
       "failure" : "Expected “Bad value “#” for attribute “usemap” on element “img”.” but instead encountered “No space between the doctype public and system identifiers.”."
@@ -240,26 +196,6 @@
       "category" : "invalid",
       "failure" : "Expected “Bad value “-1” for attribute “width” on element “img”.” but instead encountered “An “img” element must have an “alt” attribute, except under certain conditions. For details, consult guidance on providing text alternatives for images.”."
     },
-    "html/elements/input/type-image-formaction/scheme-data-contains-fragment-haswarn.html" : {
-      "category" : "haswarn",
-      "failure" : "Expected a warning only but encountered error “Bad value “data:text/html,test#test” for attribute “formaction” on element “input”.”."
-    },
-    "html/elements/input/type-image-src/scheme-data-contains-fragment-haswarn.html" : {
-      "category" : "haswarn",
-      "failure" : "Expected a warning only but encountered error “Bad value “data:text/html,test#test” for attribute “src” on element “input”.”."
-    },
-    "html/elements/input/type-submit-formaction/scheme-data-contains-fragment-haswarn.html" : {
-      "category" : "haswarn",
-      "failure" : "Expected a warning only but encountered error “Bad value “data:text/html,test#test” for attribute “formaction” on element “input”.”."
-    },
-    "html/elements/input/type-url-value/scheme-data-contains-fragment-haswarn.html" : {
-      "category" : "haswarn",
-      "failure" : "Expected a warning only but encountered error “Bad value “data:text/html,test#test” for attribute “value” on element “input”.”."
-    },
-    "html/elements/ins/cite/scheme-data-contains-fragment-haswarn.html" : {
-      "category" : "haswarn",
-      "failure" : "Expected a warning only but encountered error “Bad value “data:text/html,test#test” for attribute “cite” on element “ins”.”."
-    },
     "html/elements/label/for-with-non-matching-descendant-novalid.html" : {
       "category" : "invalid",
       "failure" : "Expected “Any “input” descendant of a “label” element with a “for” attribute must have an ID value that matches that “for” attribute.” but instead encountered “The value of the “for” attribute of the “label” element must be the ID of a non-hidden form control.”."
@@ -267,10 +203,6 @@
     "html/elements/label/role-with-labelable-descendant-novalid.html" : {
       "category" : "invalid",
       "failure" : "Expected “The element “input” must not appear as a descendant of an element with the attribute “role=button”.” but instead encountered “The “role” attribute must not be used on any “label” element that is an ancestor of a labelable element.”."
-    },
-    "html/elements/link/href/scheme-data-contains-fragment-haswarn.html" : {
-      "category" : "haswarn",
-      "failure" : "Expected a warning only but encountered error “Bad value “data:text/html,test#test” for attribute “href” on element “link”.”."
     },
     "html/elements/link/imagesizes-no-imagesrcset-novalid.html" : {
       "category" : "invalid",
@@ -304,10 +236,6 @@
       "category" : "invalid",
       "failure" : "Expected “The value of the “low” attribute must be less than or equal to the value of the “max” attribute.” but instead encountered “The value of the “low” attribute must be less than or equal to the value of the “high” attribute.”."
     },
-    "html/elements/object/data/scheme-data-contains-fragment-haswarn.html" : {
-      "category" : "haswarn",
-      "failure" : "Expected a warning only but encountered error “Bad value “data:text/html,test#test” for attribute “data” on element “object”.”."
-    },
     "html/elements/object/model-novalid.html" : {
       "category" : "invalid",
       "failure" : "Expected “Element “object” is missing required attribute “data”.” but instead encountered “Element “p” not allowed as child of “object” in this context. Note: The “object” element has a transparent content model; its allowed content is inherited from its parent element.”."
@@ -340,10 +268,6 @@
       "category" : "invalid",
       "failure" : "Expected “Attribute “src” not allowed on element “source” at this point.” but instead encountered “Element “source” is missing required attribute “srcset”.”."
     },
-    "html/elements/q/cite/scheme-data-contains-fragment-haswarn.html" : {
-      "category" : "haswarn",
-      "failure" : "Expected a warning only but encountered error “Bad value “data:text/html,test#test” for attribute “cite” on element “q”.”."
-    },
     "html/elements/rb/rb-interleaved-isvalid.html" : {
       "category" : "valid",
       "failure" : "Expected no errors or warnings but encountered error “The “rb” element is obsolete. Use CSS instead.”."
@@ -355,10 +279,6 @@
     "html/elements/rtc/rtc-hasinfo.html" : {
       "category" : "hasinfo",
       "failure" : "Expected an info message only but encountered error “The “rb” element is obsolete. Use CSS instead.”."
-    },
-    "html/elements/script/src/scheme-data-contains-fragment-haswarn.html" : {
-      "category" : "haswarn",
-      "failure" : "Expected a warning only but encountered error “Bad value “data:text/html,test#test” for attribute “src” on element “script”.”."
     },
     "html/elements/select/button-in-multiple-size1-isvalid.html" : {
       "category" : "valid",
@@ -376,10 +296,6 @@
       "category" : "invalid",
       "failure" : "Expected “The “role” attribute must not be used on a “selectedcontent” element inside the “button” part of a customizable “select” element.” but instead encountered “Element “selectedcontent” not allowed as child of “button” in this context.”."
     },
-    "html/elements/source/src/scheme-data-contains-fragment-haswarn.html" : {
-      "category" : "haswarn",
-      "failure" : "Expected a warning only but encountered error “Bad value “data:text/html,test#test” for attribute “src” on element “source”.”."
-    },
     "html/elements/style/html-spec-comms-isvalid.html" : {
       "category" : "valid",
       "failure" : "Expected no errors or warnings but encountered error “No space between the doctype public and system identifiers.”."
@@ -388,29 +304,9 @@
       "category" : "invalid",
       "failure" : "Expected “Bad value “chu” for attribute “lang” on element “span”.” but instead encountered “The “center” element is obsolete. Use CSS instead.”."
     },
-    "html/elements/track/src/scheme-data-contains-fragment-haswarn.html" : {
-      "category" : "haswarn",
-      "failure" : "Expected a warning only but encountered error “Bad value “data:text/html,test#test” for attribute “src” on element “track”.”."
-    },
     "html/elements/video/loading-eager-isvalid.html" : {
       "category" : "valid",
       "failure" : "Expected no errors or warnings but encountered error “Bad value “eager” for attribute “loading” on element “video”.”."
-    },
-    "html/elements/video/poster/scheme-data-contains-fragment-haswarn.html" : {
-      "category" : "haswarn",
-      "failure" : "Expected a warning only but encountered error “Bad value “data:text/html,test#test” for attribute “poster” on element “video”.”."
-    },
-    "html/elements/video/src/scheme-data-contains-fragment-haswarn.html" : {
-      "category" : "haswarn",
-      "failure" : "Expected a warning only but encountered error “Bad value “data:text/html,test#test” for attribute “src” on element “video”.”."
-    },
-    "html/microdata/itemid-scheme-data-contains-fragment-haswarn.html" : {
-      "category" : "haswarn",
-      "failure" : "Expected a warning only but encountered error “Bad value “data:text/html,test#test” for attribute “itemid” on element “div”.”."
-    },
-    "html/microdata/itemtype-scheme-data-contains-fragment-haswarn.html" : {
-      "category" : "haswarn",
-      "failure" : "Expected a warning only but encountered error “Bad value “data:text/html,test#test” for attribute “itemtype” on element “div”.”."
     },
     "html/mime-types/003-isvalid.html" : {
       "category" : "valid",
@@ -469,7 +365,7 @@
   },
   "passCounts" : {
     "hasinfo" : 5,
-    "haswarn" : 158,
+    "haswarn" : 184,
     "invalid" : 3590,
     "valid" : 1752
   },

@@ -64,6 +64,36 @@ public final class SourceLocationMap: @unchecked Sendable {
         )
     }
 
+    /// Case 554591 (A7): a place given by its first and last UTF-16 offsets,
+    /// both inclusive, as vnu.jar gives its tokenizer's messages: the last
+    /// column is the character the tokenizer was on, not one past it, and
+    /// the first and last can be the same character (the messages reported at
+    /// an "&"). location(offset:length:) can't say either: its last column is
+    /// one past the range, which is never empty.
+    public func location(firstOffset: Int, lastOffset: Int) -> SourceLocation {
+        var first = max(0, min(firstOffset, source.utf16.count))
+        let last = max(first, min(lastOffset, source.utf16.count))
+        // (Case 554591, A7's review: vnu.jar places nothing on the LF of a CR
+        // LF, which its input reads as one line break, so a first place that
+        // falls there, one past a message that ended on the CR, is the next
+        // line's start; this map counts that LF as the CR's line's, so such a
+        // message started a column past the CR, on the line before.)
+        if 0 < first, first < last, first < source.utf16.count {
+            let index = stringUTF16Index(at: first)
+            if 10 == source.utf16[index], 13 == source.utf16[source.utf16.index(before: index)] {
+                first += 1
+            }
+        }
+        let firstPlace = lineAndColumn(for: first)
+        let lastPlace = lineAndColumn(for: last)
+        return SourceLocation(
+            firstLine: firstPlace.line,
+            firstColumn: firstPlace.column,
+            lastLine: lastPlace.line,
+            lastColumn: lastPlace.column
+        )
+    }
+
     public func extract(offset: Int, length: Int = 1, context: Int = 80) -> SourceExtract {
         let boundedOffset = max(0, min(offset, source.utf16.count))
         let startOffset = max(0, boundedOffset - context / 2)
